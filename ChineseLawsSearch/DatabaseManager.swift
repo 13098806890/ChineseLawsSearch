@@ -67,6 +67,7 @@ final class DatabaseManager {
     static let shared = DatabaseManager()
 
     private var db: OpaquePointer?
+    private var enhDb: OpaquePointer?
 
     private init() {
         guard let url = Bundle.main.url(forResource: "law_content", withExtension: "db") else {
@@ -77,10 +78,18 @@ final class DatabaseManager {
             print("DatabaseManager: 无法打开数据库")
             db = nil
         }
+
+        if let enhUrl = Bundle.main.url(forResource: "law_enhancements", withExtension: "db") {
+            if sqlite3_open_v2(enhUrl.path, &enhDb, SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
+                print("DatabaseManager: 无法打开 law_enhancements.db")
+                enhDb = nil
+            }
+        }
     }
 
     deinit {
         sqlite3_close(db)
+        sqlite3_close(enhDb)
     }
 
     // MARK: 读取 law_menu.json 菜单结构
@@ -461,6 +470,199 @@ final class DatabaseManager {
             }
         }
         return result + tmp
+    }
+
+    // MARK: Enhancement DB — RAG support
+
+    /// 别名扩展：colloquial → [legal_term]（term_aliases + alias_patches 两表合并）
+    func legalTerms(for colloquial: String) -> [String] {
+        guard let edb = enhDb else { return [] }
+        var result: [String] = []
+        var seen = Set<String>()
+        for table in ["term_aliases", "alias_patches"] {
+            let sql = "SELECT legal_term FROM \(table) WHERE colloquial = ? ORDER BY fts_hits DESC"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(edb, sql, -1, &stmt, nil) == SQLITE_OK else { continue }
+            defer { sqlite3_finalize(stmt) }
+            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(stmt, 1, colloquial, -1, t)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let term = str(stmt, 0)
+                if seen.insert(term).inserted { result.append(term) }
+            }
+        }
+        return result
+    }
+
+    /// keyword_synonyms: LLM词 → [精确FTS词]
+    func synonyms(for keyword: String) -> [String] {
+        guard let edb = enhDb else { return [] }
+        let sql = "SELECT target_kw FROM keyword_synonyms WHERE source_kw = ? ORDER BY fts_hits DESC"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(edb, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, keyword, -1, t)
+        var result: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW { result.append(str(stmt, 0)) }
+        return result
+    }
+
+    /// topic_law_hints: keywords → [(priority, lawTitle)]，已按 priority 排序去重
+    func topicLawHints(for keywords: [String]) -> [String] {
+        guard let edb = enhDb else { return [] }
+        var seen = Set<String>()
+        var hints: [(Int, String)] = []
+        let sql = "SELECT priority, law_title FROM topic_law_hints WHERE topic_keyword = ? ORDER BY priority"
+        for kw in keywords {
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(edb, sql, -1, &stmt, nil) == SQLITE_OK else { continue }
+            defer { sqlite3_finalize(stmt) }
+            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(stmt, 1, kw, -1, t)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let priority = Int(sqlite3_column_int(stmt, 0))
+                let title = str(stmt, 1)
+                if seen.insert(title).inserted { hints.append((priority, title)) }
+            }
+        }
+        return hints.sorted { $0.0 < $1.0 }.map { $0.1 }
+    }
+
+    // MARK: RAG FTS 检索
+
+    struct RAGArticle {
+        let nodeId: Int
+        let lawId: Int
+        let lawTitle: String
+        let category: String
+        let legalDomain: String
+        let articleNumber: String
+        let content: String
+        var pinned: Bool
+    }
+
+    /// FTS 检索单个关键词，在指定 legal_domain 和 category 范围内
+    func ftsSearch(keyword: String, domains: [String], categories: [String], limit: Int = 10) -> [RAGArticle] {
+        guard !keyword.isEmpty, let db = db else { return [] }
+        let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        let domainPH = domains.map { _ in "?" }.joined(separator: ",")
+        let catPH    = categories.map { _ in "?" }.joined(separator: ",")
+
+        let sql: String
+        let ftsKw: String
+        if cjk >= 3 {
+            ftsKw = keyword
+            sql = """
+                SELECT n.id, n.law_id, l.title, l.category, l.legal_domain, n.article_number, n.content
+                FROM nodes_fts f
+                JOIN nodes n ON f.rowid = n.id
+                JOIN laws  l ON n.law_id = l.id
+                WHERE nodes_fts MATCH ?
+                  AND n.type = 'article' AND l.is_current = 1
+                  AND l.legal_domain IN (\(domainPH))
+                  AND l.category IN (\(catPH))
+                LIMIT ?
+                """
+        } else if cjk > 0 {
+            ftsKw = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }
+                        .map { String($0) }.joined(separator: " ")
+            sql = """
+                SELECT n.id, n.law_id, l.title, l.category, l.legal_domain, n.article_number, n.content
+                FROM nodes_fts_bigram f
+                JOIN nodes n ON f.rowid = n.id
+                JOIN laws  l ON n.law_id = l.id
+                WHERE nodes_fts_bigram MATCH ?
+                  AND n.type = 'article' AND l.is_current = 1
+                  AND l.legal_domain IN (\(domainPH))
+                  AND l.category IN (\(catPH))
+                LIMIT ?
+                """
+        } else {
+            return []
+        }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        var col: Int32 = 1
+        sqlite3_bind_text(stmt, col, ftsKw, -1, t); col += 1
+        for d in domains { sqlite3_bind_text(stmt, col, d, -1, t); col += 1 }
+        for c in categories { sqlite3_bind_text(stmt, col, c, -1, t); col += 1 }
+        sqlite3_bind_int(stmt, col, Int32(limit))
+
+        var result: [RAGArticle] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(RAGArticle(
+                nodeId:        Int(sqlite3_column_int(stmt, 0)),
+                lawId:         Int(sqlite3_column_int(stmt, 1)),
+                lawTitle:      str(stmt, 2),
+                category:      str(stmt, 3),
+                legalDomain:   str(stmt, 4),
+                articleNumber: str(stmt, 5),
+                content:       str(stmt, 6),
+                pinned:        false
+            ))
+        }
+        return result
+    }
+
+    /// hint law 检索：在指定法律标题内 FTS 搜索
+    func ftsSearchInLaw(keyword: String, lawTitle: String, categories: [String], limit: Int = 10) -> [RAGArticle] {
+        guard !keyword.isEmpty, let db = db else { return [] }
+        let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        guard cjk >= 3 else { return [] }
+        let catPH = categories.map { _ in "?" }.joined(separator: ",")
+        let sql = """
+            SELECT n.id, n.law_id, l.title, l.category, l.legal_domain, n.article_number, n.content
+            FROM nodes_fts f
+            JOIN nodes n ON f.rowid = n.id
+            JOIN laws  l ON n.law_id = l.id
+            WHERE nodes_fts MATCH ?
+              AND n.type = 'article' AND l.is_current = 1
+              AND l.title = ?
+              AND l.category IN (\(catPH))
+            LIMIT ?
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        var col: Int32 = 1
+        sqlite3_bind_text(stmt, col, keyword, -1, t); col += 1
+        sqlite3_bind_text(stmt, col, lawTitle, -1, t); col += 1
+        for c in categories { sqlite3_bind_text(stmt, col, c, -1, t); col += 1 }
+        sqlite3_bind_int(stmt, col, Int32(limit))
+
+        var result: [RAGArticle] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(RAGArticle(
+                nodeId:        Int(sqlite3_column_int(stmt, 0)),
+                lawId:         Int(sqlite3_column_int(stmt, 1)),
+                lawTitle:      str(stmt, 2),
+                category:      str(stmt, 3),
+                legalDomain:   str(stmt, 4),
+                articleNumber: str(stmt, 5),
+                content:       str(stmt, 6),
+                pinned:        true
+            ))
+        }
+        return result
+    }
+
+    /// FTS 命中数（用于关键词精确度排序）
+    func ftsHitCount(keyword: String) -> Int {
+        guard !keyword.isEmpty, let db = db else { return 999 }
+        let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        guard cjk >= 3 else { return 999 }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH ?", -1, &stmt, nil) == SQLITE_OK else { return 999 }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, keyword, -1, t)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 999 }
+        return Int(sqlite3_column_int(stmt, 0))
     }
 
     // MARK: 工具
