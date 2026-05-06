@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		DAA1D8412FA1DF3B0003A448 /* law_content.db in Resources */ = {isa = PBXBuildFile; fileRef = DAA1D8402FA1DF3B0003A448 /* law_content.db */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		DAA1D81B2FA1DF3B0003A448 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +31,7 @@
 		DAA1D8092FA1DF390003A448 /* ChineseLawsSearch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChineseLawsSearch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DAA1D81A2FA1DF3B0003A448 /* ChineseLawsSearchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChineseLawsSearchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DAA1D8242FA1DF3B0003A448 /* ChineseLawsSearchUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChineseLawsSearchUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DAA1D8402FA1DF3B0003A448 /* law_content.db */ = {isa = PBXFileReference; lastKnownFileType = file; name = law_content.db; path = ChineseLawsSearch/law_content.db; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -92,6 +97,7 @@
 				DAA1D81D2FA1DF3B0003A448 /* ChineseLawsSearchTests */,
 				DAA1D8272FA1DF3B0003A448 /* ChineseLawsSearchUITests */,
 				DAA1D80A2FA1DF390003A448 /* Products */,
+				DAA1D8402FA1DF3B0003A448 /* law_content.db */,
 			);
 			sourceTree = "<group>";
 		};
@@ -225,6 +231,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DAA1D8412FA1DF3B0003A448 /* law_content.db in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -290,7 +297,7 @@
 				CODE_SIGN_ENTITLEMENTS = ChineseLawsSearch/ChineseLawsSearch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = LNTYGHCVL4;
+				DEVELOPMENT_TEAM = 86AC9J72SZ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ChineseLawsSearch/Info.plist;
@@ -324,7 +331,7 @@
 				CODE_SIGN_ENTITLEMENTS = ChineseLawsSearch/ChineseLawsSearch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = LNTYGHCVL4;
+				DEVELOPMENT_TEAM = 86AC9J72SZ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ChineseLawsSearch/Info.plist;

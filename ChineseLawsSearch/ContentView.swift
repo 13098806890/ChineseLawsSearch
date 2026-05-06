@@ -6,56 +6,41 @@
 //
 
 import SwiftUI
-import SwiftData
+
+// 描述一个导航目标：哪部法律、滚动到哪条（nil = 不滚动）
+struct LawTarget: Equatable, Hashable {
+    let law: LawMeta
+    let scrollToArticle: Int?
+}
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @State private var selectedLaw: LawMeta?
+    @State private var target: LawTarget?
 
     var body: some View {
         NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
-            }
+            TOCView(selectedLaw: $selectedLaw, target: $target)
         } detail: {
-            Text("Select an item")
-        }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+            if let t = target {
+                NavigationStack {
+                    LawDetailView(target: t, navigate: navigate)
+                }
+                .id(t.law.id)
+            } else {
+                Text("选择一部法律")
+                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    func navigate(to lawId: Int, articleNum: Int?) {
+        if let law = DatabaseManager.shared.lawMeta(id: lawId) {
+            selectedLaw = law
+            target = LawTarget(law: law, scrollToArticle: articleNum)
         }
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
 }
