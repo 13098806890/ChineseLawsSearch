@@ -29,8 +29,7 @@ struct RAGCitation: Identifiable, Equatable {
 
 // MARK: - Service
 
-@MainActor
-final class LegalRAGService: ObservableObject {
+final class LegalRAGService {
     static let shared = LegalRAGService()
 
     private let ollamaURL = URL(string: "http://localhost:11434/api/chat")!

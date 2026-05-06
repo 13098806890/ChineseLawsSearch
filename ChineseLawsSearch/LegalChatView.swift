@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct LegalChatView: View {
     @StateObject private var vm = LegalChatViewModel()
@@ -199,7 +200,6 @@ private struct CitationList: View {
 
 // MARK: - ViewModel
 
-@MainActor
 final class LegalChatViewModel: ObservableObject {
     @Published var messages:   [ChatMessage] = []
     @Published var inputText   = ""
@@ -208,6 +208,7 @@ final class LegalChatViewModel: ObservableObject {
 
     private var dotTask: Task<Void, Never>?
 
+    @MainActor
     func send() async {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !isThinking else { return }
@@ -220,23 +221,27 @@ final class LegalChatViewModel: ObservableObject {
         let replyIdx = messages.count - 1
 
         do {
-            let citations = try await LegalRAGService.shared.ask(question: q) { token in
-                Task { @MainActor in
+            let citations = try await LegalRAGService.shared.ask(question: q) { [weak self] token in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
                     self.messages[replyIdx].text += token
-                    self.isThinking = false  // first token arrived — hide dots
+                    self.isThinking = false
                 }
             }
-            messages[replyIdx].citations = citations
+            await MainActor.run { messages[replyIdx].citations = citations }
         } catch {
-            if messages[replyIdx].text.isEmpty {
-                messages[replyIdx].text = "暂时无法连接到模型，请确认 Ollama 已在本地运行（http://localhost:11434）。"
+            await MainActor.run {
+                if messages[replyIdx].text.isEmpty {
+                    messages[replyIdx].text = "暂时无法连接到模型，请确认 Ollama 已在本地运行（http://localhost:11434）。"
+                }
             }
         }
-        isThinking = false
+        await MainActor.run { isThinking = false }
     }
 
+    @MainActor
     func startDotAnimation() {
-        dotTask = Task {
+        dotTask = Task { @MainActor in
             while !Task.isCancelled {
                 for i in 0..<3 {
                     dotScale[i] = 1.4
@@ -248,6 +253,7 @@ final class LegalChatViewModel: ObservableObject {
         }
     }
 
+    @MainActor
     func stopDotAnimation() {
         dotTask?.cancel()
         dotTask = nil
