@@ -459,47 +459,73 @@ final class LegalExpertService {
     // MARK: - Helpers
 
     private func decomposeQuestion(_ question: String) async -> [String] {
-        // Fast path: detect explicitly numbered questions (1、2、3 or 1. 2. 3)
+        // Extract explicit background preamble + numbered items if present,
+        // then let LLM decide whether the items span different legal domains
+        // and therefore warrant separate analysis.
         let numberedPattern = try? NSRegularExpression(
-            pattern: #"(?:^|\n)\s*[①②③④⑤⑥⑦⑧⑨⑩]|(?:^|\n)\s*\d+[、.．。]\s*[^\n]{5,}"#)
+            pattern: #"(?:^|\n)\s*(?:[①②③④⑤⑥⑦⑧⑨⑩]|\d+[、.．。])\s*[^\n]{5,}"#)
         let ns = question as NSString
-        let matches = numberedPattern?.matches(in: question, range: NSRange(location: 0, length: ns.length)) ?? []
+        let nsRange = NSRange(location: 0, length: ns.length)
+        let matches = numberedPattern?.matches(in: question, range: nsRange) ?? []
+
+        var candidateItems: [String] = []
+        var background = ""
         if matches.count >= 2 {
-            // Extract each numbered item as a sub-question, preserving background context
-            // Find the "background" preamble (text before the first numbered item)
-            var items: [String] = []
-            var ranges: [NSRange] = matches.map { $0.range }
-            let preambleEnd = ranges[0].location
-            let background = preambleEnd > 10
-                ? String(question[..<question.index(question.startIndex, offsetBy: min(preambleEnd, question.count))])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                : ""
-            for i in 0..<ranges.count {
-                let start = ranges[i].location
-                let end   = i + 1 < ranges.count ? ranges[i+1].location : ns.length
-                var item  = ns.substring(with: NSRange(location: start, length: end - start))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !background.isEmpty {
-                    item = background + "\n" + item
-                }
-                if !item.isEmpty { items.append(item) }
+            let preambleEnd = matches[0].range.location
+            if preambleEnd > 10 {
+                background = ns.substring(to: preambleEnd).trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            if items.count >= 2 { return items }
+            for i in 0..<matches.count {
+                let start = matches[i].range.location
+                let end   = i + 1 < matches.count ? matches[i + 1].range.location : ns.length
+                let item  = ns.substring(with: NSRange(location: start, length: end - start))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !item.isEmpty { candidateItems.append(item) }
+            }
         }
 
-        // Fallback: ask LLM
-        let prompt = """
-        你是中国法律助手。判断用户的问题是否包含多个独立的法律子问题（如同时涉及请求权和诉讼程序，或多个不同法律关系）。
-        如果问题简单或只有一个核心问题，输出空数组 []。
-        如果可以拆分，输出2-4个子问题的JSON数组，每个子问题都需要包含详细的上下文（案情背景）。
-        只输出JSON数组，不要其他内容。
-        """
-        guard let raw  = try? await chat(system: prompt, user: "问题：\(question)"),
+        let hasNumbered = candidateItems.count >= 2
+        let prompt: String
+        if hasNumbered {
+            let itemsText = candidateItems.enumerated()
+                .map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+            prompt = """
+            你是中国法律助手。以下是一段案情背景和若干已编号的问题。
+            判断这些问题是否涉及不同的法律领域或独立法律关系（如公司法 vs 合同法 vs 担保法），如果是，应分别由不同专家独立分析。
+            决策标准：
+            - 如果多个问题本质上属于同一法律关系（如同一合同纠纷的请求权、违约认定、诉讼流程），合并为一个，输出 []。
+            - 如果问题跨越不同法律领域（如股权转让 + 对外担保效力 + 代表权 + 出资加速到期），则每个独立领域输出一个子问题，子问题需包含完整案情背景。
+            只输出JSON数组（每个元素是一个包含案情和问题的完整字符串）。无需拆分时输出 []，不要其他内容。
+            案情背景：\(background)
+            问题列表：
+            \(itemsText)
+            """
+        } else {
+            prompt = """
+            你是中国法律助手。判断以下问题是否包含多个涉及不同法律领域或独立法律关系的子问题。
+            决策标准：
+            - 同一法律关系的多个追问（请求权 + 诉讼程序 + 时效）→ 不拆，输出 []。
+            - 不同法律领域的独立问题（合同 + 工伤 + 行政处罚）→ 拆分，每个子问题包含完整背景。
+            只输出JSON数组，无需拆分时输出 []，不要其他内容。
+            问题：\(question)
+            """
+        }
+
+        guard let raw  = try? await chat(system: "你是严格按指令输出JSON的助手。", user: prompt),
               let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
-              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String],
-              arr.count >= 2
+              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String]
         else { return [] }
-        return arr.filter { !$0.isEmpty }
+
+        let items = arr.filter { !$0.isEmpty }
+        guard items.count >= 2 else { return [] }
+
+        // Prepend background to each item if not already included
+        if hasNumbered && !background.isEmpty {
+            return items.map { item in
+                item.contains(background.prefix(20)) ? item : background + "\n" + item
+            }
+        }
+        return items
     }
 
     private func deduplicateArticles(_ map: [String: [DatabaseManager.RAGArticle]]) -> [DatabaseManager.RAGArticle] {
