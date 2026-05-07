@@ -186,9 +186,9 @@ private struct SettingsSheet: View {
                     Stepper("专家最多追问 \(maxFollowUpRounds) 轮",
                             value: $maxFollowUpRounds, in: 0...5)
                     let label = maxCitations == 0 ? "参考法条：不限数量" : "参考法条最多 \(maxCitations) 条"
-                    Stepper(label, value: $maxCitations, in: 0...50, step: 5)
+                    Stepper(label, value: $maxCitations, in: 0...200, step: 10)
                     Stepper("每专家上下文法条 \(maxContextArticles) 条",
-                            value: $maxContextArticles, in: 5...40, step: 5)
+                            value: $maxContextArticles, in: 5...1000, step: 5)
                 }
 
                 Section {

@@ -30,6 +30,7 @@ struct ThinkStep: Identifiable, Equatable {
     let name:    String
     let content: String
     var articles: [RAGCitation] = []
+    var isExpanded: Bool = false
 }
 
 struct RAGCitation: Identifiable, Equatable {

@@ -35,7 +35,8 @@ struct LegalChatView: View {
                         }
                         ForEach(vm.messages) { msg in
                             MessageBubble(message: msg, showThinking: showThinking,
-                                          navigate: navigate, expandedSteps: $vm.expandedSteps)
+                                          navigate: navigate,
+                                          onToggleStep: { vm.toggleStep(messageId: msg.id, stepId: $0) })
                                 .id(msg.id)
                         }
                         if vm.isThinking {
@@ -164,7 +165,7 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
-    @Binding var expandedSteps: Set<UUID>
+    let onToggleStep: (UUID) -> Void   // called with stepId
 
     @State private var showSteps     = true
     @State private var showCitations = false
@@ -282,11 +283,8 @@ private struct MessageBubble: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(message.thinkSteps.enumerated()), id: \.element.id) { idx, step in
                         ThinkStepRow(step: step, index: idx, total: message.thinkSteps.count,
-                                     isExpanded: expandedSteps.contains(step.id),
-                                     onToggle: { withAnimation(.spring(duration: 0.2)) {
-                                         if expandedSteps.contains(step.id) { expandedSteps.remove(step.id) }
-                                         else { expandedSteps.insert(step.id) }
-                                     }},
+                                     isExpanded: step.isExpanded,
+                                     onToggle: { withAnimation(.spring(duration: 0.2)) { onToggleStep(step.id) } },
                                      navigate: navigate)
                     }
                 }
@@ -662,11 +660,10 @@ struct ChatHistorySheet: View {
 // MARK: - ViewModel
 
 final class LegalChatViewModel: ObservableObject {
-    @Published var messages:      [ChatMessage] = []
-    @Published var inputText      = ""
-    @Published var isThinking     = false
-    @Published var expandedSteps: Set<UUID> = []
-    @Published var dotScale    = [1.0, 1.0, 1.0]
+    @Published var messages:  [ChatMessage] = []
+    @Published var inputText  = ""
+    @Published var isThinking = false
+    @Published var dotScale   = [1.0, 1.0, 1.0]
     @Published var scrollToken = 0
     @Published var mode: ChatMode = .expert
 
@@ -684,6 +681,14 @@ final class LegalChatViewModel: ObservableObject {
     @AppStorage("maxFollowUpRounds") var maxFollowUpRounds: Int = 3
 
     @MainActor
+    func toggleStep(messageId: UUID, stepId: UUID) {
+        guard let mi = messages.firstIndex(where: { $0.id == messageId }),
+              let si = messages[mi].thinkSteps.firstIndex(where: { $0.id == stepId })
+        else { return }
+        messages[mi].thinkSteps[si].isExpanded.toggle()
+    }
+
+    @MainActor
     func newSession() {
         messages = []
         inputText = ""
@@ -692,7 +697,6 @@ final class LegalChatViewModel: ObservableObject {
         followUpRound = 0
         pendingFacts = [:]
         conversationHistory = []
-        expandedSteps = []
         sessionId = UUID()
         sessionCreatedAt = Date()
     }
@@ -728,7 +732,6 @@ final class LegalChatViewModel: ObservableObject {
         isAwaitingClarification = false
         followUpRound = 0
         pendingFacts = [:]
-        expandedSteps = []
         conversationHistory = buildConversationHistory()
     }
 
