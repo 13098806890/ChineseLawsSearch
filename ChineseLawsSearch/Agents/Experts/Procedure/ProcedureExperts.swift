@@ -28,7 +28,7 @@ let criminalProcedureExpert = SubExpert(
     requiredInfo: [
         RequiredInfo(field: "案件阶段",   question: "目前案件处于哪个阶段（报案/立案/侦查/批捕/审判）？",
                      regexHint: "报案|立案|侦查|逮捕|起诉|审判|判决|上诉|执行|羁押"),
-        RequiredInfo(field: "当事人身份", question: "咨询人身份（受害方/犯罪嫌疑人/家属）？",
+        RequiredInfo(field: "当事人身份", question: "案件中涉及哪方当事人（被害人/犯罪嫌疑人/被告人/家属）？",
                      regexHint: "受害者|被害人|嫌疑人|被告|家属|辩护|律师"),
     ],
     lawTitles: ["中华人民共和国刑事诉讼法"],

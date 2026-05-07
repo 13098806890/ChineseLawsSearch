@@ -93,7 +93,7 @@ final class LegalExpertService {
                 if isLastRound || missingInfos.count == 1 {
                     // Last round or only one question: list all at once
                     let lines = missingInfos.enumerated().map { "\($0.offset + 1). \($0.element.question)" }
-                    questionText = "为了给您更准确的分析，请补充以下信息：\n" + lines.joined(separator: "\n")
+                    questionText = "为了提供更准确的分析，请补充以下事实信息：\n" + lines.joined(separator: "\n")
                 } else {
                     // Ask the single most important missing field
                     questionText = missingInfos[0].question
@@ -413,12 +413,15 @@ final class LegalExpertService {
 
     private var coordinatorSystemPrompt: String { """
     你是中国法律问题综合顾问。将多个专家组的分析整合为最终回答。
+    重要原则：
+    - 使用第三方客观视角，不预设提问者是哪方当事人（可能是当事人本人、家属、律师或第三方）
+    - 法律判断（谁违约、谁承担责任、行为是否合法）由你独立作出，不要推给提问者判断
     格式要求：
-    1. 开头直接给出核心结论（1-2句）
-    2. 按专家组分段陈述详细分析
+    1. 开头直接给出各问题的核心结论（逐条列出）
+    2. 按问题或专家组分段陈述详细法律分析
     3. 末尾列出"⚖️ 引用法条"（格式：• 《法律名》第X条 — 摘要）
     4. 如涉及诉讼，注明应去哪个法院
-    5. 总长度500-800字，通俗易懂
+    5. 总长度500-900字
     不要说"根据以上"、"综上所述"等空话。直接给结论。
     """ }
 
@@ -456,10 +459,39 @@ final class LegalExpertService {
     // MARK: - Helpers
 
     private func decomposeQuestion(_ question: String) async -> [String] {
+        // Fast path: detect explicitly numbered questions (1、2、3 or 1. 2. 3)
+        let numberedPattern = try? NSRegularExpression(
+            pattern: #"(?:^|\n)\s*[①②③④⑤⑥⑦⑧⑨⑩]|(?:^|\n)\s*\d+[、.．。]\s*[^\n]{5,}"#)
+        let ns = question as NSString
+        let matches = numberedPattern?.matches(in: question, range: NSRange(location: 0, length: ns.length)) ?? []
+        if matches.count >= 2 {
+            // Extract each numbered item as a sub-question, preserving background context
+            // Find the "background" preamble (text before the first numbered item)
+            var items: [String] = []
+            var ranges: [NSRange] = matches.map { $0.range }
+            let preambleEnd = ranges[0].location
+            let background = preambleEnd > 10
+                ? String(question[..<question.index(question.startIndex, offsetBy: min(preambleEnd, question.count))])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
+            for i in 0..<ranges.count {
+                let start = ranges[i].location
+                let end   = i + 1 < ranges.count ? ranges[i+1].location : ns.length
+                var item  = ns.substring(with: NSRange(location: start, length: end - start))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !background.isEmpty {
+                    item = background + "\n" + item
+                }
+                if !item.isEmpty { items.append(item) }
+            }
+            if items.count >= 2 { return items }
+        }
+
+        // Fallback: ask LLM
         let prompt = """
         你是中国法律助手。判断用户的问题是否包含多个独立的法律子问题（如同时涉及请求权和诉讼程序，或多个不同法律关系）。
         如果问题简单或只有一个核心问题，输出空数组 []。
-        如果可以拆分，输出2-4个子问题的JSON数组，每个子问题都需要包含详细的上下文。
+        如果可以拆分，输出2-4个子问题的JSON数组，每个子问题都需要包含详细的上下文（案情背景）。
         只输出JSON数组，不要其他内容。
         """
         guard let raw  = try? await chat(system: prompt, user: "问题：\(question)"),

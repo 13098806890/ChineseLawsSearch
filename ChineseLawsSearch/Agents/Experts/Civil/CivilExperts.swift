@@ -15,13 +15,9 @@ let contractExpert = SubExpert(
     name: "合同法专家",
     domain: "合同纠纷、违约责任、合同解除、合同效力",
     requiredInfo: [
-        RequiredInfo(field: "合同类型",     question: "合同是哪种类型（买卖/租赁/服务/借款/建设工程/其他）？",
+        RequiredInfo(field: "合同类型", question: "合同是哪种类型（买卖/租赁/服务/借款/建设工程/其他）？",
                      regexHint: "买卖|租赁|服务|借款|贷款|雇佣|劳务|承揽|运输|建设工程"),
-        RequiredInfo(field: "违约方",       question: "是哪一方违约（对方/甲方/乙方）？",
-                     regexHint: "对方|甲方|乙方|买方|卖方|商家|平台|房东|租客"),
-        RequiredInfo(field: "具体违约行为", question: "对方具体做了什么（不交货/不付款/质量问题/单方解约）？",
-                     regexHint: "不交货|不付款|拖欠|逾期|质量|不合格|单方|解除|违约"),
-        RequiredInfo(field: "合同金额",     question: "合同标的金额大概是多少？",
+        RequiredInfo(field: "合同金额", question: "合同标的金额大概是多少？",
                      regexHint: #"\d+\s*(?:万|元|块|百|千|亿)"#),
     ],
     lawTitles: ["中华人民共和国民法典"],
@@ -29,7 +25,7 @@ let contractExpert = SubExpert(
     ftsDomains: ["民法典", "民法商法"],
     ftsCategories: ["法律", "司法解释"],
     ftsKeywordsExtra: ["违约责任", "合同解除", "继续履行", "损害赔偿"],
-    answerTemplate: "你是合同法细分专家。基于以下法条，分析：\n1. 该合同的法律效力\n2. 违约方应承担哪些违约责任（继续履行/损害赔偿/定金罚则）\n3. 守约方可采取的维权路径\n引用具体条文编号，语言通俗。"
+    answerTemplate: "你是合同法细分专家。基于以下法条，从法律角度分析各方的权利义务：\n1. 合同效力认定\n2. 违约责任（继续履行/损害赔偿/定金罚则），由你基于事实判断哪方违约\n3. 救济路径\n引用具体条文编号，使用第三方视角（\"当事人\"而非\"您\"）。"
 )
 
 let propertyExpert = SubExpert(
@@ -48,26 +44,24 @@ let propertyExpert = SubExpert(
     ftsDomains: ["民法典", "民法商法"],
     ftsCategories: ["法律", "司法解释"],
     ftsKeywordsExtra: ["物权登记", "善意取得", "不动产", "抵押权实现"],
-    answerTemplate: "你是物权法细分专家。基于以下法条，分析：\n1. 当事人的物权归属及依据\n2. 物权是否受到侵害及侵害方式\n3. 物权人可以行使哪些请求权（返还/排除妨害/损害赔偿）\n引用具体条文，指明登记要求。"
+    answerTemplate: "你是物权法细分专家。基于以下法条，分析：\n1. 当事人的物权归属及法律依据\n2. 物权是否受到侵害及侵害方式（由你判断）\n3. 物权人可以行使哪些请求权（返还/排除妨害/损害赔偿）\n使用第三方视角，引用具体条文，指明登记要求。"
 )
 
 let tortExpert = SubExpert(
     name: "侵权责任专家",
     domain: "侵权损害赔偿、过错责任、无过错责任、共同侵权",
     requiredInfo: [
-        RequiredInfo(field: "侵权类型",   question: "属于哪种侵权（人身伤害/财产损害/名誉权/产品责任/交通事故）？",
+        RequiredInfo(field: "侵权类型", question: "属于哪种侵权情形（人身伤害/财产损失/名誉/产品责任/交通事故）？",
                      regexHint: "人身伤害|受伤|死亡|财产损失|名誉|隐私|产品|交通事故|医疗|动物咬伤"),
-        RequiredInfo(field: "损害后果",   question: "造成了什么具体损害（伤亡/财产损失/精神损害）？",
+        RequiredInfo(field: "损害后果", question: "造成了什么具体损害（伤亡情况/财产损失金额/精神损害）？",
                      regexHint: #"受伤|死亡|残疾|财产损失|\d+元|精神损害"#),
-        RequiredInfo(field: "侵权人身份", question: "侵权方是谁（个人/公司/雇主/产品生产者）？",
-                     regexHint: "个人|公司|企业|雇主|单位|生产者|销售者|驾驶人|医院|学校"),
     ],
     lawTitles: ["中华人民共和国民法典"],
     chapterIdHints: [],
     ftsDomains: ["民法典", "民法商法"],
     ftsCategories: ["法律", "司法解释"],
     ftsKeywordsExtra: ["侵权责任", "损害赔偿", "精神损害", "无过错责任"],
-    answerTemplate: "你是侵权责任法细分专家。基于以下法条，分析：\n1. 适用何种归责原则（过错/无过错/公平责任）\n2. 侵权构成要件是否满足\n3. 赔偿范围（医疗费/误工费/残疾赔偿金/死亡赔偿金/精神损害赔偿）\n4. 诉讼时效（一般三年）\n引用具体条文，给出赔偿项目清单。"
+    answerTemplate: "你是侵权责任法细分专家。基于以下法条，从法律角度分析：\n1. 适用归责原则（过错/无过错/公平责任），并判断各方过错\n2. 侵权构成要件是否满足\n3. 赔偿范围（医疗费/误工费/残疾赔偿金/死亡赔偿金/精神损害赔偿）\n4. 诉讼时效\n使用第三方视角，引用具体条文，给出赔偿项目清单。"
 )
 
 let marriageExpert = SubExpert(
@@ -82,15 +76,13 @@ let marriageExpert = SubExpert(
                      regexHint: #"\d+岁|孩子|子女|小孩|儿子|女儿|未成年|抚养"#),
         RequiredInfo(field: "财产情况", question: "主要财产有哪些（房产/存款/股权）？",
                      regexHint: #"房产|房屋|存款|股权|婚前|婚后|共同财产|\d+万"#),
-        RequiredInfo(field: "过错方",   question: "是否存在过错（家暴/出轨/遗弃）？",
-                     regexHint: "家暴|出轨|外遇|遗弃|分居|过错|重婚"),
     ],
     lawTitles: ["中华人民共和国民法典"],
     chapterIdHints: [],
     ftsDomains: ["民法典", "民法商法"],
     ftsCategories: ["法律", "司法解释"],
     ftsKeywordsExtra: ["离婚协议", "夫妻共同财产", "子女抚养费", "彩礼返还", "家庭暴力"],
-    answerTemplate: "你是婚姻家庭法细分专家。基于以下法条，分析：\n1. 离婚条件是否具备（协议离婚/诉讼离婚）\n2. 子女抚养权归属原则\n3. 夫妻共同财产分割原则（有过错方少分/婚前财产不分）\n4. 家庭暴力的法律后果\n语言通俗，明确给出建议路径。"
+    answerTemplate: "你是婚姻家庭法细分专家。基于以下法条，分析：\n1. 离婚条件是否具备（协议离婚/诉讼离婚）\n2. 子女抚养权归属原则\n3. 夫妻共同财产分割原则（有过错方少分由你判断/婚前财产不分）\n4. 家庭暴力的法律后果\n使用第三方视角，明确给出各方权利义务。"
 )
 
 let inheritanceExpert = SubExpert(
