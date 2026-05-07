@@ -72,14 +72,15 @@ struct TOCView: View {
         }
         .onChange(of: showSearch) { _, isShowing in
             if !isShowing, let t = pendingTarget {
+                selectedLaw = t.law
                 target = t
                 pendingTarget = nil
             }
         }
-        .onChange(of: selectedLaw) { _, law in
-            if let law {
-                target = LawTarget(law: law, scrollToArticle: nil)
-            }
+        .onChange(of: selectedLaw) { old, law in
+            // 只在用户点目录行时同步 target（搜索已直接设置 target，不需要再覆盖）
+            guard let law, target?.law.id != law.id else { return }
+            target = LawTarget(law: law, scrollToArticle: nil)
         }
         .task {
             menu = DatabaseManager.shared.loadMenu()

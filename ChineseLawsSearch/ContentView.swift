@@ -131,6 +131,8 @@ private struct SettingsSheet: View {
     @Binding var showThinking: Bool
     @Environment(\.dismiss) private var dismiss
     @AppStorage("maxFollowUpRounds") private var maxFollowUpRounds: Int = 3
+    @AppStorage("maxCitations") private var maxCitations: Int = 20
+    @AppStorage("maxContextArticles") private var maxContextArticles: Int = 20
 
     @AppStorage("selected_llm_provider") private var selectedProviderId = "gemini"
     @State private var savedKeys: [String: String] = {
@@ -149,6 +151,10 @@ private struct SettingsSheet: View {
                     Toggle("显示思考过程", isOn: $showThinking)
                     Stepper("专家最多追问 \(maxFollowUpRounds) 轮",
                             value: $maxFollowUpRounds, in: 0...5)
+                    let label = maxCitations == 0 ? "参考法条：不限数量" : "参考法条最多 \(maxCitations) 条"
+                    Stepper(label, value: $maxCitations, in: 0...50, step: 5)
+                    Stepper("每专家上下文法条 \(maxContextArticles) 条",
+                            value: $maxContextArticles, in: 5...40, step: 5)
                 }
 
                 Section {

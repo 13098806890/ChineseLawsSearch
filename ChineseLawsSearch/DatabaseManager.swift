@@ -763,6 +763,44 @@ final class DatabaseManager {
         )
     }
 
+    /// Lookup articles by article_number within a set of law_ids (or all current laws if empty).
+    /// lawTitleFragment: optional partial law title for narrowing (e.g. "民法典").
+    func articlesByNumber(articleNumber: String,
+                          lawTitleFragment: String? = nil,
+                          lawIds: [Int] = []) -> [RAGArticle] {
+        guard let db = db else { return [] }
+        var sql = """
+            SELECT n.id, n.law_id, l.title, l.category, l.legal_domain,
+                   n.article_number, n.article_num, n.content
+            FROM nodes n JOIN laws l ON n.law_id = l.id
+            WHERE n.article_number = ? AND n.type = 'article' AND l.is_current = 1
+            """
+        if !lawIds.isEmpty {
+            sql += " AND n.law_id IN (\(lawIds.map { String($0) }.joined(separator: ",")))"
+        }
+        if let frag = lawTitleFragment, !frag.isEmpty {
+            sql += " AND l.title LIKE '%\(frag)%'"
+        }
+        sql += " LIMIT 10"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, articleNumber, -1, t)
+        var result: [RAGArticle] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(RAGArticle(
+                nodeId: Int(sqlite3_column_int(stmt, 0)),
+                lawId:  Int(sqlite3_column_int(stmt, 1)),
+                lawTitle: str(stmt, 2), category: str(stmt, 3), legalDomain: str(stmt, 4),
+                articleNumber: str(stmt, 5),
+                articleNum: sqlite3_column_type(stmt, 6) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 6)) : nil,
+                content: str(stmt, 7), pinned: false
+            ))
+        }
+        return result
+    }
+
     // MARK: 工具
 
     private func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {

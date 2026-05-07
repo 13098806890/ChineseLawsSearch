@@ -13,8 +13,9 @@ struct SearchView: View {
     @State private var titleResults:   [LawMeta]      = []
     @State private var articleResults: [SearchResult] = []
     @State private var isSearching = false
-    @State private var showOptions = false
-    @State private var excludeArticleNum = false
+    @State private var showOptions = true
+    @State private var excludeArticleNum = true
+    @State private var titleOnly = false
     @State private var resultLimit = 50
 
     var body: some View {
@@ -72,9 +73,6 @@ struct SearchView: View {
                                             Text(result.lawTitle)
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
-                                            Text(result.articleNumber)
-                                                .font(.subheadline).bold()
-                                                .foregroundStyle(.primary)
                                             highlightedText(result.content, query: query)
                                                 .font(.body)
                                                 .foregroundStyle(.primary)
@@ -111,6 +109,7 @@ struct SearchView: View {
                         prompt: "搜索法律名称或条文内容")
             .onChange(of: query)             { _, q in runSearch(q) }
             .onChange(of: excludeArticleNum) { _, _ in runSearch(query) }
+            .onChange(of: titleOnly)         { _, _ in runSearch(query) }
             .onChange(of: resultLimit)       { _, _ in runSearch(query) }
         }
     }
@@ -124,12 +123,10 @@ struct SearchView: View {
 
     private func highlightedText(_ text: String, query: String) -> Text {
         guard !query.isEmpty else { return Text(text) }
-        // 同时高亮原词和数字变体
         let keywords = [query, DatabaseManager.numberVariant(of: query)]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
 
-        // 找出所有匹配区间（不区分大小写）
         var ranges: [Range<String.Index>] = []
         for kw in keywords {
             var searchFrom = text.startIndex
@@ -141,7 +138,6 @@ struct SearchView: View {
         }
         guard !ranges.isEmpty else { return Text(text) }
 
-        // 合并重叠区间，按位置排序后拼成 Text
         let sorted = ranges.sorted { $0.lowerBound < $1.lowerBound }
         var merged: [Range<String.Index>] = []
         for r in sorted {
@@ -152,28 +148,24 @@ struct SearchView: View {
             }
         }
 
-        var result = Text("")
-        var cur = text.startIndex
+        var attributed = AttributedString(text)
+        let highlightColor = AppColors.shared.searchHighlight
         for r in merged {
-            if cur < r.lowerBound {
-                result = result + Text(String(text[cur..<r.lowerBound]))
-            }
-            result = result + Text(String(text[r]))
-                .foregroundColor(AppColors.shared.searchHighlight)
-                .bold()
-            cur = r.upperBound
+            let attrRange = Range(r, in: attributed)!
+            attributed[attrRange].foregroundColor = highlightColor
+            attributed[attrRange].font = .body.bold()
         }
-        if cur < text.endIndex {
-            result = result + Text(String(text[cur...]))
-        }
-        return result
+        return Text(attributed)
     }
 
     // MARK: - 选项面板
 
     private var optionsPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("屏蔽「第X条」编号匹配（仅搜正文）", isOn: $excludeArticleNum)
+            Toggle("忽略条号匹配（搜「第十条」不会仅因编号命中）", isOn: $excludeArticleNum)
+                .font(.subheadline)
+                .disabled(titleOnly)
+            Toggle("仅搜标题（只匹配法律名称，不搜条文）", isOn: $titleOnly)
                 .font(.subheadline)
             HStack {
                 Text("结果上限")
@@ -187,6 +179,7 @@ struct SearchView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 180)
             }
+            .opacity(titleOnly ? 0.4 : 1)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -202,9 +195,10 @@ struct SearchView: View {
             return
         }
         isSearching = true
-        let excl    = excludeArticleNum
-        let limit   = resultLimit
-        let variant = DatabaseManager.numberVariant(of: q)
+        let excl      = excludeArticleNum
+        let limit     = resultLimit
+        let onlyTitle = titleOnly
+        let variant   = DatabaseManager.numberVariant(of: q)
 
         Task.detached(priority: .userInitiated) {
             var titles = DatabaseManager.shared.searchByTitle(query: q)
@@ -214,13 +208,16 @@ struct SearchView: View {
                 titles += extra.filter { !seen.contains($0.id) }
             }
 
-            var articles = DatabaseManager.shared.searchContent(
-                query: q, limit: limit, excludeArticleNumber: excl)
-            if let v = variant {
-                let extra = DatabaseManager.shared.searchContent(
-                    query: v, limit: limit, excludeArticleNumber: excl)
-                let seen = Set(articles.map(\.id))
-                articles += extra.filter { !seen.contains($0.id) }
+            var articles: [SearchResult] = []
+            if !onlyTitle {
+                articles = DatabaseManager.shared.searchContent(
+                    query: q, limit: limit, excludeArticleNumber: excl)
+                if let v = variant {
+                    let extra = DatabaseManager.shared.searchContent(
+                        query: v, limit: limit, excludeArticleNumber: excl)
+                    let seen = Set(articles.map(\.id))
+                    articles += extra.filter { !seen.contains($0.id) }
+                }
             }
 
             let finalTitles   = titles

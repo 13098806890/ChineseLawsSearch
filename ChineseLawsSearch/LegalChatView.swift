@@ -238,15 +238,29 @@ private struct MessageBubble: View {
                         Spacer(minLength: 32)
                     }
                 } else {
+                    if let idx = message.subQuestionIndex {
+                        HStack(spacing: 6) {
+                            Text("问题 \(idx)")
+                                .font(.caption2).fontWeight(.semibold)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7).padding(.vertical, 2)
+                                .background(AppColors.shared.searchHighlight)
+                                .clipShape(Capsule())
+                            Spacer()
+                        }
+                    }
                     if showThinking && !message.thinkSteps.isEmpty {
-                        thinkingSection
+                        HStack {
+                            thinkingSection
+                            Spacer(minLength: 0)
+                        }
                     }
                     if !message.subQuestions.isEmpty {
                         subQuestionsView
                     }
                     if !message.text.isEmpty {
                         HStack {
-                            Text(message.text)
+                            Text(verbatim: message.text)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 10)
                                 .background(Color(.systemGray6))
@@ -296,17 +310,19 @@ private struct MessageBubble: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
                 .background(AppColors.shared.searchHighlight.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: showSteps ? 10 : 10))
             }
             if showSteps {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(message.thinkSteps.enumerated()), id: \.element.id) { idx, step in
-                        ThinkStepRow(step: step, index: idx, total: message.thinkSteps.count)
+                        ThinkStepRow(step: step, index: idx, total: message.thinkSteps.count, navigate: navigate)
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(AppColors.shared.searchHighlight.opacity(0.04))
                 .clipShape(
                     UnevenRoundedRectangle(
@@ -318,7 +334,7 @@ private struct MessageBubble: View {
         }
         .overlay(RoundedRectangle(cornerRadius: 10)
             .stroke(AppColors.shared.searchHighlight.opacity(0.18), lineWidth: 1))
-        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity)
     }
 
     private var subQuestionsView: some View {
@@ -356,6 +372,9 @@ private struct ThinkStepRow: View {
     let step: ThinkStep
     let index: Int
     let total: Int
+    let navigate: (Int, Int?) -> Void
+
+    @State private var expanded = false
 
     private var stepIcon: String {
         switch step.name {
@@ -395,15 +414,72 @@ private struct ThinkStepRow: View {
             .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(step.name)
-                    .font(.subheadline).fontWeight(.semibold)
-                    .foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                    Text(step.name)
+                        .font(.subheadline).fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                    if !step.articles.isEmpty {
+                        Button {
+                            withAnimation(.spring(duration: 0.2)) { expanded.toggle() }
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text("\(step.articles.count)条")
+                                    .font(.caption2)
+                                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 9))
+                            }
+                            .foregroundStyle(AppColors.shared.searchHighlight)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(AppColors.shared.searchHighlight.opacity(0.1))
+                            .clipShape(Capsule())
+                        }
+                    }
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(step.content.components(separatedBy: "\n").filter { !$0.isEmpty }, id: \.self) { line in
-                        Text(line)
+                        Text(verbatim: line)
                             .font(.footnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+                if expanded && !step.articles.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(step.articles) { a in
+                            Button {
+                                navigate(a.lawId, a.articleNum)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 4) {
+                                        Text(a.lawTitle)
+                                            .font(.caption2).fontWeight(.semibold)
+                                            .foregroundStyle(AppColors.shared.searchHighlight)
+                                        Text(a.articleNumber)
+                                            .font(.caption2).fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                        Spacer()
+                                        Text(a.tier)
+                                            .font(.caption2)
+                                            .padding(.horizontal, 5).padding(.vertical, 1)
+                                            .background(a.tier == "司法解释"
+                                                        ? Color.blue.opacity(0.1) : Color(.systemGray5))
+                                            .clipShape(Capsule())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(verbatim: String(a.content.prefix(120)))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .lineLimit(3)
+                                }
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(.systemBackground).opacity(0.7))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color(.systemGray4), lineWidth: 0.5))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.top, 4)
                 }
             }
             .padding(.top, 4)
@@ -487,8 +563,8 @@ struct ChatHistorySheet: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
-                                        Label(session.mode == "expert" ? "专家" : "快速",
-                                              systemImage: session.mode == "expert" ? "person.3" : "bolt")
+                                        Label(session.mode == "专家" ? "专家" : "快速",
+                                              systemImage: session.mode == "专家" ? "person.3" : "bolt")
                                             .font(.caption2)
                                             .foregroundStyle(.white)
                                             .padding(.horizontal, 7).padding(.vertical, 3)
@@ -600,52 +676,99 @@ final class LegalChatViewModel: ObservableObject {
         messages.append(ChatMessage(role: .user, text: q))
 
         isThinking = true
-        var replyMsg = ChatMessage(role: .assistant)
-        messages.append(replyMsg)
-        let replyIdx = messages.count - 1
 
         do {
             switch mode {
             case .rag:
+                var replyMsg = ChatMessage(role: .assistant)
+                messages.append(replyMsg)
+                let replyIdx = messages.count - 1
                 let citations = try await LegalRAGService.shared.ask(question: q) { [weak self] event in
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        self.handleEvent(event, replyIdx: replyIdx)
-                    }
+                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
                 }
                 await MainActor.run { messages[replyIdx].citations = citations }
 
             case .expert:
-                if isAwaitingClarification {
-                    followUpRound += 1
-                }
-                let citations = try await LegalExpertService.shared.ask(
-                    question: q,
-                    conversationHistory: conversationHistory,
-                    knownFacts: pendingFacts,
-                    followUpRound: followUpRound,
-                    maxFollowUpRounds: maxFollowUpRounds
-                ) { [weak self] event in
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        self.handleEvent(event, replyIdx: replyIdx)
+                if isAwaitingClarification { followUpRound += 1 }
+
+                // Decompose: separate shared factual preamble from individual questions
+                let decomposed = await LegalExpertService.shared.decomposeWithFacts(question: q)
+
+                if decomposed.questions.count >= 2 {
+                    let preamble = decomposed.preamble
+                    let subQs    = decomposed.questions   // just the question text, no preamble
+
+                    // Header bubble shows only question labels (not the full preamble repeated)
+                    await MainActor.run {
+                        var header = ChatMessage(role: .assistant)
+                        header.subQuestions = subQs
+                        messages.append(header)
                     }
+
+                    // Allocate N reply slots
+                    var replyIndices: [Int] = []
+                    await MainActor.run {
+                        for i in 0..<subQs.count {
+                            var msg = ChatMessage(role: .assistant)
+                            msg.subQuestionIndex = i + 1
+                            messages.append(msg)
+                            replyIndices.append(messages.count - 1)
+                        }
+                    }
+
+                    // Run all sub-questions concurrently; preamble passed as factContext
+                    try await withThrowingTaskGroup(of: (Int, [RAGCitation]).self) { group in
+                        for (i, subQ) in subQs.enumerated() {
+                            let idx = replyIndices[i]
+                            group.addTask { [weak self] in
+                                guard let self else { return (idx, []) }
+                                let citations = try await LegalExpertService.shared.askSingle(
+                                    question: subQ,
+                                    factContext: preamble,
+                                    conversationHistory: self.conversationHistory,
+                                    knownFacts: self.pendingFacts,
+                                    followUpRound: 0,
+                                    maxFollowUpRounds: 0
+                                ) { event in
+                                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: idx) }
+                                }
+                                return (idx, citations)
+                            }
+                        }
+                        for try await (idx, citations) in group {
+                            await MainActor.run { messages[idx].citations = citations }
+                        }
+                    }
+                } else {
+                    // Single question path
+                    var replyMsg = ChatMessage(role: .assistant)
+                    messages.append(replyMsg)
+                    let replyIdx = messages.count - 1
+                    let citations = try await LegalExpertService.shared.askSingle(
+                        question: q,
+                        factContext: decomposed.preamble,
+                        conversationHistory: conversationHistory,
+                        knownFacts: pendingFacts,
+                        followUpRound: followUpRound,
+                        maxFollowUpRounds: maxFollowUpRounds
+                    ) { [weak self] event in
+                        Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
+                    }
+                    await MainActor.run { messages[replyIdx].citations = citations }
                 }
-                await MainActor.run { messages[replyIdx].citations = citations }
             }
         } catch {
             await MainActor.run {
-                if messages[replyIdx].text.isEmpty {
-                    messages[replyIdx].text = error.localizedDescription
+                if let last = messages.last, last.role == .assistant, last.text.isEmpty {
+                    messages[messages.count - 1].text = error.localizedDescription
                 }
             }
         }
 
         await MainActor.run {
             isThinking = false
-            // Track conversation history for expert follow-up
             if mode == .expert {
-                let assistantText = messages[replyIdx].text
+                let assistantText = messages.last(where: { $0.role == .assistant })?.text ?? ""
                 conversationHistory.append((user: q, assistant: assistantText))
             }
             autoSave(historyStore: historyStore)
@@ -657,7 +780,8 @@ final class LegalChatViewModel: ObservableObject {
         switch event {
         case .thinkStep(let name, let content):
             messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content))
-            isThinking = false
+        case .thinkStepWithArticles(let name, let content, let articles):
+            messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content, articles: articles))
         case .subQuestions(let qs):
             messages[replyIdx].subQuestions = qs
         case .token(let t):

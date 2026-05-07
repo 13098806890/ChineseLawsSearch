@@ -1,0 +1,166 @@
+{
+  "sourceLanguage" : "zh-Hans",
+  "strings" : {
+    "" : {
+
+    },
+    "·" : {
+
+    },
+    "[%lld]" : {
+
+    },
+    "《%@》%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "《%1$@》%2$@"
+          }
+        }
+      }
+    },
+    "%@ API Key" : {
+
+    },
+    "%lld" : {
+
+    },
+    "%lld 步" : {
+
+    },
+    "%lld 轮对话" : {
+
+    },
+    "%lld条" : {
+
+    },
+    "50条" : {
+      "comment" : "Result limit option: 50"
+    },
+    "100条" : {
+      "comment" : "Result limit option: 100"
+    },
+    "200条" : {
+      "comment" : "Result limit option: 200"
+    },
+    "Key 加密存储在系统 Keychain 中。" : {
+
+    },
+    "专家" : {
+
+    },
+    "专家最多追问 %lld 轮" : {
+
+    },
+    "专家模式：召集细分专家协作分析，回答更深入，速度稍慢。" : {
+
+    },
+    "中国法律法规" : {
+
+    },
+    "仅搜标题（只匹配法律名称，不搜条文）" : {
+      "comment" : "Toggle label: search titles only"
+    },
+    "保存 Key" : {
+
+    },
+    "前往 %@ 获取 API Key →" : {
+
+    },
+    "历史记录" : {
+
+    },
+    "取消" : {
+      "comment" : "Cancel button"
+    },
+    "完成" : {
+
+    },
+    "对话" : {
+
+    },
+    "快速" : {
+
+    },
+    "快速模式：关键词检索 + 相关性过滤，适合快速查询。" : {
+
+    },
+    "忽略条号匹配（搜「第十条」不会仅因编号命中）" : {
+      "comment" : "Toggle label: ignore article number matches"
+    },
+    "思考过程" : {
+
+    },
+    "您好，我是中国法律助手" : {
+
+    },
+    "搜索" : {
+      "comment" : "Navigation title for search screen"
+    },
+    "搜索本法条文…" : {
+
+    },
+    "搜索法律名称或条文内容" : {
+      "comment" : "Search bar placeholder and empty state description"
+    },
+    "收起参考法条" : {
+
+    },
+    "显示思考过程" : {
+
+    },
+    "暂无历史记录" : {
+
+    },
+    "条文内容（前 %lld 条）" : {
+      "comment" : "Section header for article results, with count"
+    },
+    "查看参考法条（%lld条）" : {
+
+    },
+    "模型" : {
+
+    },
+    "模型选择" : {
+
+    },
+    "每专家上下文法条 %lld 条" : {
+
+    },
+    "法律名称" : {
+      "comment" : "Section header for law title results"
+    },
+    "法律咨询" : {
+
+    },
+    "粘贴 API Key…" : {
+
+    },
+    "结果上限" : {
+      "comment" : "Label for result count limit picker"
+    },
+    "设置" : {
+
+    },
+    "请回答专家的问题…" : {
+
+    },
+    "请输入您的法律问题…" : {
+
+    },
+    "输入关键词" : {
+      "comment" : "Placeholder title when search box is empty"
+    },
+    "选择一部法律" : {
+
+    },
+    "问题 %lld" : {
+
+    },
+    "问题已拆分为 %lld 个子问题" : {
+
+    }
+  },
+  "version" : "1.0"
+}

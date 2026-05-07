@@ -16,6 +16,7 @@ struct ChatMessage: Identifiable, Equatable {
     var citations: [RAGCitation] = []
     var subQuestions: [String]   = []
     var isClarifying: Bool       = false  // expert follow-up question bubble
+    var subQuestionIndex: Int?   = nil    // 1-based index when part of parallel sub-questions
 
     init(role: Role, text: String = "", isClarifying: Bool = false) {
         self.role = role
@@ -28,6 +29,7 @@ struct ThinkStep: Identifiable, Equatable {
     let id    = UUID()
     let name:    String
     let content: String
+    var articles: [RAGCitation] = []
 }
 
 struct RAGCitation: Identifiable, Equatable {
@@ -43,6 +45,7 @@ struct RAGCitation: Identifiable, Equatable {
 
 enum RAGEvent {
     case thinkStep(name: String, content: String)
+    case thinkStepWithArticles(name: String, content: String, articles: [RAGCitation])
     case subQuestions([String])
     case token(String)
     case clarifyingQuestion(String)   // expert asking user for more info
@@ -111,8 +114,14 @@ final class LegalRAGService {
             articles = searchLayered(keywords: expanded, domains: allDomains, hintLaws: hintLaws)
         }
         let pinnedCount = (articles.laws + articles.interps).filter { $0.pinned }.count
-        onEvent(.thinkStep(name: "检索条文",
-                           content: "找到 \(articles.laws.count) 条法律原文、\(articles.interps.count) 条司法解释（含 \(pinnedCount) 条优先命中）"))
+        let retrievedCitations = (articles.laws + articles.interps).map {
+            RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
+                        articleNum: $0.articleNum, category: $0.category, content: $0.content)
+        }
+        onEvent(.thinkStepWithArticles(
+            name: "检索条文",
+            content: "找到 \(articles.laws.count) 条法律原文、\(articles.interps.count) 条司法解释（含 \(pinnedCount) 条优先命中）",
+            articles: retrievedCitations))
 
         // Step 4.5: 相关性过滤
         let beforeTotal = articles.laws.count + articles.interps.count
@@ -122,7 +131,8 @@ final class LegalRAGService {
                            content: "保留 \(afterTotal) 条（过滤 \(beforeTotal - afterTotal) 条）"))
 
         // Step 5: 生成回答（流式）
-        let context = buildContext(articles)
+        let maxCtx  = UserDefaults.standard.integer(forKey: "maxContextArticles")
+        let context = buildContext(articles, max: maxCtx > 0 ? maxCtx : 20)
         guard !context.isEmpty else {
             onEvent(.token("未检索到相关条文，无法回答。"))
             return []
@@ -145,7 +155,8 @@ final class LegalRAGService {
         let allItems   = articles.laws + articles.interps
         let pinned     = allItems.filter { $0.pinned }
         let others     = allItems.filter { !$0.pinned }
-        let candidates = Array((pinned + others).prefix(10))
+        let maxCit     = UserDefaults.standard.integer(forKey: "maxCitations")
+        let candidates = maxCit > 0 ? Array((pinned + others).prefix(maxCit)) : (pinned + others)
         let cited      = await filterCitations(question: question, candidates: candidates)
         onEvent(.thinkStep(name: "参考法条筛选",
                            content: "从 \(candidates.count) 条候选中筛出 \(cited.count) 条直接相关法条"))
@@ -340,6 +351,7 @@ final class LegalRAGService {
     你是中国法律助手。严格根据提供的法律条文回答问题。
     只输出结论文字，不要标题，不要法条列表。语言通俗易懂，可提及具体赔偿倍数。
     不得出现"依据第X条"等引用格式。
+    严禁使用任何Markdown格式：不得使用**加粗**、#标题、-列表符号、---分隔线等。用中文顿号、书名号、序号（一、二、三）代替。
 
     诉讼通用知识（无需法条支撑）：
     - 合同纠纷：被告住所地或合同履行地法院

@@ -1,0 +1,103 @@
+// FamilyExperts.swift — 婚姻家庭编专家（结婚、离婚、抚养、收养）
+
+import Foundation
+
+// 婚姻家庭编章节 IDs
+private let chMarriageGeneral: [Int] = [35595]  // 第一章 一般规定
+private let chMarriage: [Int]        = [35602]  // 第二章 结婚
+private let chFamilyRel: [Int]       = [35612]  // 第三章 家庭关系
+private let chDivorce: [Int]         = [35636]  // 第四章 离婚
+private let chAdoption: [Int]        = [35654]  // 第五章 收养
+
+let divorcePropertyExpert = SubExpert(
+    name: "离婚财产分割专家",
+    domain: "离婚、夫妻共同财产分割、婚前财产、彩礼返还、债务分担",
+    requiredInfo: [
+        RequiredInfo(field: "财产构成",
+                     question: "主要财产有哪些（房产/存款/股权/车辆）？哪些是婚前取得，哪些婚后购置？",
+                     regexHint: "房产|房屋|存款|股权|车辆|婚前|婚后|共同|个人财产"),
+        RequiredInfo(field: "离婚方式",
+                     question: "是协议离婚还是诉讼离婚？是否已到民政局登记？",
+                     regexHint: "协议离婚|诉讼离婚|起诉|民政局|登记|法院|离婚诉讼"),
+        RequiredInfo(field: "过错情况",
+                     question: "是否存在过错行为（出轨/家庭暴力/遗弃/赌博/吸毒）？",
+                     regexHint: "出轨|外遇|家暴|家庭暴力|遗弃|赌博|吸毒|重婚|同居"),
+        RequiredInfo(field: "彩礼情况",
+                     question: "是否有彩礼？金额？婚姻是否已实际共同生活？",
+                     regexHint: "彩礼|聘礼|嫁妆|彩金|返还|共同生活"),
+    ],
+    lawTitles: ["中华人民共和国民法典"],
+    chapterIdHints: chMarriageGeneral + chMarriage + chFamilyRel + chDivorce,
+    ftsDomains: ["民法典"],
+    ftsCategories: ["法律", "司法解释"],
+    ftsKeywordsExtra: ["夫妻共同财产", "婚前财产", "财产分割", "彩礼返还", "离婚损害赔偿",
+                       "冷静期", "协议离婚登记", "婚姻家庭编司法解释"],
+    answerTemplate: """
+    你是离婚财产分割细分专家。基于以下法条，以第三方视角分析：
+    1. 夫妻共同财产vs个人财产的认定（婚后所得原则，婚前财产的保护）
+    2. 有过错方少分原则：过错行为认定（出轨/家暴）对财产分割的影响
+    3. 房产分割特殊情形：按揭房/婚前一方贷款婚后共还/父母出资购房
+    4. 彩礼返还条件（未办婚礼/未共同生活/生活困难）
+    5. 离婚损害赔偿：过错方赔偿的条件和范围
+    引用婚姻家庭编司法解释（一）（二）的具体条文。
+    """
+)
+
+let childCustodyExpert = SubExpert(
+    name: "子女抚养权专家",
+    domain: "离婚后子女抚养权归属、抚养费、探视权、变更抚养关系",
+    requiredInfo: [
+        RequiredInfo(field: "子女年龄",
+                     question: "子女现在几岁？是否不满两周岁？",
+                     regexHint: #"\d+岁|两岁|2岁|未满|不满|哺乳期|幼儿|青少年"#),
+        RequiredInfo(field: "双方情况",
+                     question: "双方的工作收入状况？居住地？子女目前随哪方生活？",
+                     regexHint: "收入|工作|稳定|居住|随母|随父|同住|异地"),
+        RequiredInfo(field: "抚养费",
+                     question: "是否已有抚养费约定？对方是否拒绝支付？",
+                     regexHint: "抚养费|生活费|教育费|拒绝|不付|欠费|增加"),
+    ],
+    lawTitles: ["中华人民共和国民法典"],
+    chapterIdHints: chFamilyRel + chDivorce,
+    ftsDomains: ["民法典"],
+    ftsCategories: ["法律", "司法解释"],
+    ftsKeywordsExtra: ["子女抚养权", "抚养费标准", "探视权", "变更抚养关系",
+                       "不满两周岁随母原则", "10周岁子女意见"],
+    answerTemplate: """
+    你是子女抚养权细分专家。基于以下法条，以第三方视角分析：
+    1. 抚养权归属原则：不满2周岁随母；2-8周岁双方协议+法院酌情；8周岁以上参考子女意见
+    2. 抚养费标准：月收入的20%-30%（一个子女），上限50%，可结合当地生活水平调整
+    3. 探视权的保障：拒绝探视的法律后果和强制执行方式
+    4. 变更抚养关系：变更条件（抚养方不尽责/严重损害子女利益）
+    引用婚姻家庭编司法解释（一）的具体条文和参考标准。
+    """
+)
+
+let adoptionExpert = SubExpert(
+    name: "收养法专家",
+    domain: "收养条件、收养登记、收养效力、解除收养关系、事实收养",
+    requiredInfo: [
+        RequiredInfo(field: "收养人情况",
+                     question: "收养方是什么情况（年龄/有无子女/是否已婚）？",
+                     regexHint: "收养人|年龄|无子女|已婚|未婚|单身|年满"),
+        RequiredInfo(field: "被收养人情况",
+                     question: "被收养人是孤儿、弃婴还是父母无力抚养的未成年人？",
+                     regexHint: "孤儿|弃婴|弃儿|亲生父母|无力抚养|福利机构|社会散居"),
+        RequiredInfo(field: "是否登记",
+                     question: "收养关系是否已向民政局办理登记？还是事实收养？",
+                     regexHint: "登记|民政局|收养登记|事实收养|没有登记|未登记"),
+    ],
+    lawTitles: ["中华人民共和国民法典"],
+    chapterIdHints: chAdoption,
+    ftsDomains: ["民法典"],
+    ftsCategories: ["法律", "司法解释"],
+    ftsKeywordsExtra: ["收养条件", "收养登记", "事实收养", "解除收养", "继承权"],
+    answerTemplate: """
+    你是收养法细分专家。基于以下法条，以第三方视角分析：
+    1. 收养成立要件：收养人条件/被收养人条件/登记程序
+    2. 事实收养的效力认定（未登记但实际形成抚养关系）
+    3. 解除收养关系的法定条件和后果（继承/抚养义务的变化）
+    4. 收养与继承的关系：养子女的继承权，亲生父母的赡养义务是否消灭
+    引用具体条文，区分依法登记收养与事实收养的不同法律后果。
+    """
+)

@@ -19,7 +19,43 @@ private struct ArticleBag {
 final class LegalExpertService {
     static let shared = LegalExpertService()
 
+    /// Result of decomposing a multi-question input.
+    struct DecomposedQuestion {
+        let preamble:  String    // shared factual context (empty if none)
+        let questions: [String]  // individual questions (empty = no split needed)
+    }
+
     // MARK: - Public entry point
+
+    /// Decompose a question into preamble + individual sub-questions.
+    func decomposeWithFacts(question: String) async -> DecomposedQuestion {
+        await decomposeQuestion(question)
+    }
+
+    /// Legacy shim — returns only question strings (preamble absorbed into each).
+    func decompose(question: String) async -> [String] {
+        let d = await decomposeQuestion(question)
+        if d.questions.isEmpty { return [] }
+        return d.questions.map { q in
+            d.preamble.isEmpty ? q : "\(d.preamble)\n\n\(q)"
+        }
+    }
+
+    /// Analyze a single (already-decomposed) question — no further decomposition.
+    func askSingle(question: String,
+                   factContext: String = "",
+                   conversationHistory: [(user: String, assistant: String)] = [],
+                   knownFacts: [String: String] = [:],
+                   followUpRound: Int = 0,
+                   maxFollowUpRounds: Int = 3,
+                   onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+        try await runPipeline(question: question, factContext: factContext, subQs: [],
+                              conversationHistory: conversationHistory,
+                              knownFacts: knownFacts,
+                              followUpRound: followUpRound,
+                              maxFollowUpRounds: maxFollowUpRounds,
+                              onEvent: onEvent)
+    }
 
     /// Main entry — also called by LegalChatViewModel.send() as the RAGService-compatible overload.
     func ask(question: String,
@@ -35,50 +71,66 @@ final class LegalExpertService {
              followUpRound: Int,
              maxFollowUpRounds: Int,
              onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-
-        // Step 0: 拆分问题
-        let subQs = await decomposeQuestion(question)
-        onEvent(.thinkStep(name: "拆分问题",
-                           content: subQs.isEmpty
-                               ? "问题无需拆分，直接分析。"
-                               : subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")))
+        let decomposed = await decomposeQuestion(question)
+        let subQs = decomposed.questions
+        let displayLines = subQs.isEmpty
+            ? "问题无需拆分，直接分析。"
+            : subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")
+        onEvent(.thinkStep(name: "拆分问题", content: displayLines))
         if !subQs.isEmpty { onEvent(.subQuestions(subQs)) }
+        return try await runPipeline(question: question, factContext: decomposed.preamble, subQs: subQs,
+                                     conversationHistory: conversationHistory,
+                                     knownFacts: knownFacts,
+                                     followUpRound: followUpRound,
+                                     maxFollowUpRounds: maxFollowUpRounds,
+                                     onEvent: onEvent)
+    }
 
-        // 用于路由和检索的合并文本（原问题 + 子问题）
-        let enrichedQuestion = subQs.isEmpty ? question : question + "\n" + subQs.joined(separator: "\n")
+    // MARK: - Core pipeline (shared by ask and askSingle)
 
-        // Step 1: Route to expert groups
-        let groupNames = await identifyGroups(question: enrichedQuestion)
-        onEvent(.thinkStep(name: "专家路由",
-                           content: "召集专家组：\(groupNames.joined(separator: "、"))"))
+    private func runPipeline(question: String,
+                              factContext: String,
+                              subQs: [String],
+                              conversationHistory: [(user: String, assistant: String)],
+                              knownFacts: [String: String],
+                              followUpRound: Int,
+                              maxFollowUpRounds: Int,
+                              onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
-        let groups = groupNames.compactMap { allExpertGroups[$0] }
+        let questionsToAnalyze = subQs.isEmpty ? [question] : subQs
 
-        // Step 2: Each group selects sub-experts
-        var groupToExperts: [String: [SubExpert]] = [:]
+        // Step 1: 递进式法律定性 + 按需路由（每个子问题独立定性）
+        var questionAnalyses: [QuestionAnalysis] = []
         var allSelectedExperts: [SubExpert] = []
+        var expertToQuestions:  [String: [String]] = [:]
         var seenNames = Set<String>()
 
-        for group in groups {
-            let roughFacts = autoExtractFacts(question: enrichedQuestion, experts: group.subExperts)
-            let selected = await identifySubExperts(group: group, question: enrichedQuestion, knownFacts: roughFacts)
-            groupToExperts[group.name] = selected
-            for e in selected where seenNames.insert(e.name).inserted {
-                allSelectedExperts.append(e)
+        for q in questionsToAnalyze {
+            let analysis = await characterizeAndRoute(question: q, knownFacts: [:])
+            questionAnalyses.append(analysis)
+            for e in analysis.experts {
+                expertToQuestions[e.name, default: []].append(q)
+                if seenNames.insert(e.name).inserted { allSelectedExperts.append(e) }
             }
         }
 
-        let expertNames = allSelectedExperts.map { $0.name }
+        let charSummary = questionAnalyses.enumerated().map { i, a in
+            questionsToAnalyze.count > 1
+                ? "【子问题 \(i+1)】\n\(a.characterization)"
+                : a.characterization
+        }.joined(separator: "\n\n")
+        onEvent(.thinkStep(name: "法律定性", content: charSummary))
         onEvent(.thinkStep(name: "细分专家",
-                           content: expertNames.joined(separator: "、")))
+                           content: allSelectedExperts.map { $0.name }.joined(separator: "、")))
 
-        // Step 3: Auto-extract facts from all conversation messages
-        let allUserText = ([question] + conversationHistory.map { $0.user + " " + $0.assistant }).joined(separator: "\n")
+        // Step 2: 从案情背景 + 对话历史提取事实（优先从案情提取，不足才追问用户）
+        let allUserText = ([factContext, question] + conversationHistory.map { $0.user + " " + $0.assistant })
+            .filter { !$0.isEmpty }.joined(separator: "\n")
         var mergedFacts = autoExtractFacts(question: allUserText, experts: allSelectedExperts)
         for (k, v) in knownFacts { mergedFacts[k] = v }
 
-        // Follow-up: check for missing critical info when allowed
-        if followUpRound < maxFollowUpRounds {
+        // 追问缺失的事实信息（仅当问题未拆分时才追问——多问题情形直接分析）
+        if followUpRound < maxFollowUpRounds && subQs.isEmpty {
             let missingInfos = allSelectedExperts.flatMap { expert in
                 expert.requiredInfo.filter { info in
                     mergedFacts[info.field] == nil &&
@@ -91,11 +143,9 @@ final class LegalExpertService {
                 let isLastRound = followUpRound == maxFollowUpRounds - 1
                 let questionText: String
                 if isLastRound || missingInfos.count == 1 {
-                    // Last round or only one question: list all at once
                     let lines = missingInfos.enumerated().map { "\($0.offset + 1). \($0.element.question)" }
                     questionText = "为了提供更准确的分析，请补充以下事实信息：\n" + lines.joined(separator: "\n")
                 } else {
-                    // Ask the single most important missing field
                     questionText = missingInfos[0].question
                 }
                 onEvent(.clarifyingQuestion(questionText))
@@ -105,45 +155,70 @@ final class LegalExpertService {
 
         let knownFacts = mergedFacts
 
-        // Step 4: Each sub-expert retrieves + analyzes
+        // Step 3: 每个专家检索并分析其负责的子问题
         var expertArticles: [String: [DatabaseManager.RAGArticle]] = [:]
         var expertAnswers:  [String: String] = [:]
 
         for expert in allSelectedExperts {
-            var articles = retrieveForExpert(expert: expert, question: enrichedQuestion, facts: knownFacts)
+            let assignedQs   = expertToQuestions[expert.name] ?? [question]
+            let questionText = assignedQs.count == 1 ? assignedQs[0] : assignedQs.joined(separator: "\n")
+            // Expert gets: shared factual preamble (if any) + question text
+            let expertContext = factContext.isEmpty ? questionText : "\(factContext)\n\n\(questionText)"
+
+            var articles = retrieveForExpert(expert: expert, question: expertContext, facts: knownFacts)
             articles = expandReferences(articles: articles)
-            articles = filterArticles(question: enrichedQuestion, articles: articles)
+            articles = filterArticles(question: expertContext, articles: articles)
             expertArticles[expert.name] = articles
 
-            let answer = try await analyzeWithExpert(expert: expert, question: enrichedQuestion,
+            let answer = try await analyzeWithExpert(expert: expert, question: expertContext,
                                                      facts: knownFacts, articles: articles)
             expertAnswers[expert.name] = answer
         }
 
         let totalArticleCount = expertArticles.values.map { $0.count }.reduce(0, +)
-        onEvent(.thinkStep(name: "专家检索",
-                           content: "共检索 \(totalArticleCount) 条条文（\(allSelectedExperts.count) 位专家）"))
+        let allArticlesForDisplay = deduplicateArticles(expertArticles).map {
+            RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
+                        articleNum: $0.articleNum, category: $0.category, content: $0.content)
+        }
+        onEvent(.thinkStepWithArticles(
+            name: "专家检索",
+            content: "共检索 \(totalArticleCount) 条条文（\(allSelectedExperts.count) 位专家）",
+            articles: allArticlesForDisplay))
 
-        // Step 5: Group synthesis
+        // Step 4: 按专家组合并同组专家的分析
+        var expertGroupMap: [String: ExpertGroup] = [:]
+        for group in allExpertGroups.values {
+            for e in group.subExperts { expertGroupMap[e.name] = group }
+        }
+        var groupToExpertNames: [String: [String]] = [:]
+        for expert in allSelectedExperts {
+            if let g = expertGroupMap[expert.name] {
+                groupToExpertNames[g.name, default: []].append(expert.name)
+            }
+        }
+
         var groupAnswers: [String: String] = [:]
-        for group in groups {
-            let experts = groupToExperts[group.name] ?? []
-            let subAns = experts.compactMap { e -> (String, String)? in
-                guard let ans = expertAnswers[e.name] else { return nil }
-                return (e.name, ans)
+        for (groupName, expertNames) in groupToExpertNames {
+            guard let group = allExpertGroups[groupName] else { continue }
+            let subAns = expertNames.compactMap { name -> (String, String)? in
+                guard let ans = expertAnswers[name] else { return nil }
+                return (name, ans)
             }
             guard !subAns.isEmpty else { continue }
             if subAns.count == 1 {
-                groupAnswers[group.name] = subAns[0].1
+                groupAnswers[groupName] = subAns[0].1
             } else {
-                let synthesis = try await synthesizeGroup(group: group, subAnswers: Dictionary(uniqueKeysWithValues: subAns), question: question)
-                groupAnswers[group.name] = synthesis
+                let synthesis = try await synthesizeGroup(
+                    group: group,
+                    subAnswers: Dictionary(uniqueKeysWithValues: subAns),
+                    question: question)
+                groupAnswers[groupName] = synthesis
             }
         }
         onEvent(.thinkStep(name: "专家组综合",
                            content: groupAnswers.keys.joined(separator: "、") + " 已完成分析"))
 
-        // Step 6: Coordinator final answer (streamed)
+        // Step 5: Coordinator 最终回答（流式，同时收集全文用于法条匹配）
         let allArticlesFlat = deduplicateArticles(expertArticles)
         let context = buildGroupContext(groupAnswers: groupAnswers, articles: allArticlesFlat)
         let systemPrompt = coordinatorSystemPrompt
@@ -155,18 +230,21 @@ final class LegalExpertService {
         }
         userMsg += context
 
+        var answerText = ""
         try await LLMProviderRegistry.current.streamChat(
             messages: [["role": "system", "content": systemPrompt],
                        ["role": "user",   "content": userMsg]],
             temperature: 0.2,
-            onToken: { onEvent(.token($0)) }
+            onToken: { token in
+                answerText += token
+                onEvent(.token(token))
+            }
         )
 
-        // Step 7: Citation filter
-        let candidates = Array(allArticlesFlat.prefix(12))
-        let cited = try await filterCitations(question: question, candidates: candidates)
+        // Step 6: 参考法条 — 从答案正文中提取引用的条文编号，匹配已检索到的条文
+        let cited = citationsFromAnswer(answerText: answerText, candidates: allArticlesFlat)
         onEvent(.thinkStep(name: "参考法条筛选",
-                           content: "从 \(candidates.count) 条候选中筛出 \(cited.count) 条直接相关法条"))
+                           content: "从答案正文引用中提取 \(cited.count) 条直接引用的法条"))
 
         return cited.map {
             RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
@@ -176,62 +254,88 @@ final class LegalExpertService {
         }
     }
 
-    // MARK: - Step 1: Route
+    // MARK: - 法律定性 + 递进路由
 
-    private func identifyGroups(question: String) async -> [String] {
-        let groupDesc = allExpertGroups.map { "- \($0.key)：\($0.value.description)" }.joined(separator: "\n")
-        let system = """
-        你是中国法律问题协调员。判断以下问题应由哪些专家组处理。
-        可用专家组：
-        \(groupDesc)
-        规则：
-        - 可以选多个专家组（如劳动争议诉讼 → 劳动法专家组 + 诉讼专家组）
-        - 劳动关系问题（工资/解雇/加班/工伤/劳动合同）→ 劳动法专家组，不要选经济法专家组
-        - 经济法专家组仅用于消费者权益、网购、产品质量、食品安全、公司注册等非劳动关系场景
-        - 宁可多选，不要漏选
-        只输出 JSON 数组，包含专家组名称。不要其他内容。示例：["民法专家组", "诉讼专家组"]
-        """
-        guard let raw = try? await chat(system: system, user: "问题：\(question)"),
-              let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
-              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String]
-        else { return keywordRoute(question: question) }
-        let valid = arr.filter { allExpertGroups[$0] != nil }
-        return valid.isEmpty ? keywordRoute(question: question) : valid
+    private struct QuestionAnalysis {
+        let question: String
+        let characterization: String   // 多层定性描述
+        let experts: [SubExpert]
     }
 
-    private func keywordRoute(question: String) -> [String] {
-        var matched: [String] = []
-        for (name, group) in allExpertGroups {
-            if group.routingKeywords.contains(where: { question.contains($0) }) {
-                matched.append(name)
-            }
+    private func characterizeAndRoute(question: String,
+                                       knownFacts: [String: String]) async -> QuestionAnalysis {
+        var nameToExpert: [String: SubExpert] = [:]
+        for group in allExpertGroups.values {
+            for e in group.subExperts { nameToExpert[e.name] = e }
         }
-        return matched.isEmpty ? Array(allExpertGroups.keys.prefix(2)) : matched
-    }
+        let allExpertDesc = nameToExpert.values
+            .map { "- \($0.name)：\($0.domain)" }
+            .sorted().joined(separator: "\n")
 
-    // MARK: - Step 2: Sub-experts
-
-    private func identifySubExperts(group: ExpertGroup, question: String,
-                                     knownFacts: [String: String]) async -> [SubExpert] {
-        let expertDesc = group.subExperts.map { "- \($0.name)：\($0.domain)" }.joined(separator: "\n")
         let system = """
-        你是\(group.name)。根据用户问题，从以下细分专家中选出需要参与分析的专家。
-        细分专家：
-        \(expertDesc)
-        规则：只选与问题直接相关的专家（1-3个为宜）。
-        只输出 JSON 数组，包含专家名称。不要其他内容。
+        你是中国法律问题定性专家。对法律问题进行递进式定性分析，然后选出需要的细分专家。
+
+        定性步骤（递进，每步基于上一步结论）：
+        1. 法律关系性质：违约 / 侵权 / 行政 / 刑事 / 混合 / 公司法律关系 / 劳动关系 等
+        2. 具体类型：基于第1步细化（如违约→买卖合同；侵权→名誉权；混合→违约侵权竞合）
+        3. 程序问题：是否涉及诉讼管辖/仲裁/证据/执行（如有，加入程序专家）
+
+        输出 JSON（严格格式，不要其他内容）：
+        {
+          "layers": ["第1步：...", "第2步：...", "第3步：...（无则省略）"],
+          "experts": ["细分专家名1", "细分专家名2"]
+        }
+
+        可用细分专家：
+        \(allExpertDesc)
+
+        选专家规则：
+        - 只选与问题核心法律关系直接相关的（通常1-3个，最多4个）
+        - 违约→合同法专家；侵权→侵权责任专家；竞合→两者都选
+        - 涉及公司股权/担保/决议→公司商事专家
+        - 有程序问题→对应程序专家（民事/刑事/行政）
+        - 不要因关键词相似选入实际无关的专家
         """
+
         var ctx = "问题：\(question)"
         if !knownFacts.isEmpty {
-            ctx += "\n已知信息：" + knownFacts.map { "\($0.key)=\($0.value)" }.joined(separator: "；")
+            ctx += "\n已知事实：" + knownFacts.map { "\($0.key)=\($0.value)" }.joined(separator: "；")
         }
+
         guard let raw  = try? await chat(system: system, user: ctx),
-              let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
-              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String]
-        else { return Array(group.subExperts.prefix(2)) }
-        let nameMap = Dictionary(uniqueKeysWithValues: group.subExperts.map { ($0.name, $0) })
-        let selected = arr.compactMap { nameMap[$0] }
-        return selected.isEmpty ? Array(group.subExperts.prefix(1)) : selected
+              let data = extractJSON(raw, open: "{", close: "}").data(using: .utf8),
+              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return fallbackAnalysis(question: question)
+        }
+
+        let layers      = obj["layers"] as? [String] ?? []
+        let expertNames = obj["experts"] as? [String] ?? []
+        let charText    = layers.isEmpty ? "（定性失败）" : layers.joined(separator: "\n")
+        let selected    = expertNames.compactMap { nameToExpert[$0] }
+
+        return QuestionAnalysis(
+            question: question,
+            characterization: charText,
+            experts: selected.isEmpty ? fallbackAnalysis(question: question).experts : selected
+        )
+    }
+
+    private func fallbackAnalysis(question: String) -> QuestionAnalysis {
+        var matched: [SubExpert] = []
+        var seen = Set<String>()
+        for group in allExpertGroups.values {
+            if group.routingKeywords.contains(where: { question.contains($0) }) {
+                for e in group.subExperts.prefix(1) {
+                    if seen.insert(e.name).inserted { matched.append(e) }
+                }
+            }
+        }
+        return QuestionAnalysis(
+            question: question,
+            characterization: "（关键词兜底路由）",
+            experts: matched.isEmpty ? [contractGeneralExpert] : matched
+        )
     }
 
     // MARK: - Info extraction
@@ -361,8 +465,8 @@ final class LegalExpertService {
     private func filterArticles(question: String,
                                 articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
         guard articles.count > 5 else { return articles }
-        // Just cap at 20 on iOS to avoid context blow-up; full LLM filter in analyzeWithExpert
-        return Array(articles.prefix(20))
+        let cap = UserDefaults.standard.integer(forKey: "maxContextArticles")
+        return Array(articles.prefix(cap > 0 ? cap : 20))
     }
 
     // MARK: - Step 4b: Expert analysis
@@ -373,8 +477,10 @@ final class LegalExpertService {
         if articles.isEmpty {
             return "（\(expert.name)：未检索到相关条文，无法分析。）"
         }
-        let lawArts    = Array(articles.filter { $0.category != "司法解释" }.prefix(10))
-        let interpArts = Array(articles.filter { $0.category == "司法解释" }.prefix(5))
+        let cap      = UserDefaults.standard.integer(forKey: "maxContextArticles")
+        let ctxMax   = cap > 0 ? cap : 20
+        let lawArts    = Array(articles.filter { $0.category != "司法解释" }.prefix(ctxMax * 2 / 3 + 1))
+        let interpArts = Array(articles.filter { $0.category == "司法解释" }.prefix(ctxMax / 3 + 1))
 
         var parts: [String] = []
         if !lawArts.isEmpty {
@@ -398,6 +504,7 @@ final class LegalExpertService {
     private let groupSynthSystem = """
     你是中国法律专家组负责人。将以下细分专家的分析整合成连贯的专业意见。
     要求：去除重复内容，保留最重要的结论；突出条文引用（保留《XXX》第X条格式）；总长度不超过400字。
+    严禁使用任何Markdown格式，不得使用**加粗**、#标题、-列表符号等。用中文序号和标点代替。
     直接输出整合后的分析，不要说"根据以上分析"等套话。
     """
 
@@ -417,116 +524,170 @@ final class LegalExpertService {
     - 使用第三方客观视角，不预设提问者是哪方当事人（可能是当事人本人、家属、律师或第三方）
     - 法律判断（谁违约、谁承担责任、行为是否合法）由你独立作出，不要推给提问者判断
     格式要求：
-    1. 开头直接给出各问题的核心结论（逐条列出）
-    2. 按问题或专家组分段陈述详细法律分析
-    3. 末尾列出"⚖️ 引用法条"（格式：• 《法律名》第X条 — 摘要）
+    1. 开头直接给出核心结论
+    2. 按问题或专家组分段陈述详细法律分析，在分析中直接引用条文编号（如"依据第X条"）
+    3. 不要在末尾单独列出"引用法条"清单，引用已在分析中体现
     4. 如涉及诉讼，注明应去哪个法院
-    5. 总长度500-900字
+    5. 总长度400-800字
+    严禁使用任何Markdown格式：不得使用**加粗**、#标题、-列表符号、---分隔线等。用中文序号（一、二、三）、顿号、书名号代替。
     不要说"根据以上"、"综上所述"等空话。直接给结论。
     """ }
 
     private func buildGroupContext(groupAnswers: [String: String],
                                    articles: [DatabaseManager.RAGArticle]) -> String {
         let groupText = groupAnswers.map { "【\($0.key)】\n\($0.value)" }.joined(separator: "\n\n")
+        let citeCap = UserDefaults.standard.integer(forKey: "maxCitations")
         var seenCites = Set<String>()
         let citeLines = articles.compactMap { a -> String? in
             let key = "\(a.lawTitle)_\(a.articleNumber)"
             guard !a.articleNumber.isEmpty, seenCites.insert(key).inserted else { return nil }
             return "• 《\(a.lawTitle)》\(a.articleNumber) — \(String(a.content.prefix(60)))..."
-        }.prefix(15)
+        }.prefix(citeCap > 0 ? citeCap : 15)
         return "各专家组分析：\n\(groupText)\n\n检索到的法条（供引用）：\n\(citeLines.joined(separator: "\n"))"
     }
 
-    // MARK: - Citation filter
+    // MARK: - Citation extraction
 
-    private func filterCitations(question: String,
-                                  candidates: [DatabaseManager.RAGArticle]) async -> [DatabaseManager.RAGArticle] {
-        let prompt = """
-        你是中国法律助手。判断以下法律条文是否应作为参考法条展示给用户。
-        Y：条文规定用户可主张的权利/赔偿/合同解除权，或规定对方义务/违约后果。
-        N：行政监管要求、定义性条款、与用户问题无直接关系的条文。
-        只输出 Y 或 N。
-        """
-        var kept: [DatabaseManager.RAGArticle] = []
-        for a in candidates {
-            let user = "用户问题：\(question)\n\n法律条文：《\(a.lawTitle)》\(a.articleNumber)：\(String(a.content.prefix(300)))"
-            let v = (try? await chat(system: prompt, user: user))?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? "Y"
-            if v.hasPrefix("Y") { kept.append(a) }
+    // Extract articles cited in the answer text.
+    // Strategy: parse《LawName》第X条 and bare 第X条; match against candidates first,
+    // then fall back to DB lookup so citations always match what the LLM actually wrote.
+    private func citationsFromAnswer(answerText: String,
+                                     candidates: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
+        let db = DatabaseManager.shared
+
+        // Pattern 1: 《法律名》第X条
+        let namedPattern = try? NSRegularExpression(
+            pattern: #"《([^》]{2,30})》第([一二三四五六七八九十百千零\d]+)条"#)
+        // Pattern 2: bare 第X条
+        let barePattern  = try? NSRegularExpression(
+            pattern: #"第([一二三四五六七八九十百千零\d]+)条"#)
+
+        let ns = answerText as NSString
+        let range = NSRange(location: 0, length: ns.length)
+
+        // Build a fast lookup from candidates by articleNum
+        var candidateByNum: [Int: DatabaseManager.RAGArticle] = [:]
+        for a in candidates { if let n = a.articleNum { candidateByNum[n] = a } }
+
+        // Collect law_ids from candidates for fallback DB search
+        let candidateLawIds = Array(Set(candidates.map { $0.lawId }).filter { $0 > 0 })
+
+        var seenNodeIds = Set<Int>()
+        var result: [DatabaseManager.RAGArticle] = []
+
+        func add(_ a: DatabaseManager.RAGArticle) {
+            guard seenNodeIds.insert(a.nodeId).inserted else { return }
+            result.append(a)
         }
-        return kept
+
+        // Named citations — highest confidence
+        if let re = namedPattern {
+            for m in re.matches(in: answerText, range: range) {
+                let lawFrag = ns.substring(with: m.range(at: 1))
+                let numStr  = ns.substring(with: m.range(at: 2))
+                guard let num = chineseOrArabicToInt(numStr) else { continue }
+                if let a = candidateByNum[num], a.lawTitle.contains(lawFrag) {
+                    add(a)
+                } else {
+                    // DB lookup by law name fragment + article number
+                    let artNum = "第\(numStr)条"
+                    db.articlesByNumber(articleNumber: artNum, lawTitleFragment: lawFrag).forEach { add($0) }
+                }
+            }
+        }
+
+        // Bare citations — use candidates first, then DB with law_ids scope
+        if let re = barePattern {
+            for m in re.matches(in: answerText, range: range) {
+                let numStr = ns.substring(with: m.range(at: 1))
+                guard let num = chineseOrArabicToInt(numStr) else { continue }
+                if let a = candidateByNum[num] {
+                    add(a)
+                } else if !candidateLawIds.isEmpty {
+                    let artNum = "第\(numStr)条"
+                    db.articlesByNumber(articleNumber: artNum, lawIds: candidateLawIds).forEach { add($0) }
+                }
+            }
+        }
+
+        return result.isEmpty ? Array(candidates.prefix(4)) : result
     }
+
+    private func chineseOrArabicToInt(_ s: String) -> Int? {
+        if let n = Int(s) { return n }
+        let map: [Character: Int] = ["零":0,"一":1,"二":2,"三":3,"四":4,"五":5,
+                                      "六":6,"七":7,"八":8,"九":9,"十":10,
+                                      "百":100,"千":1000]
+        var result = 0; var current = 0
+        for ch in s {
+            guard let v = map[ch] else { return nil }
+            if v >= 10 {
+                if current == 0 { current = 1 }
+                result += current * v; current = 0
+            } else { current = v }
+        }
+        return result + current
+    }
+
 
     // MARK: - Helpers
 
-    private func decomposeQuestion(_ question: String) async -> [String] {
-        // Extract explicit background preamble + numbered items if present,
-        // then let LLM decide whether the items span different legal domains
-        // and therefore warrant separate analysis.
-        let numberedPattern = try? NSRegularExpression(
-            pattern: #"(?:^|\n)\s*(?:[①②③④⑤⑥⑦⑧⑨⑩]|\d+[、.．。])\s*[^\n]{5,}"#)
+    private func decomposeQuestion(_ question: String) async -> DecomposedQuestion {
+        let none = DecomposedQuestion(preamble: "", questions: [])
+        // Fast path: regex-split numbered questions (1. / 1、/ （1）/ 问题一 etc.)
+        // Preamble = everything before the first numbered item; questions = each item alone.
+        let numberedRE = try! NSRegularExpression(
+            pattern: #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
         let ns = question as NSString
-        let nsRange = NSRange(location: 0, length: ns.length)
-        let matches = numberedPattern?.matches(in: question, range: nsRange) ?? []
+        let fullRange = NSRange(location: 0, length: ns.length)
+        let matches = numberedRE.matches(in: question, range: fullRange)
 
-        var candidateItems: [String] = []
-        var background = ""
         if matches.count >= 2 {
-            let preambleEnd = matches[0].range.location
-            if preambleEnd > 10 {
-                background = ns.substring(to: preambleEnd).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            for i in 0..<matches.count {
-                let start = matches[i].range.location
-                let end   = i + 1 < matches.count ? matches[i + 1].range.location : ns.length
-                let item  = ns.substring(with: NSRange(location: start, length: end - start))
+            let firstStart = matches[0].range.location
+            let preamble = ns.substring(to: firstStart).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            var items: [String] = []
+            for (i, match) in matches.enumerated() {
+                let itemStart = match.range.location
+                let itemEnd   = i + 1 < matches.count ? matches[i + 1].range.location : ns.length
+                let itemText  = ns.substring(with: NSRange(location: itemStart, length: itemEnd - itemStart))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !item.isEmpty { candidateItems.append(item) }
+                if itemText.count > 8 { items.append(itemText) }
             }
+            if items.count >= 2 { return DecomposedQuestion(preamble: preamble, questions: items) }
         }
 
-        let hasNumbered = candidateItems.count >= 2
-        let prompt: String
-        if hasNumbered {
-            let itemsText = candidateItems.enumerated()
-                .map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
-            prompt = """
-            你是中国法律助手。以下是一段案情背景和若干已编号的问题。
-            判断这些问题是否涉及不同的法律领域或独立法律关系（如公司法 vs 合同法 vs 担保法），如果是，应分别由不同专家独立分析。
-            决策标准：
-            - 如果多个问题本质上属于同一法律关系（如同一合同纠纷的请求权、违约认定、诉讼流程），合并为一个，输出 []。
-            - 如果问题跨越不同法律领域（如股权转让 + 对外担保效力 + 代表权 + 出资加速到期），则每个独立领域输出一个子问题，子问题需包含完整案情背景。
-            只输出JSON数组（每个元素是一个包含案情和问题的完整字符串）。无需拆分时输出 []，不要其他内容。
-            案情背景：\(background)
-            问题列表：
-            \(itemsText)
-            """
-        } else {
-            prompt = """
-            你是中国法律助手。判断以下问题是否包含多个涉及不同法律领域或独立法律关系的子问题。
-            决策标准：
-            - 同一法律关系的多个追问（请求权 + 诉讼程序 + 时效）→ 不拆，输出 []。
-            - 不同法律领域的独立问题（合同 + 工伤 + 行政处罚）→ 拆分，每个子问题包含完整背景。
-            只输出JSON数组，无需拆分时输出 []，不要其他内容。
-            问题：\(question)
-            """
-        }
+        // Short simple questions: no LLM needed
+        if question.count < 200 { return none }
 
-        guard let raw  = try? await chat(system: "你是严格按指令输出JSON的助手。", user: prompt),
+        // LLM fallback for complex multi-issue questions without explicit numbering
+        let prompt = """
+        你是中国法律分析助手。阅读以下法律问题，判断是否包含多个需要独立分析的子问题。
+
+        拆分规则：
+        - 如果涉及多个完全不同的法律关系（如合同纠纷 + 侵权 + 继承），必须拆分。
+        - 同一法律关系的多个追问 → 不拆，输出 []。
+        - 每个子问题必须包含完整案情背景，使其可以独立被理解和分析。
+        - 最多拆分为4个子问题。
+
+        输出要求：
+        - 需要拆分：输出JSON数组，每个元素是一个包含案情背景+该问题的完整字符串。
+        - 无需拆分：输出空数组 []。
+        - 只输出JSON数组，不要任何其他内容。
+
+        问题：
+        \(question)
+        """
+
+        guard let raw  = try? await chat(system: "严格按指令输出JSON数组，不要其他内容。", user: prompt),
               let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
               let arr  = try? JSONSerialization.jsonObject(with: data) as? [String]
-        else { return [] }
+        else { return none }
 
-        let items = arr.filter { !$0.isEmpty }
-        guard items.count >= 2 else { return [] }
-
-        // Prepend background to each item if not already included
-        if hasNumbered && !background.isEmpty {
-            return items.map { item in
-                item.contains(background.prefix(20)) ? item : background + "\n" + item
-            }
-        }
-        return items
+        let items = arr.filter { $0.count > 10 }
+        return items.count >= 2 ? DecomposedQuestion(preamble: "", questions: items) : none
     }
+
 
     private func deduplicateArticles(_ map: [String: [DatabaseManager.RAGArticle]]) -> [DatabaseManager.RAGArticle] {
         var seen = Set<Int>()
