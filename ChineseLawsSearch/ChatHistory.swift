@@ -11,6 +11,7 @@ import Combine
 struct PersistedThinkStep: Codable {
     let name: String
     let content: String
+    var articles: [PersistedCitation]
 }
 
 struct PersistedCitation: Codable {

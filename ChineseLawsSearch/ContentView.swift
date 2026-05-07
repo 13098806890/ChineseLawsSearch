@@ -34,12 +34,13 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                if tab == .browse {
-                    browseView
-                } else {
-                    chatView
-                }
+            ZStack {
+                browseView
+                    .opacity(tab == .browse ? 1 : 0)
+                    .allowsHitTesting(tab == .browse)
+                chatView
+                    .opacity(tab == .chat ? 1 : 0)
+                    .allowsHitTesting(tab == .chat)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 

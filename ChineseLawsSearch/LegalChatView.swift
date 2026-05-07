@@ -696,7 +696,15 @@ final class LegalChatViewModel: ObservableObject {
                 text: pm.text,
                 isClarifying: false
             )
-            msg.thinkSteps = pm.thinkSteps.map { ThinkStep(name: $0.name, content: $0.content) }
+            msg.thinkSteps = pm.thinkSteps.map { ts in
+                var step = ThinkStep(name: ts.name, content: ts.content)
+                step.articles = ts.articles.map {
+                    RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
+                                articleNumber: $0.articleNumber, articleNum: $0.articleNum,
+                                category: $0.category, content: $0.content)
+                }
+                return step
+            }
             msg.citations   = pm.citations.map {
                 RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
                             articleNumber: $0.articleNumber, articleNum: $0.articleNum,
@@ -768,7 +776,9 @@ final class LegalChatViewModel: ObservableObject {
                             }
                         }
                         for try await (idx, citations) in group {
-                            await MainActor.run { messages[idx].citations = citations }
+                            await MainActor.run {
+                                if idx < messages.count { messages[idx].citations = citations }
+                            }
                         }
                     }
                 } else {
@@ -786,7 +796,9 @@ final class LegalChatViewModel: ObservableObject {
                     ) { [weak self] event in
                         Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
                     }
-                    await MainActor.run { messages[replyIdx].citations = citations }
+                    await MainActor.run {
+                        if replyIdx < messages.count { messages[replyIdx].citations = citations }
+                    }
                 }
         } catch {
             await MainActor.run {
@@ -806,6 +818,7 @@ final class LegalChatViewModel: ObservableObject {
 
     @MainActor
     private func handleEvent(_ event: RAGEvent, replyIdx: Int) {
+        guard replyIdx < messages.count else { return }
         switch event {
         case .thinkStep(let name, let content):
             messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content))
@@ -842,7 +855,16 @@ final class LegalChatViewModel: ObservableObject {
                 PersistedMessage(
                     role: msg.role == .user ? "user" : "assistant",
                     text: msg.text,
-                    thinkSteps: msg.thinkSteps.map { PersistedThinkStep(name: $0.name, content: $0.content) },
+                    thinkSteps: msg.thinkSteps.map { ts in
+                        PersistedThinkStep(
+                            name: ts.name, content: ts.content,
+                            articles: ts.articles.map {
+                                PersistedCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
+                                                  articleNumber: $0.articleNumber, articleNum: $0.articleNum,
+                                                  category: $0.category, content: $0.content)
+                            }
+                        )
+                    },
                     citations: msg.citations.map {
                         PersistedCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
                                           articleNumber: $0.articleNumber, articleNum: $0.articleNum,
