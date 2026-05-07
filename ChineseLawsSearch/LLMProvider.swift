@@ -220,68 +220,13 @@ struct GeminiProvider: LLMProvider {
     }
 }
 
-// MARK: - Ollama (local)
-
-struct OllamaProvider: LLMProvider {
-    let id          = "ollama"
-    let displayName = "Ollama（本地）"
-    let modelName   = "qwen2.5:3b"
-    let keychainKey = ""
-    let keyURL: URL? = nil
-
-    private var apiURL: URL { URL(string: "http://localhost:11434/api/chat")! }
-
-    func chat(messages: [[String: Any]], temperature: Double) async throws -> String {
-        let body: [String: Any] = [
-            "model": modelName, "stream": false,
-            "options": ["temperature": temperature],
-            "messages": messages
-        ]
-        var req = URLRequest(url: apiURL)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 180
-        let (data, _) = try await URLSession.shared.data(for: req)
-        guard let obj     = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let msg     = obj["message"] as? [String: Any],
-              let content = msg["content"] as? String
-        else { throw URLError(.badServerResponse) }
-        return content
-    }
-
-    func streamChat(messages: [[String: Any]], temperature: Double, onToken: @escaping (String) -> Void) async throws {
-        let body: [String: Any] = [
-            "model": modelName, "stream": true,
-            "options": ["temperature": temperature],
-            "messages": messages
-        ]
-        var req = URLRequest(url: apiURL)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 180
-        let (bytes, _) = try await URLSession.shared.bytes(for: req)
-        for try await line in bytes.lines {
-            guard !line.isEmpty,
-                  let data  = line.data(using: .utf8),
-                  let obj   = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let msg   = obj["message"] as? [String: Any],
-                  let token = msg["content"] as? String
-            else { continue }
-            onToken(token)
-        }
-    }
-}
-
 // MARK: - Registry
 
 enum LLMProviderRegistry {
     static let all: [any LLMProvider] = [
         GroqProvider(),
         GeminiProvider(),
-        DeepSeekProvider(),
-        OllamaProvider()
+        DeepSeekProvider()
     ]
 
     static func provider(id: String) -> (any LLMProvider)? {

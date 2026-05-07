@@ -6,18 +6,12 @@
 import SwiftUI
 import Combine
 
-// MARK: - Mode
+// MARK: - Mode (kept for history compatibility, only expert used)
 
 enum ChatMode: String, CaseIterable, Codable {
-    case rag    = "快速"
     case expert = "专家"
 
-    var icon: String {
-        switch self {
-        case .rag:    return "bolt"
-        case .expert: return "person.3"
-        }
-    }
+    var icon: String { "person.3" }
 }
 
 // MARK: - View
@@ -27,19 +21,12 @@ struct LegalChatView: View {
     @ObservedObject var historyStore: ChatHistoryStore
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
+    var showHistoryButton: Bool = true   // false on iPad where sidebar shows history
 
     @State private var showHistory = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Mode bar — only shown before first message
-            if vm.messages.isEmpty {
-                modePicker
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 4)
-            }
-
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
@@ -106,11 +93,13 @@ struct LegalChatView: View {
                 }
                 .disabled(vm.isThinking)
             }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    showHistory = true
-                } label: {
-                    Image(systemName: "clock")
+            if showHistoryButton {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showHistory = true
+                    } label: {
+                        Image(systemName: "clock")
+                    }
                 }
             }
         }
@@ -122,45 +111,16 @@ struct LegalChatView: View {
         }
     }
 
-    // MARK: Mode picker
-
-    private var modePicker: some View {
-        HStack(spacing: 0) {
-            ForEach(ChatMode.allCases, id: \.self) { m in
-                Button {
-                    vm.mode = m
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: m.icon)
-                            .font(.system(size: 13))
-                        Text(m.rawValue)
-                            .font(.subheadline).fontWeight(.medium)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(vm.mode == m
-                                ? AppColors.shared.searchHighlight
-                                : Color(.systemGray5))
-                    .foregroundStyle(vm.mode == m ? .white : Color(.label))
-                }
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(.systemGray4), lineWidth: 0.5))
-    }
-
     // MARK: Placeholder
 
     private var placeholderView: some View {
         VStack(spacing: 16) {
-            Image(systemName: vm.mode == .expert ? "person.3" : "bolt.circle")
+            Image(systemName: "person.3")
                 .font(.system(size: 48))
                 .foregroundStyle(AppColors.shared.searchHighlight.opacity(0.6))
             Text("您好，我是中国法律助手")
                 .font(.headline)
-            Text(vm.mode == .expert
-                 ? "专家模式：召集细分专家协作分析，回答更深入，速度稍慢。"
-                 : "快速模式：关键词检索 + 相关性过滤，适合快速查询。")
+            Text("专家模式：召集细分专家协作分析，回答更深入。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -536,6 +496,82 @@ private struct CitationList: View {
     }
 }
 
+// MARK: - History Sidebar (iPad split view)
+
+struct ChatHistorySidebar: View {
+    @ObservedObject var historyStore: ChatHistoryStore
+    let vm: LegalChatViewModel
+    let onNewSession: () -> Void
+
+    var body: some View {
+        Group {
+            if historyStore.sessions.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary)
+                    Text("暂无历史记录")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: Binding<UUID?>(
+                    get: { vm.sessionId },
+                    set: { id in
+                        if let id, let session = historyStore.sessions.first(where: { $0.id == id }) {
+                            vm.loadSession(session)
+                        }
+                    }
+                )) {
+                    ForEach(historyStore.sessions) { session in
+                        historyRow(session)
+                            .tag(session.id)
+                    }
+                    .onDelete { offsets in
+                        offsets.forEach { historyStore.delete(id: historyStore.sessions[$0].id) }
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+        }
+        .navigationTitle("历史记录")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { onNewSession() } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+            }
+        }
+    }
+
+    private func historyRow(_ session: ChatSession) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(session.mode == "专家" ? "专家" : "快速",
+                      systemImage: session.mode == "专家" ? "person.3" : "bolt")
+                    .font(.caption2)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(AppColors.shared.searchHighlight)
+                    .clipShape(Capsule())
+                Spacer()
+                Text(session.updatedAt, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(session.title)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+            Text("\(session.messages.count / 2) 轮对话")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 // MARK: - History Sheet
 
 struct ChatHistorySheet: View {
@@ -614,7 +650,7 @@ final class LegalChatViewModel: ObservableObject {
     @Published var isThinking  = false
     @Published var dotScale    = [1.0, 1.0, 1.0]
     @Published var scrollToken = 0
-    @Published var mode: ChatMode = .rag
+    @Published var mode: ChatMode = .expert
 
     // Follow-up state (expert mode)
     var isAwaitingClarification = false
@@ -646,7 +682,7 @@ final class LegalChatViewModel: ObservableObject {
     func loadSession(_ session: ChatSession) {
         sessionId = session.id
         sessionCreatedAt = session.createdAt
-        mode = ChatMode(rawValue: session.mode) ?? .rag
+        mode = ChatMode(rawValue: session.mode) ?? .expert
         messages = session.messages.map { pm in
             var msg = ChatMessage(
                 role: pm.role == "user" ? .user : .assistant,
@@ -678,18 +714,7 @@ final class LegalChatViewModel: ObservableObject {
         isThinking = true
 
         do {
-            switch mode {
-            case .rag:
-                var replyMsg = ChatMessage(role: .assistant)
-                messages.append(replyMsg)
-                let replyIdx = messages.count - 1
-                let citations = try await LegalRAGService.shared.ask(question: q) { [weak self] event in
-                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
-                }
-                await MainActor.run { messages[replyIdx].citations = citations }
-
-            case .expert:
-                if isAwaitingClarification { followUpRound += 1 }
+            if isAwaitingClarification { followUpRound += 1 }
 
                 // Decompose: separate shared factual preamble from individual questions
                 let decomposed = await LegalExpertService.shared.decomposeWithFacts(question: q)
@@ -756,7 +781,6 @@ final class LegalChatViewModel: ObservableObject {
                     }
                     await MainActor.run { messages[replyIdx].citations = citations }
                 }
-            }
         } catch {
             await MainActor.run {
                 if let last = messages.last, last.role == .assistant, last.text.isEmpty {
@@ -767,10 +791,8 @@ final class LegalChatViewModel: ObservableObject {
 
         await MainActor.run {
             isThinking = false
-            if mode == .expert {
-                let assistantText = messages.last(where: { $0.role == .assistant })?.text ?? ""
-                conversationHistory.append((user: q, assistant: assistantText))
-            }
+            let assistantText = messages.last(where: { $0.role == .assistant })?.text ?? ""
+            conversationHistory.append((user: q, assistant: assistantText))
             autoSave(historyStore: historyStore)
         }
     }

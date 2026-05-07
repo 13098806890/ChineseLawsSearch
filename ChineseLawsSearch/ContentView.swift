@@ -94,8 +94,25 @@ struct ContentView: View {
     // MARK: Chat
 
     private var chatView: some View {
-        NavigationStack {
-            LegalChatView(vm: chatVM, historyStore: historyStore, showThinking: showThinking, navigate: navigate)
+        Group {
+            if isPhone {
+                NavigationStack {
+                    LegalChatView(vm: chatVM, historyStore: historyStore,
+                                  showThinking: showThinking, navigate: navigate)
+                }
+            } else {
+                NavigationSplitView {
+                    ChatHistorySidebar(historyStore: historyStore, vm: chatVM) {
+                        chatVM.newSession()
+                    }
+                } detail: {
+                    NavigationStack {
+                        LegalChatView(vm: chatVM, historyStore: historyStore,
+                                      showThinking: showThinking, navigate: navigate,
+                                      showHistoryButton: false)
+                    }
+                }
+            }
         }
     }
 
@@ -215,7 +232,6 @@ private struct SettingsSheet: View {
         case "groq":    return "Groq 免费，无需绑卡，国内可直连。使用 Llama 3.3 70B 模型，中文能力较好。"
         case "gemini":  return "Gemini Flash 免费额度：每天 100 万 tokens。部分地区需要 VPN 申请 Key。"
         case "deepseek": return "DeepSeek 按量计费，价格较低。需要在账户中充值。"
-        case "ollama":  return "本地运行，需先在 Mac 上启动 Ollama（ollama serve）。"
         default:        return ""
         }
     }
