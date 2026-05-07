@@ -34,7 +34,8 @@ struct LegalChatView: View {
                             placeholderView
                         }
                         ForEach(vm.messages) { msg in
-                            MessageBubble(message: msg, showThinking: showThinking, navigate: navigate)
+                            MessageBubble(message: msg, showThinking: showThinking,
+                                          navigate: navigate, expandedSteps: $vm.expandedSteps)
                                 .id(msg.id)
                         }
                         if vm.isThinking {
@@ -163,10 +164,10 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
+    @Binding var expandedSteps: Set<UUID>
 
     @State private var showSteps     = true
     @State private var showCitations = false
-    @State private var expandedSteps: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
@@ -364,23 +365,8 @@ private struct ThinkStepRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            VStack(spacing: 0) {
-                ZStack {
-                    Circle()
-                        .fill(AppColors.shared.searchHighlight.opacity(0.15))
-                        .frame(width: 28, height: 28)
-                    Image(systemName: stepIcon)
-                        .font(.system(size: 12))
-                        .foregroundStyle(AppColors.shared.searchHighlight)
-                }
-                if index < total - 1 {
-                    Rectangle()
-                        .fill(AppColors.shared.searchHighlight.opacity(0.2))
-                        .frame(width: 1.5)
-                        .frame(maxHeight: .infinity)
-                }
-            }
-            .frame(width: 28)
+            // Left column placeholder — actual drawing happens in background
+            Color.clear.frame(width: 28)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -455,6 +441,28 @@ private struct ThinkStepRow: View {
             .padding(.bottom, index < total - 1 ? 12 : 4)
         }
         .padding(.top, index == 0 ? 10 : 0)
+        .background(alignment: .topLeading) {
+            // Left column drawn against the full row height determined by right side
+            VStack(spacing: 0) {
+                ZStack {
+                    Circle()
+                        .fill(AppColors.shared.searchHighlight.opacity(0.15))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: stepIcon)
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppColors.shared.searchHighlight)
+                }
+                .padding(.top, index == 0 ? 10 : 0)
+                if index < total - 1 {
+                    Rectangle()
+                        .fill(AppColors.shared.searchHighlight.opacity(0.2))
+                        .frame(width: 1.5)
+                        .frame(maxHeight: .infinity)
+                        .padding(.bottom, index < total - 1 ? 12 : 4)
+                }
+            }
+            .frame(maxWidth: 28, maxHeight: .infinity, alignment: .top)
+        }
     }
 }
 
@@ -654,9 +662,10 @@ struct ChatHistorySheet: View {
 // MARK: - ViewModel
 
 final class LegalChatViewModel: ObservableObject {
-    @Published var messages:   [ChatMessage] = []
-    @Published var inputText   = ""
-    @Published var isThinking  = false
+    @Published var messages:      [ChatMessage] = []
+    @Published var inputText      = ""
+    @Published var isThinking     = false
+    @Published var expandedSteps: Set<UUID> = []
     @Published var dotScale    = [1.0, 1.0, 1.0]
     @Published var scrollToken = 0
     @Published var mode: ChatMode = .expert
@@ -683,6 +692,7 @@ final class LegalChatViewModel: ObservableObject {
         followUpRound = 0
         pendingFacts = [:]
         conversationHistory = []
+        expandedSteps = []
         sessionId = UUID()
         sessionCreatedAt = Date()
     }
@@ -718,6 +728,7 @@ final class LegalChatViewModel: ObservableObject {
         isAwaitingClarification = false
         followUpRound = 0
         pendingFacts = [:]
+        expandedSteps = []
         conversationHistory = buildConversationHistory()
     }
 
