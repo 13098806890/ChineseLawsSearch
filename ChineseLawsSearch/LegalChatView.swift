@@ -85,13 +85,15 @@ struct LegalChatView: View {
         .navigationTitle("法律咨询")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button {
-                    vm.newSession()
-                } label: {
-                    Image(systemName: "square.and.pencil")
+            if showHistoryButton {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        vm.newSession()
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                    }
+                    .disabled(vm.isThinking)
                 }
-                .disabled(vm.isThinking)
             }
             if showHistoryButton {
                 ToolbarItem(placement: .navigationBarTrailing) {

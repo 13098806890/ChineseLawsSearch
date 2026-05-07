@@ -12,6 +12,17 @@ struct PersistedThinkStep: Codable {
     let name: String
     let content: String
     var articles: [PersistedCitation]
+
+    init(name: String, content: String, articles: [PersistedCitation] = []) {
+        self.name = name; self.content = content; self.articles = articles
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name     = try c.decode(String.self, forKey: .name)
+        content  = try c.decode(String.self, forKey: .content)
+        articles = (try? c.decodeIfPresent([PersistedCitation].self, forKey: .articles)) ?? []
+    }
 }
 
 struct PersistedCitation: Codable {
