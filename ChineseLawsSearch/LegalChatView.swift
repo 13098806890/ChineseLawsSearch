@@ -164,6 +164,7 @@ private struct MessageBubble: View {
 
     @State private var showSteps     = true
     @State private var showCitations = false
+    @State private var expandedSteps: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
@@ -277,7 +278,13 @@ private struct MessageBubble: View {
             if showSteps {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(message.thinkSteps.enumerated()), id: \.element.id) { idx, step in
-                        ThinkStepRow(step: step, index: idx, total: message.thinkSteps.count, navigate: navigate)
+                        ThinkStepRow(step: step, index: idx, total: message.thinkSteps.count,
+                                     isExpanded: expandedSteps.contains(step.id),
+                                     onToggle: { withAnimation(.spring(duration: 0.2)) {
+                                         if expandedSteps.contains(step.id) { expandedSteps.remove(step.id) }
+                                         else { expandedSteps.insert(step.id) }
+                                     }},
+                                     navigate: navigate)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -332,9 +339,9 @@ private struct ThinkStepRow: View {
     let step: ThinkStep
     let index: Int
     let total: Int
+    let isExpanded: Bool
+    let onToggle: () -> Void
     let navigate: (Int, Int?) -> Void
-
-    @State private var expanded = false
 
     private var stepIcon: String {
         switch step.name {
@@ -380,12 +387,12 @@ private struct ThinkStepRow: View {
                         .foregroundStyle(.primary)
                     if !step.articles.isEmpty {
                         Button {
-                            withAnimation(.spring(duration: 0.2)) { expanded.toggle() }
+                            onToggle()
                         } label: {
                             HStack(spacing: 3) {
                                 Text("\(step.articles.count)条")
                                     .font(.caption2)
-                                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                                     .font(.system(size: 9))
                             }
                             .foregroundStyle(AppColors.shared.searchHighlight)
@@ -402,7 +409,7 @@ private struct ThinkStepRow: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                if expanded && !step.articles.isEmpty {
+                if isExpanded && !step.articles.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(step.articles) { a in
                             Button {
