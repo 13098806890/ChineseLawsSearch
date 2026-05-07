@@ -36,8 +36,19 @@ final class LegalExpertService {
              maxFollowUpRounds: Int,
              onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
+        // Step 0: 拆分问题
+        let subQs = await decomposeQuestion(question)
+        onEvent(.thinkStep(name: "拆分问题",
+                           content: subQs.isEmpty
+                               ? "问题无需拆分，直接分析。"
+                               : subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")))
+        if !subQs.isEmpty { onEvent(.subQuestions(subQs)) }
+
+        // 用于路由和检索的合并文本（原问题 + 子问题）
+        let enrichedQuestion = subQs.isEmpty ? question : question + "\n" + subQs.joined(separator: "\n")
+
         // Step 1: Route to expert groups
-        let groupNames = await identifyGroups(question: question)
+        let groupNames = await identifyGroups(question: enrichedQuestion)
         onEvent(.thinkStep(name: "专家路由",
                            content: "召集专家组：\(groupNames.joined(separator: "、"))"))
 
@@ -49,8 +60,8 @@ final class LegalExpertService {
         var seenNames = Set<String>()
 
         for group in groups {
-            let roughFacts = autoExtractFacts(question: question, experts: group.subExperts)
-            let selected = await identifySubExperts(group: group, question: question, knownFacts: roughFacts)
+            let roughFacts = autoExtractFacts(question: enrichedQuestion, experts: group.subExperts)
+            let selected = await identifySubExperts(group: group, question: enrichedQuestion, knownFacts: roughFacts)
             groupToExperts[group.name] = selected
             for e in selected where seenNames.insert(e.name).inserted {
                 allSelectedExperts.append(e)
@@ -99,12 +110,12 @@ final class LegalExpertService {
         var expertAnswers:  [String: String] = [:]
 
         for expert in allSelectedExperts {
-            var articles = retrieveForExpert(expert: expert, question: question, facts: knownFacts)
+            var articles = retrieveForExpert(expert: expert, question: enrichedQuestion, facts: knownFacts)
             articles = expandReferences(articles: articles)
-            articles = filterArticles(question: question, articles: articles)
+            articles = filterArticles(question: enrichedQuestion, articles: articles)
             expertArticles[expert.name] = articles
 
-            let answer = try await analyzeWithExpert(expert: expert, question: question,
+            let answer = try await analyzeWithExpert(expert: expert, question: enrichedQuestion,
                                                      facts: knownFacts, articles: articles)
             expertAnswers[expert.name] = answer
         }
@@ -136,7 +147,13 @@ final class LegalExpertService {
         let allArticlesFlat = deduplicateArticles(expertArticles)
         let context = buildGroupContext(groupAnswers: groupAnswers, articles: allArticlesFlat)
         let systemPrompt = coordinatorSystemPrompt
-        let userMsg = "用户问题：\(question)\n\n\(context)"
+        var userMsg = "用户问题：\(question)\n\n"
+        if !subQs.isEmpty {
+            userMsg += "问题已拆分为以下子问题，请逐一回答：\n"
+            userMsg += subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")
+            userMsg += "\n\n"
+        }
+        userMsg += context
 
         try await LLMProviderRegistry.current.streamChat(
             messages: [["role": "system", "content": systemPrompt],
@@ -437,6 +454,21 @@ final class LegalExpertService {
     }
 
     // MARK: - Helpers
+
+    private func decomposeQuestion(_ question: String) async -> [String] {
+        let prompt = """
+        你是中国法律助手。判断用户的问题是否包含多个独立的法律子问题（如同时涉及请求权和诉讼程序，或多个不同法律关系）。
+        如果问题简单或只有一个核心问题，输出空数组 []。
+        如果可以拆分，输出2-4个子问题的JSON数组，每个子问题都需要包含详细的上下文。
+        只输出JSON数组，不要其他内容。
+        """
+        guard let raw  = try? await chat(system: prompt, user: "问题：\(question)"),
+              let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
+              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String],
+              arr.count >= 2
+        else { return [] }
+        return arr.filter { !$0.isEmpty }
+    }
 
     private func deduplicateArticles(_ map: [String: [DatabaseManager.RAGArticle]]) -> [DatabaseManager.RAGArticle] {
         var seen = Set<Int>()
