@@ -2,38 +2,56 @@
 //  LegalRAGService.swift
 //  ChineseLawsSearch
 //
-//  多步 RAG pipeline，对应 Python test_rag.py 的逻辑。
-//  调用本地 Ollama（http://localhost:11434）。
-//
 
 import Foundation
 
-// MARK: - Data types
+// MARK: - Public data types
 
 struct ChatMessage: Identifiable, Equatable {
     enum Role { case user, assistant }
-    let id = UUID()
+    let id   = UUID()
     let role: Role
-    var text: String
+    var text: String             = ""
+    var thinkSteps: [ThinkStep]  = []
     var citations: [RAGCitation] = []
+    var subQuestions: [String]   = []
+    var isClarifying: Bool       = false  // expert follow-up question bubble
+
+    init(role: Role, text: String = "", isClarifying: Bool = false) {
+        self.role = role
+        self.text = text
+        self.isClarifying = isClarifying
+    }
+}
+
+struct ThinkStep: Identifiable, Equatable {
+    let id    = UUID()
+    let name:    String
+    let content: String
 }
 
 struct RAGCitation: Identifiable, Equatable {
-    let id = UUID()
-    let lawTitle: String
+    let id            = UUID()
+    let lawId:        Int
+    let lawTitle:     String
     let articleNumber: String
-    let category: String
-    let content: String
+    let articleNum:   Int?       // 用于跳转滚动定位
+    let category:     String
+    let content:      String
     var tier: String { category == "司法解释" ? "司法解释" : "法律原文" }
+}
+
+enum RAGEvent {
+    case thinkStep(name: String, content: String)
+    case subQuestions([String])
+    case token(String)
+    case clarifyingQuestion(String)   // expert asking user for more info
 }
 
 // MARK: - Service
 
 final class LegalRAGService {
     static let shared = LegalRAGService()
-
-    private let ollamaURL = URL(string: "http://localhost:11434/api/chat")!
-    private let model = "qwen2.5:3b"
 
     private let allDomains = [
         "宪法相关法", "民法典", "民法商法", "刑法",
@@ -42,336 +60,314 @@ final class LegalRAGService {
     private let lawCategories    = ["法律", "宪法", "修正案", "法律解释", "监察法规"]
     private let interpCategories = ["司法解释"]
 
-    // MARK: Public entry point
+    // MARK: - Entry point
 
-    func ask(question: String, onToken: @escaping (String) -> Void) async throws -> [RAGCitation] {
-        // Step 1: 分类路由
+    func ask(question: String, onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+
+        // Step 0: 拆分问题
+        let subQs = await decomposeQuestion(question)
+        onEvent(.thinkStep(name: "拆分问题",
+                           content: subQs.isEmpty
+                               ? "问题无需拆分，直接回答。"
+                               : subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")))
+        if !subQs.isEmpty { onEvent(.subQuestions(subQs)) }
+
+        // Step 1: 领域路由（基于原问题）
         let domains = await classifyDomains(question: question)
+        onEvent(.thinkStep(name: "领域路由",
+                           content: "相关领域：\(domains.joined(separator: "、"))"))
 
-        // Step 2: 关键词提取
-        var keywords = await extractKeywords(question: question)
-        guard !keywords.isEmpty else {
-            onToken("无法提取关键词，请换一种方式提问。")
+        // Step 2: 关键词提取（合并所有子问题）
+        let allQuestions = subQs.isEmpty ? [question] : ([question] + subQs)
+        var allKeywords: [String] = []
+        var kwSet = Set<String>()
+        for q in allQuestions {
+            for kw in try await extractKeywords(question: q) where kwSet.insert(kw).inserted {
+                allKeywords.append(kw)
+            }
+        }
+        if allKeywords.isEmpty {
+            onEvent(.token("未能从问题中提取到法律关键词，请尝试更具体地描述您的法律问题。"))
             return []
         }
+        onEvent(.thinkStep(name: "关键词提取",
+                           content: allKeywords.joined(separator: "、")))
 
-        // Step 2.5: 别名扩展 + topic hints
-        let expanded = expandKeywords(keywords)
+        // Step 2.5: 别名扩展
+        let expanded = expandKeywords(allKeywords)
         let hintLaws = DatabaseManager.shared.topicLawHints(for: expanded)
+        let addedCount = expanded.count - allKeywords.count
+        var expandDetail = addedCount > 0
+            ? "扩展 +\(addedCount) 词：\(expanded.dropFirst(allKeywords.count).joined(separator: "、"))"
+            : "无扩展词"
+        if !hintLaws.isEmpty {
+            expandDetail += "\n优先法律：\(hintLaws.joined(separator: "、"))"
+        }
+        onEvent(.thinkStep(name: "别名扩展", content: expandDetail))
 
         // Step 3+4: 分层检索
         var articles = searchLayered(keywords: expanded, domains: domains, hintLaws: hintLaws)
-
-        // 兜底：结果太少则全域重搜
-        let total = articles.laws.count + articles.interps.count
-        if total <= 3 {
+        if articles.laws.count + articles.interps.count <= 3 {
             articles = searchLayered(keywords: expanded, domains: allDomains, hintLaws: hintLaws)
         }
+        let pinnedCount = (articles.laws + articles.interps).filter { $0.pinned }.count
+        onEvent(.thinkStep(name: "检索条文",
+                           content: "找到 \(articles.laws.count) 条法律原文、\(articles.interps.count) 条司法解释（含 \(pinnedCount) 条优先命中）"))
 
-        // Step 4.5: 相关性过滤（pinned 跳过）
+        // Step 4.5: 相关性过滤
+        let beforeTotal = articles.laws.count + articles.interps.count
         articles = await filterArticles(question: question, articles: articles)
+        let afterTotal  = articles.laws.count + articles.interps.count
+        onEvent(.thinkStep(name: "相关性过滤",
+                           content: "保留 \(afterTotal) 条（过滤 \(beforeTotal - afterTotal) 条）"))
 
         // Step 5: 生成回答（流式）
         let context = buildContext(articles)
         guard !context.isEmpty else {
-            onToken("未检索到相关条文，无法回答。")
+            onEvent(.token("未检索到相关条文，无法回答。"))
             return []
         }
 
-        let userMsg = "以下是检索到的法律条文：\n\n\(context)\n\n用户问题：\(question)"
-        try await streamChat(system: answerPrompt, user: userMsg, onToken: onToken)
+        // 逐一回答子问题，或直接回答
+        if subQs.isEmpty {
+            let userMsg = "以下是检索到的法律条文：\n\n\(context)\n\n用户问题：\(question)"
+            try await streamChat(system: answerPrompt, user: userMsg, onToken: { onEvent(.token($0)) })
+        } else {
+            for (i, sq) in subQs.enumerated() {
+                if i > 0 { onEvent(.token("\n\n")) }
+                onEvent(.token("**\(i+1). \(sq)**\n"))
+                let userMsg = "以下是检索到的法律条文：\n\n\(context)\n\n请只回答这个子问题（简洁2-3句）：\(sq)"
+                try await streamChat(system: answerPrompt, user: userMsg, onToken: { onEvent(.token($0)) })
+            }
+        }
 
         // Step 6: 参考法条筛选
-        let allItems = articles.laws + articles.interps
-        let pinned   = allItems.filter { $0.pinned }
-        let others   = allItems.filter { !$0.pinned }
+        let allItems   = articles.laws + articles.interps
+        let pinned     = allItems.filter { $0.pinned }
+        let others     = allItems.filter { !$0.pinned }
         let candidates = Array((pinned + others).prefix(10))
-        let cited = await filterCitations(question: question, candidates: candidates)
+        let cited      = await filterCitations(question: question, candidates: candidates)
+        onEvent(.thinkStep(name: "参考法条筛选",
+                           content: "从 \(candidates.count) 条候选中筛出 \(cited.count) 条直接相关法条"))
         return cited.map {
-            RAGCitation(lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
-                        category: $0.category, content: $0.content)
+            RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
+                        articleNum: $0.articleNum, category: $0.category, content: $0.content)
         }
     }
 
-    // MARK: Step 1 — 分类路由
+    // MARK: - Step 0 — 拆分问题
 
-    private func classifyDomains(question: String) async -> [String] {
+    private func decomposeQuestion(_ question: String) async -> [String] {
         let prompt = """
-        你是中国法律分类专家。从8个法律部门中排除与问题明显无关的部门。
-
-        8个部门：宪法相关法、民法典、民法商法、刑法、行政法、经济法、社会法、诉讼与非诉讼程序法
-
-        规则：
-        - 宁可多保留，不要错误排除
-        - 问题涉及"去哪个法院""如何起诉""诉讼请求""管辖" → 必须保留「诉讼与非诉讼程序法」
-
-        只输出 JSON：{"relevant":["部门1","部门2"],"excluded":["部门3"]}
-        """
-        guard let raw = try? await chat(system: prompt, user: "问题：\(question)"),
-              let data = extractJSON(raw, open: "{", close: "}").data(using: .utf8),
-              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: [String]],
-              let relevant = obj["relevant"], !relevant.isEmpty
-        else { return allDomains }
-        return relevant.filter { allDomains.contains($0) }
-    }
-
-    // MARK: Step 2 — 关键词提取
-
-    private func extractKeywords(question: String) async -> [String] {
-        let prompt = """
-        你是中国法律检索专家。从问题中提取适合检索法律条文的关键词。
-        要求：每个关键词2-6个汉字，法律专业术语，输出4-8个，从核心到次要排列。
+        你是中国法律助手。判断用户的问题是否包含多个独立的法律子问题（如同时涉及请求权和诉讼程序，或多个不同法律关系）。
+        如果问题简单或只有一个核心问题，输出空数组 []。
+        如果可以拆分，输出2-4个子问题的JSON数组，每个子问题都需要包含详细的上下文。
         只输出JSON数组，不要其他内容。
         """
         guard let raw = try? await chat(system: prompt, user: "问题：\(question)"),
-              let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
-              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String]
+              let data = extractJSON(stripMarkdownFence(raw), open: "[", close: "]").data(using: .utf8),
+              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String],
+              arr.count >= 2
         else { return [] }
-        return arr.filter { $0.count >= 2 && $0.count <= 8 }
+        return arr.filter { !$0.isEmpty }
     }
 
-    // MARK: Step 2.5 — 别名扩展
+    // MARK: - Step 1 — 领域路由
+
+    private func classifyDomains(question: String) async -> [String] {
+        let prompt = """
+        你是中国法律分类专家。从8个法律部门中排除与问题明显无关的部门。宁可多保留，不要错误排除。
+        问题涉及"去哪个法院""如何起诉""诉讼请求""管辖" → 必须保留「诉讼与非诉讼程序法」
+        只输出JSON：{"relevant":["部门1"],"excluded":["部门2"]}
+        8个部门：宪法相关法、民法典、民法商法、刑法、行政法、经济法、社会法、诉讼与非诉讼程序法
+        """
+        guard let raw = try? await chat(system: prompt, user: "问题：\(question)"),
+              let data = extractJSON(stripMarkdownFence(raw), open: "{", close: "}").data(using: .utf8),
+              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: [String]],
+              let rel  = obj["relevant"], !rel.isEmpty
+        else { return allDomains }
+        return rel.filter { allDomains.contains($0) }
+    }
+
+    // MARK: - Step 2 — 关键词提取
+
+    private func extractKeywords(question: String) async throws -> [String] {
+        let prompt = """
+        你是中国法律检索专家。从问题中提取适合检索法律条文的关键词。
+        每个关键词2-6个汉字，法律专业术语，输出4-8个，从核心到次要排列。只输出JSON数组。
+        """
+        let raw  = try await chat(system: prompt, user: "问题：\(question)")
+        let json = extractJSON(stripMarkdownFence(raw), open: "[", close: "]")
+        guard let data = json.data(using: .utf8),
+              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String]
+        else { return [] }
+        return arr.filter { !$0.isEmpty && $0.count >= 2 && $0.count <= 12 }
+    }
+
+    // MARK: - Step 2.5 — 别名扩展
 
     private func expandKeywords(_ keywords: [String]) -> [String] {
         var expanded = keywords
         var seen = Set(keywords)
         for kw in keywords {
-            for term in DatabaseManager.shared.legalTerms(for: kw) where seen.insert(term).inserted {
-                expanded.append(term)
-            }
-            for syn in DatabaseManager.shared.synonyms(for: kw) where seen.insert(syn).inserted {
-                expanded.append(syn)
-            }
+            for t in DatabaseManager.shared.legalTerms(for: kw) where seen.insert(t).inserted { expanded.append(t) }
+            for s in DatabaseManager.shared.synonyms(for: kw)    where seen.insert(s).inserted { expanded.append(s) }
         }
         return expanded
     }
 
-    // MARK: Step 3+4 — 分层检索
+    // MARK: - Step 3+4 — 分层检索
 
     private struct ArticleBag {
-        var laws:   [DatabaseManager.RAGArticle] = []
+        var laws:    [DatabaseManager.RAGArticle] = []
         var interps: [DatabaseManager.RAGArticle] = []
     }
 
-    private func searchLayered(keywords: [String], domains: [String],
-                                hintLaws: [String]) -> ArticleBag {
+    private func searchLayered(keywords: [String], domains: [String], hintLaws: [String]) -> ArticleBag {
         let db = DatabaseManager.shared
         var seen = Set<Int>()
         var bag  = ArticleBag()
 
-        func addToBag(_ a: DatabaseManager.RAGArticle) {
+        func add(_ a: DatabaseManager.RAGArticle) {
             guard seen.insert(a.nodeId).inserted else { return }
-            if a.category == "司法解释" { bag.interps.append(a) }
-            else { bag.laws.append(a) }
+            if a.category == "司法解释" { bag.interps.append(a) } else { bag.laws.append(a) }
         }
 
-        // hint laws — 关键词按 FTS 命中数升序（精确词优先）
         if !hintLaws.isEmpty {
             let sorted = keywords
-                .filter { kw in kw.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count >= 3 }
+                .filter { $0.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count >= 3 }
                 .sorted { db.ftsHitCount(keyword: $0) < db.ftsHitCount(keyword: $1) }
             for kw in sorted {
                 for title in hintLaws {
-                    for a in db.ftsSearchInLaw(keyword: kw, lawTitle: title,
-                                               categories: lawCategories + interpCategories) {
-                        addToBag(a)
-                    }
+                    db.ftsSearchInLaw(keyword: kw, lawTitle: title, categories: lawCategories + interpCategories).forEach { add($0) }
                 }
             }
         }
-
-        // 普通检索
-        for kw in keywords {
-            for a in db.ftsSearch(keyword: kw, domains: domains, categories: lawCategories) {
-                addToBag(a)
-            }
-        }
-        for kw in keywords {
-            for a in db.ftsSearch(keyword: kw, domains: domains, categories: interpCategories) {
-                addToBag(a)
-            }
-        }
+        for kw in keywords { db.ftsSearch(keyword: kw, domains: domains, categories: lawCategories).forEach    { add($0) } }
+        for kw in keywords { db.ftsSearch(keyword: kw, domains: domains, categories: interpCategories).forEach { add($0) } }
         return bag
     }
 
-    // MARK: Step 4.5 — 相关性过滤
+    // MARK: - Step 4.5 — 相关性过滤
 
     private func filterArticles(question: String, articles: ArticleBag) async -> ArticleBag {
         let filterPrompt = """
         你是中国法律审核专家。逐条判断每条法律条文是否与用户问题直接相关。
-        对每条条文只回答 Y（相关）或 N（不相关）。宁可多保留，不要错误排除。
-        输出格式每行：0: Y
-        不要其他内容。
+        对每条只回答 Y 或 N。宁可多保留，不要错误排除。
+        输出格式每行：0: Y    不要其他内容。
         """
-        let pinned     = (articles.laws + articles.interps).filter { $0.pinned }
-        let toFilter   = (articles.laws + articles.interps).filter { !$0.pinned }
-        var kept       = pinned
-        let keptIds    = Set(pinned.map { $0.nodeId })
+        let pinned   = (articles.laws + articles.interps).filter {  $0.pinned }
+        let toFilter = (articles.laws + articles.interps).filter { !$0.pinned }
+        var kept     = pinned
 
-        let batchSize  = 8
-        for start in stride(from: 0, to: toFilter.count, by: batchSize) {
-            let batch   = Array(toFilter[start ..< min(start + batchSize, toFilter.count)])
-            let numbered = batch.enumerated().map { i, a in
-                "[\(i)] 《\(a.lawTitle)》\(a.articleNumber)：\(String(a.content.prefix(150)))"
-            }.joined(separator: "\n")
-            let user = "用户问题：\(question)\n\n法律条文列表：\n\(numbered)"
-            guard let raw = try? await chat(system: filterPrompt, user: user) else {
-                kept += batch; continue
-            }
-            var verdicts: [Int: Bool] = [:]
+        for start in stride(from: 0, to: toFilter.count, by: 8) {
+            let batch    = Array(toFilter[start ..< min(start+8, toFilter.count)])
+            let numbered = batch.enumerated().map { "[\($0)] 《\($1.lawTitle)》\($1.articleNumber)：\(String($1.content.prefix(150)))" }.joined(separator: "\n")
+            guard let raw = try? await chat(system: filterPrompt, user: "用户问题：\(question)\n\n\(numbered)") else { kept += batch; continue }
+            var v: [Int: Bool] = [:]
             for line in raw.split(separator: "\n") {
-                let parts = line.split(separator: ":", maxSplits: 1)
-                if parts.count == 2, let idx = Int(parts[0].trimmingCharacters(in: CharacterSet.whitespaces)) {
-                    verdicts[idx] = String(parts[1]).trimmingCharacters(in: CharacterSet.whitespaces).uppercased().hasPrefix("Y")
+                let p = line.split(separator: ":", maxSplits: 1)
+                if p.count == 2, let idx = Int(p[0].trimmingCharacters(in: .whitespaces)) {
+                    v[idx] = String(p[1]).trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("Y")
                 }
             }
-            kept += batch.enumerated().compactMap { i, a in verdicts[i] == false ? nil : a }
+            kept += batch.enumerated().compactMap { i, a in v[i] == false ? nil : a }
         }
 
         if kept.isEmpty { kept = articles.laws + articles.interps }
         let lawIds = Set(articles.laws.map { $0.nodeId })
-        return ArticleBag(
-            laws:   kept.filter { lawIds.contains($0.nodeId) },
-            interps: kept.filter { !lawIds.contains($0.nodeId) }
-        )
+        return ArticleBag(laws: kept.filter { lawIds.contains($0.nodeId) },
+                          interps: kept.filter { !lawIds.contains($0.nodeId) })
     }
 
-    // MARK: Build context
+    // MARK: - Build context
 
     private func buildContext(_ articles: ArticleBag, max: Int = 20) -> String {
-        let all = (articles.laws + articles.interps)
         var seen = Set<Int>()
         var deduped: [DatabaseManager.RAGArticle] = []
-        let pinned = all.filter { $0.pinned }
-        let others = all.filter { !$0.pinned }
-        for a in pinned + others {
+        let all = articles.laws + articles.interps
+        for a in (all.filter { $0.pinned } + all.filter { !$0.pinned }) {
             if seen.insert(a.nodeId).inserted { deduped.append(a) }
         }
-        let selected = Array(deduped.prefix(max))
-        let lawItems   = selected.filter { $0.category != "司法解释" }
-        let interpItems = selected.filter { $0.category == "司法解释" }
-
+        let sel     = Array(deduped.prefix(max))
+        let laws    = sel.filter { $0.category != "司法解释" }
+        let interps = sel.filter { $0.category == "司法解释" }
         var parts: [String] = []
-        if !lawItems.isEmpty {
-            parts.append("【法律原文】")
-            parts += lawItems.map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(500)))" }
-        }
-        if !interpItems.isEmpty {
-            parts.append("\n【司法解释】")
-            parts += interpItems.map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(500)))" }
-        }
+        if !laws.isEmpty    { parts.append("【法律原文】");  parts += laws.map    { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(500)))" } }
+        if !interps.isEmpty { parts.append("\n【司法解释】"); parts += interps.map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(500)))" } }
         return parts.joined(separator: "\n")
     }
 
-    // MARK: Step 6 — 参考法条筛选
+    // MARK: - Step 6 — 参考法条筛选
 
-    private func filterCitations(question: String,
-                                  candidates: [DatabaseManager.RAGArticle]) async -> [DatabaseManager.RAGArticle] {
-        let citePrompt = """
+    private func filterCitations(question: String, candidates: [DatabaseManager.RAGArticle]) async -> [DatabaseManager.RAGArticle] {
+        let prompt = """
         你是中国法律助手。判断以下法律条文是否应作为参考法条展示给用户。
-        只有当该条文直接支撑结论或用户可据此行动时，才回答 Y。
         Y：条文规定用户可主张的权利/赔偿/合同解除权，或规定对方义务/违约后果。
         N：行政监管要求、定义性条款、与用户问题无直接关系的条文。
-        只输出 Y 或 N，不要其他内容。
+        只输出 Y 或 N。
         """
         var kept: [DatabaseManager.RAGArticle] = []
         for a in candidates {
             let user = "用户问题：\(question)\n\n法律条文：《\(a.lawTitle)》\(a.articleNumber)：\(String(a.content.prefix(300)))"
-            let verdict = (try? await chat(system: citePrompt, user: user))?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? "Y"
-            if verdict.hasPrefix("Y") { kept.append(a) }
+            let v = (try? await chat(system: prompt, user: user))?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? "Y"
+            if v.hasPrefix("Y") { kept.append(a) }
         }
         return kept
     }
 
-    // MARK: Ollama helpers
+    // MARK: - LLM helpers
 
-    private func chat(system: String, user: String) async throws -> String {
-        let body: [String: Any] = [
-            "model": model, "stream": false,
-            "options": ["temperature": 0.05],
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user",   "content": user],
-            ]
+    func chat(system: String, user: String) async throws -> String {
+        let messages: [[String: Any]] = [
+            ["role": "system", "content": system],
+            ["role": "user",   "content": user]
         ]
-        var req = URLRequest(url: ollamaURL)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 180
-        let (data, _) = try await URLSession.shared.data(for: req)
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let msg = obj["message"] as? [String: Any],
-              let content = msg["content"] as? String
-        else { throw URLError(.badServerResponse) }
-        return content
+        return try await LLMProviderRegistry.current.chat(messages: messages, temperature: 0.05)
     }
 
     private func streamChat(system: String, user: String, onToken: @escaping (String) -> Void) async throws {
-        let body: [String: Any] = [
-            "model": model, "stream": true,
-            "options": ["temperature": 0.1],
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user",   "content": user],
-            ]
+        let messages: [[String: Any]] = [
+            ["role": "system", "content": system],
+            ["role": "user",   "content": user]
         ]
-        var req = URLRequest(url: ollamaURL)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 180
-
-        let (bytes, _) = try await URLSession.shared.bytes(for: req)
-        for try await line in bytes.lines {
-            guard !line.isEmpty,
-                  let data = line.data(using: .utf8),
-                  let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let msg  = obj["message"] as? [String: Any],
-                  let token = msg["content"] as? String
-            else { continue }
-            onToken(token)
-        }
+        try await LLMProviderRegistry.current.streamChat(messages: messages, temperature: 0.1, onToken: onToken)
     }
 
-    // MARK: Prompts
+    // MARK: - Answer prompt
 
     private var answerPrompt: String { """
     你是中国法律助手。严格根据提供的法律条文回答问题。
-
-    只输出结论文字，不要加"【结论】"标题，不要输出任何法条。
-    用2-5句话直接回答用户问题，说明当事人的权利和可采取的行动。语言通俗易懂。
-    若用户问了多个问题，每个都要回答。可以提及具体赔偿倍数（如十倍、三倍）。
+    只输出结论文字，不要标题，不要法条列表。语言通俗易懂，可提及具体赔偿倍数。
     不得出现"依据第X条"等引用格式。
 
-    ---
-    诉讼相关通用知识（无需法条支撑，直接使用）：
-
-    【管辖法院】
-    - 合同纠纷：被告住所地 或 合同履行地 法院
-    - 房屋租赁纠纷：房屋所在地法院（不动产专属管辖）
-    - 劳动争议：先申请劳动仲裁，再向劳动关系所在地法院起诉
-    - 侵权纠纷：侵权行为地 或 被告住所地 法院
-    - 离婚诉讼：被告住所地法院；被告下落不明时原告住所地法院
-
-    【诉讼请求模板】
-    - 返还金钱：请求判令被告返还[押金/货款/工资]XX元
-    - 解除合同：请求判令解除[租赁/劳动/买卖]合同
-    - 赔偿损失：请求判令被告赔偿[经济损失/违约金]XX元
-    - 食品安全索赔：请求判令被告支付价款十倍赔偿金（食品安全法第148条；不足1000元按1000元计）
-    - 消费欺诈索赔：请求判令被告支付价款三倍赔偿金（消费者权益保护法第55条；不足500元按500元计）
-
-    【诉讼费用】
-    - 财产类案件按标的额阶梯收费，1万元以下收50元
-    - 一般由败诉方承担
+    诉讼通用知识（无需法条支撑）：
+    - 合同纠纷：被告住所地或合同履行地法院
+    - 房屋租赁：房屋所在地法院（不动产专属管辖）
+    - 劳动争议：先仲裁，再起诉
+    - 侵权：侵权行为地或被告住所地法院
+    - 离婚：被告住所地法院
+    - 食品安全索赔：价款十倍赔偿金（不足1000元按1000元计）
+    - 消费欺诈：价款三倍赔偿金（不足500元按500元计）
+    - 诉讼费：财产类1万以下50元，败诉方承担
     """ }
 
-    // MARK: Util
+    // MARK: - Util
+
+    private func stripMarkdownFence(_ s: String) -> String {
+        // DeepSeek 等模型有时会把 JSON 包在 ```json ... ``` 里
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.hasPrefix("```") {
+            t = t.components(separatedBy: "\n").dropFirst().joined(separator: "\n")
+            if t.hasSuffix("```") { t = String(t.dropLast(3)) }
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     private func extractJSON(_ s: String, open: String, close: String) -> String {
-        guard let start = s.range(of: open)?.lowerBound,
-              let end   = s.range(of: close, options: .backwards)?.upperBound
+        guard let a = s.range(of: open)?.lowerBound,
+              let b = s.range(of: close, options: .backwards)?.upperBound
         else { return s }
-        return String(s[start ..< end])
+        return String(s[a ..< b])
     }
 }

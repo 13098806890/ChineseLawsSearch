@@ -21,8 +21,19 @@ final class LegalExpertService {
 
     // MARK: - Public entry point
 
-    /// Mirrors LegalRAGService.ask — emits RAGEvents, returns final citations.
+    /// Main entry — also called by LegalChatViewModel.send() as the RAGService-compatible overload.
     func ask(question: String,
+             onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+        try await ask(question: question, conversationHistory: [],
+                      knownFacts: [:], followUpRound: 0, maxFollowUpRounds: 3,
+                      onEvent: onEvent)
+    }
+
+    func ask(question: String,
+             conversationHistory: [(user: String, assistant: String)],
+             knownFacts: [String: String],
+             followUpRound: Int,
+             maxFollowUpRounds: Int,
              onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
         // Step 1: Route to expert groups
@@ -50,8 +61,38 @@ final class LegalExpertService {
         onEvent(.thinkStep(name: "细分专家",
                            content: expertNames.joined(separator: "、")))
 
-        // Step 3: Auto-extract facts + collect missing (non-interactive on iOS)
-        let knownFacts = autoExtractFacts(question: question, experts: allSelectedExperts)
+        // Step 3: Auto-extract facts from all conversation messages
+        let allUserText = ([question] + conversationHistory.map { $0.user + " " + $0.assistant }).joined(separator: "\n")
+        var mergedFacts = autoExtractFacts(question: allUserText, experts: allSelectedExperts)
+        for (k, v) in knownFacts { mergedFacts[k] = v }
+
+        // Follow-up: check for missing critical info when allowed
+        if followUpRound < maxFollowUpRounds {
+            let missingInfos = allSelectedExperts.flatMap { expert in
+                expert.requiredInfo.filter { info in
+                    mergedFacts[info.field] == nil &&
+                    !info.regexHint.isEmpty &&
+                    !info.question.isEmpty
+                }
+            }.uniqued(by: \.field)
+
+            if !missingInfos.isEmpty {
+                let isLastRound = followUpRound == maxFollowUpRounds - 1
+                let questionText: String
+                if isLastRound || missingInfos.count == 1 {
+                    // Last round or only one question: list all at once
+                    let lines = missingInfos.enumerated().map { "\($0.offset + 1). \($0.element.question)" }
+                    questionText = "为了给您更准确的分析，请补充以下信息：\n" + lines.joined(separator: "\n")
+                } else {
+                    // Ask the single most important missing field
+                    questionText = missingInfos[0].question
+                }
+                onEvent(.clarifyingQuestion(questionText))
+                return []
+            }
+        }
+
+        let knownFacts = mergedFacts
 
         // Step 4: Each sub-expert retrieves + analyzes
         var expertArticles: [String: [DatabaseManager.RAGArticle]] = [:]
@@ -442,5 +483,14 @@ final class LegalExpertService {
               let b = t.range(of: close, options: .backwards)?.upperBound
         else { return t }
         return String(t[a..<b])
+    }
+}
+
+// MARK: - Array helper
+
+private extension Array {
+    func uniqued<T: Hashable>(by keyPath: KeyPath<Element, T>) -> [Element] {
+        var seen = Set<T>()
+        return filter { seen.insert($0[keyPath: keyPath]).inserted }
     }
 }

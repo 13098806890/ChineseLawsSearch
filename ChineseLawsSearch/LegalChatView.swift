@@ -6,13 +6,40 @@
 import SwiftUI
 import Combine
 
+// MARK: - Mode
+
+enum ChatMode: String, CaseIterable, Codable {
+    case rag    = "快速"
+    case expert = "专家"
+
+    var icon: String {
+        switch self {
+        case .rag:    return "bolt"
+        case .expert: return "person.3"
+        }
+    }
+}
+
+// MARK: - View
+
 struct LegalChatView: View {
     @ObservedObject var vm: LegalChatViewModel
+    @ObservedObject var historyStore: ChatHistoryStore
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
 
+    @State private var showHistory = false
+
     var body: some View {
         VStack(spacing: 0) {
+            // Mode bar — only shown before first message
+            if vm.messages.isEmpty {
+                modePicker
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
@@ -43,9 +70,10 @@ struct LegalChatView: View {
                 }
             }
 
-            // 输入栏（无分割线）
+            // Input bar
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("请输入您的法律问题…", text: $vm.inputText, axis: .vertical)
+                TextField(vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…",
+                          text: $vm.inputText, axis: .vertical)
                     .lineLimit(1...5)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -54,7 +82,7 @@ struct LegalChatView: View {
                     .disabled(vm.isThinking)
 
                 Button {
-                    Task { await vm.send() }
+                    Task { await vm.send(historyStore: historyStore) }
                 } label: {
                     Image(systemName: vm.isThinking ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: 30))
@@ -70,28 +98,68 @@ struct LegalChatView: View {
         .navigationTitle("法律咨询")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("模式", selection: $vm.mode) {
-                    ForEach(ChatMode.allCases, id: \.self) { m in
-                        Label(m.rawValue, systemImage: m.icon).tag(m)
-                    }
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button {
+                    vm.newSession()
+                } label: {
+                    Image(systemName: "square.and.pencil")
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 160)
                 .disabled(vm.isThinking)
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    showHistory = true
+                } label: {
+                    Image(systemName: "clock")
+                }
+            }
+        }
+        .sheet(isPresented: $showHistory) {
+            ChatHistorySheet(historyStore: historyStore) { session in
+                vm.loadSession(session)
+                showHistory = false
             }
         }
     }
 
+    // MARK: Mode picker
+
+    private var modePicker: some View {
+        HStack(spacing: 0) {
+            ForEach(ChatMode.allCases, id: \.self) { m in
+                Button {
+                    vm.mode = m
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: m.icon)
+                            .font(.system(size: 13))
+                        Text(m.rawValue)
+                            .font(.subheadline).fontWeight(.medium)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(vm.mode == m
+                                ? AppColors.shared.searchHighlight
+                                : Color(.systemGray5))
+                    .foregroundStyle(vm.mode == m ? .white : Color(.label))
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(.systemGray4), lineWidth: 0.5))
+    }
+
+    // MARK: Placeholder
+
     private var placeholderView: some View {
         VStack(spacing: 16) {
-            Image(systemName: vm.mode == .expert ? "person.3" : "scale.3d")
+            Image(systemName: vm.mode == .expert ? "person.3" : "bolt.circle")
                 .font(.system(size: 48))
                 .foregroundStyle(AppColors.shared.searchHighlight.opacity(0.6))
             Text("您好，我是中国法律助手")
                 .font(.headline)
             Text(vm.mode == .expert
-                 ? "专家模式：召集 17 位细分专家协作分析，回答更深入，速度稍慢。"
+                 ? "专家模式：召集细分专家协作分析，回答更深入，速度稍慢。"
                  : "快速模式：关键词检索 + 相关性过滤，适合快速查询。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -101,6 +169,8 @@ struct LegalChatView: View {
         .padding(.top, 60)
         .padding(.horizontal, 32)
     }
+
+    // MARK: Thinking dots
 
     private var thinkingIndicator: some View {
         HStack(spacing: 6) {
@@ -132,12 +202,11 @@ private struct MessageBubble: View {
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
 
-    @State private var showSteps    = true   // 默认展开
+    @State private var showSteps     = true
     @State private var showCitations = false
 
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
-            // 用户气泡
             if message.role == .user {
                 HStack {
                     Spacer(minLength: 48)
@@ -149,43 +218,57 @@ private struct MessageBubble: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                 }
             } else {
-                // 思考步骤折叠区
-                if showThinking && !message.thinkSteps.isEmpty {
-                    thinkingSection
-                }
-
-                // 子问题列表
-                if !message.subQuestions.isEmpty {
-                    subQuestionsView
-                }
-
-                // 正文气泡
-                if !message.text.isEmpty {
-                    HStack {
+                if message.isClarifying {
+                    // Clarifying question bubble with distinct styling
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "questionmark.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(AppColors.shared.searchHighlight)
+                            .padding(.top, 2)
                         Text(message.text)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
-                            .background(Color(.systemGray6))
+                            .background(AppColors.shared.searchHighlight.opacity(0.08))
                             .foregroundStyle(.primary)
                             .clipShape(RoundedRectangle(cornerRadius: 16))
-                        Spacer(minLength: 48)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(AppColors.shared.searchHighlight.opacity(0.3), lineWidth: 1)
+                            )
+                        Spacer(minLength: 32)
                     }
-                }
-
-                // 参考法条
-                if !message.citations.isEmpty {
-                    Button {
-                        withAnimation(.spring(duration: 0.25)) { showCitations.toggle() }
-                    } label: {
-                        Label(showCitations ? "收起参考法条" : "查看参考法条（\(message.citations.count)条）",
-                              systemImage: showCitations ? "chevron.up" : "book.closed")
-                            .font(.caption)
-                            .foregroundStyle(AppColors.shared.searchHighlight)
+                } else {
+                    if showThinking && !message.thinkSteps.isEmpty {
+                        thinkingSection
                     }
-                    .padding(.leading, 4)
+                    if !message.subQuestions.isEmpty {
+                        subQuestionsView
+                    }
+                    if !message.text.isEmpty {
+                        HStack {
+                            Text(message.text)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Color(.systemGray6))
+                                .foregroundStyle(.primary)
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                            Spacer(minLength: 48)
+                        }
+                    }
+                    if !message.citations.isEmpty {
+                        Button {
+                            withAnimation(.spring(duration: 0.25)) { showCitations.toggle() }
+                        } label: {
+                            Label(showCitations ? "收起参考法条" : "查看参考法条（\(message.citations.count)条）",
+                                  systemImage: showCitations ? "chevron.up" : "book.closed")
+                                .font(.caption)
+                                .foregroundStyle(AppColors.shared.searchHighlight)
+                        }
+                        .padding(.leading, 4)
 
-                    if showCitations {
-                        CitationList(citations: message.citations, navigate: navigate)
+                        if showCitations {
+                            CitationList(citations: message.citations, navigate: navigate)
+                        }
                     }
                 }
             }
@@ -195,7 +278,6 @@ private struct MessageBubble: View {
 
     private var thinkingSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 折叠头
             Button {
                 withAnimation(.spring(duration: 0.25)) { showSteps.toggle() }
             } label: {
@@ -208,18 +290,15 @@ private struct MessageBubble: View {
                         .foregroundStyle(AppColors.shared.searchHighlight)
                     Spacer()
                     Text("\(message.thinkSteps.count) 步")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.caption2).foregroundStyle(.secondary)
                     Image(systemName: showSteps ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(AppColors.shared.searchHighlight.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: showSteps ? 10 : 10))
             }
-
             if showSteps {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(message.thinkSteps.enumerated()), id: \.element.id) { idx, step in
@@ -237,10 +316,8 @@ private struct MessageBubble: View {
                 )
             }
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(AppColors.shared.searchHighlight.opacity(0.18), lineWidth: 1)
-        )
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .stroke(AppColors.shared.searchHighlight.opacity(0.18), lineWidth: 1))
         .padding(.horizontal, 4)
     }
 
@@ -258,8 +335,7 @@ private struct MessageBubble: View {
                         .background(AppColors.shared.searchHighlight)
                         .clipShape(Circle())
                     Text(message.subQuestions[i])
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
+                        .font(.subheadline).foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -268,15 +344,13 @@ private struct MessageBubble: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppColors.shared.searchHighlight.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(AppColors.shared.searchHighlight.opacity(0.2), lineWidth: 1)
-        )
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .stroke(AppColors.shared.searchHighlight.opacity(0.2), lineWidth: 1))
         .padding(.horizontal, 4)
     }
 }
 
-// MARK: - Think Step Row (时间线样式)
+// MARK: - Think Step Row
 
 private struct ThinkStepRow: View {
     let step: ThinkStep
@@ -285,25 +359,23 @@ private struct ThinkStepRow: View {
 
     private var stepIcon: String {
         switch step.name {
-        case "拆分问题":   return "scissors"
-        case "领域路由":   return "map"
-        case "关键词提取": return "text.magnifyingglass"
-        case "别名扩展":   return "arrow.triangle.branch"
-        case "检索条文":   return "doc.text.magnifyingglass"
-        case "相关性过滤": return "line.3.horizontal.decrease.circle"
+        case "拆分问题":     return "scissors"
+        case "领域路由":     return "map"
+        case "关键词提取":   return "text.magnifyingglass"
+        case "别名扩展":     return "arrow.triangle.branch"
+        case "检索条文":     return "doc.text.magnifyingglass"
+        case "相关性过滤":   return "line.3.horizontal.decrease.circle"
         case "参考法条筛选": return "checkmark.seal"
-        // Expert mode steps
-        case "专家路由":   return "person.3"
-        case "细分专家":   return "person.crop.rectangle.stack"
-        case "专家检索":   return "doc.text.magnifyingglass"
-        case "专家组综合": return "text.badge.checkmark"
-        default:           return "circle.fill"
+        case "专家路由":     return "person.3"
+        case "细分专家":     return "person.crop.rectangle.stack"
+        case "专家检索":     return "doc.text.magnifyingglass"
+        case "专家组综合":   return "text.badge.checkmark"
+        default:             return "circle.fill"
         }
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            // 时间线轴
             VStack(spacing: 0) {
                 ZStack {
                     Circle()
@@ -322,17 +394,14 @@ private struct ThinkStepRow: View {
             }
             .frame(width: 28)
 
-            // 内容
             VStack(alignment: .leading, spacing: 4) {
                 Text(step.name)
                     .font(.subheadline).fontWeight(.semibold)
                     .foregroundStyle(.primary)
-                // 按换行分段渲染，每行一个段落
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(step.content.components(separatedBy: "\n").filter { !$0.isEmpty }, id: \.self) { line in
                         Text(line)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -369,25 +438,20 @@ private struct CitationList: View {
                                 .font(.caption2)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(c.tier == "司法解释"
-                                            ? Color.blue.opacity(0.12)
-                                            : Color(.systemGray5))
+                                            ? Color.blue.opacity(0.12) : Color(.systemGray5))
                                 .clipShape(Capsule())
                                 .foregroundStyle(.secondary)
                         }
                         Text(c.content)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(6)
-                            .multilineTextAlignment(.leading)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(6).multilineTextAlignment(.leading)
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(.systemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color(.systemGray4), lineWidth: 0.5)
-                    )
+                    .overlay(RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color(.systemGray4), lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
             }
@@ -396,32 +460,140 @@ private struct CitationList: View {
     }
 }
 
-// MARK: - ViewModel
+// MARK: - History Sheet
 
-enum ChatMode: String, CaseIterable {
-    case rag    = "快速"
-    case expert = "专家"
+struct ChatHistorySheet: View {
+    @ObservedObject var historyStore: ChatHistoryStore
+    let onSelect: (ChatSession) -> Void
+    @Environment(\.dismiss) private var dismiss
 
-    var icon: String {
-        switch self {
-        case .rag:    return "bolt"
-        case .expert: return "person.3"
+    var body: some View {
+        NavigationStack {
+            Group {
+                if historyStore.sessions.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.secondary)
+                        Text("暂无历史记录")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(historyStore.sessions) { session in
+                            Button {
+                                onSelect(session)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Label(session.mode == "expert" ? "专家" : "快速",
+                                              systemImage: session.mode == "expert" ? "person.3" : "bolt")
+                                            .font(.caption2)
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 7).padding(.vertical, 3)
+                                            .background(AppColors.shared.searchHighlight)
+                                            .clipShape(Capsule())
+                                        Spacer()
+                                        Text(session.updatedAt, style: .relative)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(session.title)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    Text("\(session.messages.count / 2) 轮对话")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .onDelete { offsets in
+                            offsets.forEach { idx in
+                                historyStore.delete(id: historyStore.sessions[idx].id)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("历史记录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
         }
     }
 }
 
+// MARK: - ViewModel
+
 final class LegalChatViewModel: ObservableObject {
-    @Published var messages:    [ChatMessage] = []
-    @Published var inputText    = ""
-    @Published var isThinking   = false
-    @Published var dotScale     = [1.0, 1.0, 1.0]
-    @Published var scrollToken  = 0   // increment to trigger scroll
+    @Published var messages:   [ChatMessage] = []
+    @Published var inputText   = ""
+    @Published var isThinking  = false
+    @Published var dotScale    = [1.0, 1.0, 1.0]
+    @Published var scrollToken = 0
     @Published var mode: ChatMode = .rag
 
+    // Follow-up state (expert mode)
+    var isAwaitingClarification = false
+    var followUpRound = 0
+    var pendingFacts: [String: String] = [:]
+    var conversationHistory: [(user: String, assistant: String)] = []
+
+    // Session identity for history
+    var sessionId = UUID()
+    var sessionCreatedAt = Date()
+
     private var dotTask: Task<Void, Never>?
+    @AppStorage("maxFollowUpRounds") var maxFollowUpRounds: Int = 3
 
     @MainActor
-    func send() async {
+    func newSession() {
+        messages = []
+        inputText = ""
+        isThinking = false
+        isAwaitingClarification = false
+        followUpRound = 0
+        pendingFacts = [:]
+        conversationHistory = []
+        sessionId = UUID()
+        sessionCreatedAt = Date()
+    }
+
+    @MainActor
+    func loadSession(_ session: ChatSession) {
+        sessionId = session.id
+        sessionCreatedAt = session.createdAt
+        mode = ChatMode(rawValue: session.mode) ?? .rag
+        messages = session.messages.map { pm in
+            var msg = ChatMessage(
+                role: pm.role == "user" ? .user : .assistant,
+                text: pm.text,
+                isClarifying: false
+            )
+            msg.thinkSteps = pm.thinkSteps.map { ThinkStep(name: $0.name, content: $0.content) }
+            msg.citations   = pm.citations.map {
+                RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
+                            articleNumber: $0.articleNumber, articleNum: $0.articleNum,
+                            category: $0.category, content: $0.content)
+            }
+            msg.subQuestions = pm.subQuestions
+            return msg
+        }
+        isAwaitingClarification = false
+        followUpRound = 0
+        pendingFacts = [:]
+        conversationHistory = buildConversationHistory()
+    }
+
+    @MainActor
+    func send(historyStore: ChatHistoryStore) async {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !isThinking else { return }
         inputText = ""
@@ -433,30 +605,33 @@ final class LegalChatViewModel: ObservableObject {
         let replyIdx = messages.count - 1
 
         do {
-            let service: (String, @escaping (RAGEvent) -> Void) async throws -> [RAGCitation]
             switch mode {
-            case .rag:    service = LegalRAGService.shared.ask
-            case .expert: service = LegalExpertService.shared.ask
-            }
-
-            let citations = try await service(q) { [weak self] event in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    switch event {
-                    case .thinkStep(let name, let content):
-                        self.messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content))
-                        self.isThinking = false
-                    case .subQuestions(let qs):
-                        self.messages[replyIdx].subQuestions = qs
-                    case .token(let t):
-                        self.messages[replyIdx].text += t
-                        self.isThinking = false
-                        self.scrollToken += 1
+            case .rag:
+                let citations = try await LegalRAGService.shared.ask(question: q) { [weak self] event in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.handleEvent(event, replyIdx: replyIdx)
                     }
                 }
-            }
-            await MainActor.run {
-                messages[replyIdx].citations = citations
+                await MainActor.run { messages[replyIdx].citations = citations }
+
+            case .expert:
+                if isAwaitingClarification {
+                    followUpRound += 1
+                }
+                let citations = try await LegalExpertService.shared.ask(
+                    question: q,
+                    conversationHistory: conversationHistory,
+                    knownFacts: pendingFacts,
+                    followUpRound: followUpRound,
+                    maxFollowUpRounds: maxFollowUpRounds
+                ) { [weak self] event in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.handleEvent(event, replyIdx: replyIdx)
+                    }
+                }
+                await MainActor.run { messages[replyIdx].citations = citations }
             }
         } catch {
             await MainActor.run {
@@ -465,7 +640,78 @@ final class LegalChatViewModel: ObservableObject {
                 }
             }
         }
-        await MainActor.run { isThinking = false }
+
+        await MainActor.run {
+            isThinking = false
+            // Track conversation history for expert follow-up
+            if mode == .expert {
+                let assistantText = messages[replyIdx].text
+                conversationHistory.append((user: q, assistant: assistantText))
+            }
+            autoSave(historyStore: historyStore)
+        }
+    }
+
+    @MainActor
+    private func handleEvent(_ event: RAGEvent, replyIdx: Int) {
+        switch event {
+        case .thinkStep(let name, let content):
+            messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content))
+            isThinking = false
+        case .subQuestions(let qs):
+            messages[replyIdx].subQuestions = qs
+        case .token(let t):
+            messages[replyIdx].text += t
+            isThinking = false
+            scrollToken += 1
+        case .clarifyingQuestion(let text):
+            messages[replyIdx].text = text
+            messages[replyIdx].isClarifying = true
+            isThinking = false
+            isAwaitingClarification = true
+            scrollToken += 1
+        }
+    }
+
+    @MainActor
+    private func autoSave(historyStore: ChatHistoryStore) {
+        guard !messages.isEmpty else { return }
+        let title = messages.first(where: { $0.role == .user })?.text
+            .prefix(40)
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "新对话"
+        let session = ChatSession(
+            id: sessionId,
+            title: String(title),
+            mode: mode.rawValue,
+            createdAt: sessionCreatedAt,
+            updatedAt: Date(),
+            messages: messages.map { msg in
+                PersistedMessage(
+                    role: msg.role == .user ? "user" : "assistant",
+                    text: msg.text,
+                    thinkSteps: msg.thinkSteps.map { PersistedThinkStep(name: $0.name, content: $0.content) },
+                    citations: msg.citations.map {
+                        PersistedCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
+                                          articleNumber: $0.articleNumber, articleNum: $0.articleNum,
+                                          category: $0.category, content: $0.content)
+                    },
+                    subQuestions: msg.subQuestions
+                )
+            }
+        )
+        historyStore.save(session)
+    }
+
+    private func buildConversationHistory() -> [(user: String, assistant: String)] {
+        var pairs: [(user: String, assistant: String)] = []
+        var i = 0
+        while i < messages.count - 1 {
+            if messages[i].role == .user && messages[i+1].role == .assistant {
+                pairs.append((user: messages[i].text, assistant: messages[i+1].text))
+                i += 2
+            } else { i += 1 }
+        }
+        return pairs
     }
 
     @MainActor
