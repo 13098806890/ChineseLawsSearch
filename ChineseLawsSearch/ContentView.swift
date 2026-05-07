@@ -15,12 +15,18 @@ struct ContentView: View {
     @State private var selectedLaw: LawMeta?
     @State private var target: LawTarget?
     @State private var showSettings = false
+    @State private var backStack: [BackItem] = []
     @AppStorage("showThinking") private var showThinking = true
 
     @StateObject private var chatVM = LegalChatViewModel()
     @StateObject private var historyStore = ChatHistoryStore()
 
     enum Tab { case browse, chat }
+
+    struct BackItem {
+        let tab: Tab
+        let target: LawTarget?
+    }
 
     private var isPhone: Bool {
         UIDevice.current.userInterfaceIdiom == .phone
@@ -71,7 +77,8 @@ struct ContentView: View {
             NavigationStack {
                 TOCView(selectedLaw: $selectedLaw, target: $target)
                     .navigationDestination(item: $target) { t in
-                        LawDetailView(target: t, navigate: navigate)
+                        LawDetailView(target: t, navigate: navigate,
+                                      canGoBack: !backStack.isEmpty, goBack: goBack)
                     }
             }
         } else {
@@ -80,9 +87,10 @@ struct ContentView: View {
             } detail: {
                 if let t = target {
                     NavigationStack {
-                        LawDetailView(target: t, navigate: navigate)
+                        LawDetailView(target: t, navigate: navigate,
+                                      canGoBack: !backStack.isEmpty, goBack: goBack)
                     }
-                    .id(t.law.id)
+                    .id(t)
                 } else {
                     Text("选择一部法律")
                         .foregroundStyle(.secondary)
@@ -135,10 +143,18 @@ struct ContentView: View {
 
     func navigate(to lawId: Int, articleNum: Int?) {
         if let law = DatabaseManager.shared.lawMeta(id: lawId) {
+            backStack.append(BackItem(tab: tab, target: target))
             tab = .browse
             selectedLaw = law
             target = LawTarget(law: law, scrollToArticle: articleNum)
         }
+    }
+
+    func goBack() {
+        guard let prev = backStack.popLast() else { return }
+        tab = prev.tab
+        target = prev.target
+        selectedLaw = prev.target?.law
     }
 }
 

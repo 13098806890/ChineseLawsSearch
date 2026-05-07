@@ -8,6 +8,8 @@ import SwiftUI
 struct LawDetailView: View {
     let target: LawTarget
     let navigate: (Int, Int?) -> Void
+    var canGoBack: Bool = false
+    var goBack: () -> Void = {}
 
     @State private var nodes: [LawNode] = []
     @State private var outgoingMap: [Int: [OutgoingRef]] = [:]
@@ -149,6 +151,20 @@ struct LawDetailView: View {
         .navigationTitle(law.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if canGoBack {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        goBack()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("返回")
+                                .font(.body)
+                        }
+                    }
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 if isSearching {
                     Button("完成") {
