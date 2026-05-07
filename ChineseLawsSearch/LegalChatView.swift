@@ -810,11 +810,15 @@ final class LegalChatViewModel: ObservableObject {
             }
         }
 
-        await MainActor.run {
-            isThinking = false
-            let assistantText = messages.last(where: { $0.role == .assistant })?.text ?? ""
-            conversationHistory.append((user: q, assistant: assistantText))
-            autoSave(historyStore: historyStore)
+        // Defer autoSave to next run-loop turn so all pending @MainActor handleEvent
+        // tasks (including thinkStepWithArticles) have been applied before persisting.
+        let capturedStore = historyStore
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isThinking = false
+            let assistantText = self.messages.last(where: { $0.role == .assistant })?.text ?? ""
+            self.conversationHistory.append((user: q, assistant: assistantText))
+            self.autoSave(historyStore: capturedStore)
         }
     }
 
