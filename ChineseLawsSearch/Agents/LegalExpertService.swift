@@ -865,11 +865,12 @@ final class LegalExpertService {
         let groupText = groupAnswers.map { "【\($0.key)】\n\($0.value)" }.joined(separator: "\n\n")
         let citeCap = UserDefaults.standard.integer(forKey: "maxCitations")
         var seenCites = Set<String>()
-        let citeLines = articles.compactMap { a -> String? in
+        var citeLines = articles.compactMap { a -> String? in
             let key = "\(a.lawTitle)_\(a.articleNumber)"
             guard !a.articleNumber.isEmpty, seenCites.insert(key).inserted else { return nil }
             return "• 《\(a.lawTitle)》\(a.articleNumber) — \(String(a.content.prefix(60)))..."
-        }.prefix(citeCap > 0 ? citeCap : 15)
+        }
+        if citeCap > 0 { citeLines = Array(citeLines.prefix(citeCap)) }
         return "各专家组分析：\n\(groupText)\n\n检索到的法条（供引用）：\n\(citeLines.joined(separator: "\n"))"
     }
 
@@ -937,7 +938,7 @@ final class LegalExpertService {
             }
         }
 
-        return result.isEmpty ? Array(candidates.prefix(4)) : result
+        return result.isEmpty ? candidates : result
     }
 
     private func chineseOrArabicToInt(_ s: String) -> Int? {

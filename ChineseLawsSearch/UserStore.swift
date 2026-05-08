@@ -57,7 +57,7 @@ final class UserStore: ObservableObject {
 
     @AppStorage("showThinking")         var showThinking: Bool = true
     @AppStorage("maxFollowUpRounds")    var maxFollowUpRounds: Int = 3
-    @AppStorage("maxCitations")         var maxCitations: Int  = 20
+    @AppStorage("maxCitations")         var maxCitations: Int  = 0
     @AppStorage("maxContextArticles")   var maxContextArticles: Int = 20
 
     // MARK: - 模型选择
