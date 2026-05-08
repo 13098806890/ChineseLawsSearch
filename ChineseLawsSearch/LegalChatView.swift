@@ -299,7 +299,7 @@ private struct MessageBubble: View {
                         Image(systemName: "questionmark.circle.fill")
                             .font(.system(size: 18))
                             .foregroundStyle(AppColors.shared.searchHighlight)
-                            .padding(.top, 2)
+                            .padding(.top, 10)
                         Text(message.text)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)

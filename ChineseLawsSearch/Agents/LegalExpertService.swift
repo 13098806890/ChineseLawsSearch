@@ -361,11 +361,16 @@ final class LegalExpertService {
             if !missingInfos.isEmpty {
                 let isLastRound = followUpRound == maxFollowUpRounds - 1
                 let questionText: String
-                if isLastRound || missingInfos.count == 1 {
+                if isLastRound || missingInfos.count >= 2 {
+                    // 最后一轮或多项缺失：一次性列出所有问题
                     let lines = missingInfos.enumerated().map { "\($0.offset + 1). \($0.element.question)" }
-                    questionText = "为了提供更准确的分析，请补充以下事实信息：\n" + lines.joined(separator: "\n")
+                    questionText = "为了给您提供更准确的法律分析，需要了解以下几点关键信息：\n\n"
+                        + lines.joined(separator: "\n")
+                        + "\n\n请尽量详细回答，有助于专家给出更具针对性的意见。"
                 } else {
-                    questionText = missingInfos[0].question
+                    // 首轮单项缺失：礼貌引导，说明为何需要该信息
+                    let info = missingInfos[0]
+                    questionText = "为了更准确地分析您的情况，我需要了解一个关键信息：\n\n\(info.question)\n\n这一信息将直接影响适用的法律条款和您的权利主张，请尽量详细说明。"
                 }
                 onEvent(.clarifyingQuestion(questionText))
                 return []
