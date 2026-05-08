@@ -90,7 +90,7 @@ struct LegalChatView: View {
                     Task { await vm.send(historyStore: historyStore) }
                 } label: {
                     Image(systemName: vm.isThinking ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 30))
+                        .font(.system(size: 26))
                         .foregroundStyle(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking
                                          ? Color.appDisabled : AppColors.shared.searchHighlight)
                 }
@@ -98,7 +98,7 @@ struct LegalChatView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(Color.appBackground)
+            .background(.bar)
 
             // Token counter
             if tokenCounter.session.total > 0 {
@@ -115,7 +115,7 @@ struct LegalChatView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
-                .background(Color.appBackground)
+                .background(.bar)
             }
         }
         .navigationTitle("法律咨询")

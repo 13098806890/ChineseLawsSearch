@@ -62,9 +62,7 @@ struct ContentView: View {
                 }
             }
             .frame(height: 56)
-            .background(
-                Color.appBackground.ignoresSafeArea(edges: .bottom)
-            )
+            .background(.bar)
         }
         .sheet(isPresented: $showSettings) {
             SettingsSheet()
