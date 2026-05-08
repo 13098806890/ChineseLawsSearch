@@ -59,16 +59,18 @@ enum RAGEvent {
 // MARK: - Message intent
 
 enum MessageIntent: String {
-    case caseNarration = "case"      // 陈述案情 → 完整专家流程
-    case followUp      = "follow_up" // 追问 → 复用上次专家，携带 history
-    case general       = "general"   // 法律知识 → LLM 决策路径
-    case offTopic      = "off_topic" // 闲聊 → hardcoded 引导语
+    case caseNarration = "case"        // 陈述案情 → 完整专家流程
+    case followUp      = "follow_up"   // 追问 → 复用上次专家，携带 history
+    case general       = "general"     // 法律知识 → LLM 决策路径
+    case lawLookup     = "law_lookup"  // 查法条/规定 → 精准检索专家
+    case offTopic      = "off_topic"   // 闲聊 → hardcoded 引导语
 
     var label: String {
         switch self {
         case .caseNarration: return "案情分析"
         case .followUp:      return "追问"
         case .general:       return "法律知识"
+        case .lawLookup:     return "法条查询"
         case .offTopic:      return "非法律问题"
         }
     }

@@ -59,14 +59,16 @@ final class LegalExpertService {
         类型说明：
         - "case"：用户陈述具体纠纷事实，包含当事人、争议内容、损失、时间等具体信息
         - "follow_up"：基于历史对话中已有的**具体案情**继续追问，如"那我应该去哪个法院"、"这种情况能否申请保全"
-        - "general"：法律知识提问或使用咨询，不依赖具体案情，如"合同诉讼时效是多久"、"什么是连带责任"、"我应该怎么描述我的问题"、"你能帮我做什么"
+        - "law_lookup"：用户想查某条具体法律规定、某部法律的内容、某类行为的法律规范，如"合同法第几条规定了违约金"、"未成年人保护法对网络游戏有什么规定"、"酒驾的法律标准是什么"、"劳动法规定试用期最长多久"
+        - "general"：法律知识提问或使用咨询，不依赖具体案情，如"什么是连带责任"、"我应该怎么描述我的问题"、"你能帮我做什么"
         - "off_topic"：问候、闲聊、与法律无关的内容，以及询问 app 使用方式、对话格式等功能性问题
 
         注意：
         - "follow_up" 必须以历史对话中存在明确的具体案情为前提；若历史对话中没有案情，只有 off_topic/general 回复，则当前消息不能判定为 follow_up
-        - 询问"如何输入问题"、"需要什么格式"、"你是谁"等使用引导性问题属于 off_topic，不是 follow_up 或 general
+        - "law_lookup" 优先于 "general"：如果用户明确在查某条规定或某部法律的具体内容，判定为 law_lookup，不是 general
+        - 询问"如何输入问题"、"需要什么格式"、"你是谁"等使用引导性问题属于 off_topic
         - 有历史对话时，如果用户引入了与之前完全不同的新案情，判定为 "case"
-        - 无历史对话时，纯法律知识问题判定为 "general"，不要判定为 "case"
+        - 无历史对话时，纯法律知识问题判定为 "general" 或 "law_lookup"，不要判定为 "case"
         """
         let user = "历史对话：\n\(historySection)\n\n当前消息：\(message)"
 
@@ -149,6 +151,96 @@ final class LegalExpertService {
             )
             return citations
         }
+    }
+
+    /// Handle a law/regulation lookup — user wants to find specific provisions.
+    /// Extracts law name + topic keywords, does precise FTS, returns full articles + explanation.
+    func askLawLookup(question: String,
+                      onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+        onEvent(.thinkStep(name: "法条查询", content: "识别目标法律和查询关键词…"))
+
+        // Step 1: LLM extracts target law name + keywords
+        let extractPrompt = """
+        用户想查找特定法律规定。从问题中提取：
+        1. 目标法律名称（如有，写出完整中文名称；如无则输出空字符串）
+        2. 查询关键词（2-4个，用于全文检索）
+
+        输出JSON：{"law": "法律名称或空字符串", "keywords": ["关键词1", "关键词2"]}
+        问题：\(question)
+        """
+        let extractRaw = (try? await chat(system: "只输出JSON，不要其他内容。", user: extractPrompt)) ?? ""
+        var targetLaw = ""
+        var keywords: [String] = []
+        if let data = extractJSON(extractRaw, open: "{", close: "}").data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            targetLaw = (obj["law"] as? String) ?? ""
+            keywords  = (obj["keywords"] as? [String]) ?? []
+        }
+        if keywords.isEmpty { keywords = simpleKeywords(from: question) }
+
+        let db = DatabaseManager.shared
+        var seenIds = Set<Int>()
+        var articles: [DatabaseManager.RAGArticle] = []
+        let allDomains = ["宪法相关法", "民法典", "民法商法", "刑法",
+                          "行政法", "经济法", "社会法", "诉讼与非诉讼程序法"]
+        let allCats = ["法律", "宪法", "修正案", "法律解释", "司法解释", "行政法规", "监察法规"]
+
+        // Boost: if target law name given, search within that law first
+        if !targetLaw.isEmpty {
+            for kw in keywords.prefix(4) {
+                for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: allCats, limit: 8) {
+                    if a.lawTitle.contains(targetLaw) || targetLaw.contains(a.lawTitle) {
+                        if seenIds.insert(a.nodeId).inserted { articles.append(a) }
+                    }
+                }
+            }
+        }
+        // Fallback / supplement: broad search
+        for kw in keywords.prefix(4) {
+            for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: allCats, limit: 6) {
+                if seenIds.insert(a.nodeId).inserted { articles.append(a) }
+            }
+        }
+
+        let topArticles = Array(articles.prefix(15))
+        let lawInfo = targetLaw.isEmpty ? "全库检索" : "目标：《\(targetLaw)》"
+        onEvent(.thinkStep(name: "法条检索",
+                           content: "\(lawInfo)，关键词：\(keywords.joined(separator: "、"))，命中 \(topArticles.count) 条"))
+
+        if topArticles.isEmpty {
+            let kws = keywords.joined(separator: "、")
+            let msg = targetLaw.isEmpty
+                ? "未找到与「\(kws)」相关的法律条文，请尝试换用其他关键词。"
+                : "未找到《\(targetLaw)》中与「\(kws)」相关的条文，请确认法律名称或关键词。"
+            onEvent(.token(msg))
+            return []
+        }
+
+        let citations = topArticles.map {
+            RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
+                        articleNumber: $0.articleNumber, articleNum: $0.articleNum,
+                        category: $0.category, content: $0.content)
+        }
+        let artText = topArticles.map {
+            "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)"
+        }.joined(separator: "\n\n")
+
+        let systemPrompt = """
+        你是中国法律条文检索助手。根据检索到的法条，直接引用原文回答用户的查询。
+        - 先点名具体是哪部法律第几条
+        - 引用条文原文（可适当截取关键句）
+        - 如有多条相关条文，逐条列出
+        - 不要发表评论，不要推测案情，只陈述法条规定
+        - 严禁使用Markdown格式
+        """
+        let userMsg = "相关法条：\n\(artText)\n\n用户查询：\(question)"
+        try await LLMProviderRegistry.current.streamChat(
+            messages: [["role": "system", "content": systemPrompt],
+                       ["role": "user",   "content": userMsg]],
+            temperature: 0.05,
+            onToken: { onEvent(.token($0)) }
+        )
+        return citations
     }
 
     /// Handle a follow-up question, reusing previously selected experts.

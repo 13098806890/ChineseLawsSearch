@@ -42,10 +42,6 @@ struct LegalChatView: View {
                                       onToggleCitations: { vm.toggleCitations(messageId: msg.id) })
                             .id(msg.id)
                     }
-                    if vm.isThinking {
-                        thinkingIndicator
-                            .id("thinking")
-                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -55,16 +51,18 @@ struct LegalChatView: View {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
-            .onChange(of: vm.isThinking) { _, thinking in
-                if thinking {
-                    withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
-                }
-            }
             #if os(iOS)
             .simultaneousGesture(TapGesture().onEnded { inputFocused = false })
             #endif
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
+                    // Thinking indicator sits above input bar, outside LazyVStack
+                    if vm.isThinking {
+                        thinkingIndicator
+                            .padding(.horizontal, 16)
+                            .padding(.top, 6)
+                            .padding(.bottom, 2)
+                    }
                     Divider()
                     // Input bar
                     HStack(alignment: .bottom, spacing: 8) {
@@ -259,6 +257,7 @@ private func intentIcon(_ intent: MessageIntent) -> String {
     case .caseNarration: return "doc.text.magnifyingglass"
     case .followUp:      return "arrow.turn.down.right"
     case .general:       return "book"
+    case .lawLookup:     return "text.page.badge.magnifyingglass"
     case .offTopic:      return "bubble.left"
     }
 }
@@ -928,8 +927,8 @@ final class LegalChatViewModel: ObservableObject {
                 reply.intent = .offTopic
                 messages.append(reply)
 
-            // ── General / Follow-up / Case: append reply slot then run pipeline ─
-            case .general, .followUp, .caseNarration:
+            // ── General / LawLookup / Follow-up / Case: append reply slot then run pipeline ─
+            case .general, .lawLookup, .followUp, .caseNarration:
                 var replyMsg = ChatMessage(role: .assistant)
                 replyMsg.intent = intent
                 messages.append(replyMsg)
@@ -942,6 +941,13 @@ final class LegalChatViewModel: ObservableObject {
 
                 case .general:
                     citations = try await LegalExpertService.shared.askGeneral(
+                        question: q
+                    ) { [weak self] event in
+                        Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
+                    }
+
+                case .lawLookup:
+                    citations = try await LegalExpertService.shared.askLawLookup(
                         question: q
                     ) { [weak self] event in
                         Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
