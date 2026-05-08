@@ -4,21 +4,21 @@
 <dict>
     <!-- 文件夹图标（普通子分组） -->
     <key>folderIcon</key>
-    <string>#E07820</string>
+    <string>#4A90D9</string>
     <!-- 标签图标（行政法规子分组） -->
     <key>tagIcon</key>
-    <string>#E07820</string>
+    <string>#4A90D9</string>
     <!-- 搜索结果关键词高亮 -->
     <key>searchHighlight</key>
-    <string>#E07820</string>
+    <string>#4A90D9</string>
     <!-- 跳转目标条文的背景高亮 -->
     <key>articleHighlight</key>
-    <string>#E07820</string>
+    <string>#4A90D9</string>
     <!-- 出向引用链接文字颜色 -->
     <key>outgoingRef</key>
-    <string>#E07820</string>
+    <string>#4A90D9</string>
     <!-- 入向引用角标颜色 -->
     <key>incomingRef</key>
-    <string>#E07820</string>
+    <string>#4A90D9</string>
 </dict>
 </plist>
