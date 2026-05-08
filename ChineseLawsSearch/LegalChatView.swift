@@ -62,7 +62,9 @@ struct LegalChatView: View {
                     }
                 }
             }
+            #if os(iOS)
             .simultaneousGesture(TapGesture().onEnded { inputFocused = false })
+            #endif
 
             // Input bar
             HStack(alignment: .bottom, spacing: 8) {
@@ -75,12 +77,14 @@ struct LegalChatView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 18))
                     .disabled(vm.isThinking)
                     .focused($inputFocused)
+                    #if os(iOS)
                     .toolbar {
                         ToolbarItemGroup(placement: .keyboard) {
                             Spacer()
                             Button("完成") { inputFocused = false }
                         }
                     }
+                    #endif
 
                 Button {
                     Task { await vm.send(historyStore: historyStore) }
