@@ -82,23 +82,26 @@ struct LawDetailView: View {
         .scrollPosition(id: $scrollPosition, anchor: .top)
         .safeAreaInset(edge: .top, spacing: 0) {
             // 始终渲染，用 frame(height:) 控制占位，避免视图增删导致 ScrollView 重布局卡顿和内容重叠
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("搜索本法条文…", text: $searchQuery)
-                    .focused($searchFocused)
-                    .submitLabel(.search)
-                    .autocorrectionDisabled()
-                if !searchQuery.isEmpty {
-                    Button { searchQuery = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("搜索本法条文…", text: $searchQuery)
+                        .focused($searchFocused)
+                        .submitLabel(.search)
+                        .autocorrectionDisabled()
+                    if !searchQuery.isEmpty {
+                        Button { searchQuery = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                Divider()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.appSecondaryBackground)
+            .background(.bar)
             .frame(height: isSearching ? nil : 0, alignment: .top)
             .opacity(isSearching ? 1 : 0)
             .allowsHitTesting(isSearching)
