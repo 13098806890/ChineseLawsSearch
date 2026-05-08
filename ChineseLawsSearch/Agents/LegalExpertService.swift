@@ -161,11 +161,18 @@ final class LegalExpertService {
 
         // Step 1: LLM extracts target law name + keywords
         let extractPrompt = """
-        用户想查找特定法律规定。从问题中提取：
-        1. 目标法律名称（如有，写出完整中文名称；如无则输出空字符串）
-        2. 查询关键词（2-4个，用于全文检索）
+        用户想查找特定法律规定。从问题中提取检索信息，输出JSON：
+        {"law": "完整法律名称或空字符串", "keywords": ["词1", "词2", "词3"]}
 
-        输出JSON：{"law": "法律名称或空字符串", "keywords": ["关键词1", "关键词2"]}
+        关键词提取规则：
+        - 每个关键词必须是**单个最小语义单元**（2-4个汉字），不要提取组合短语
+        - 优先使用法条中的规范用语，例如：
+          用户说"噪音施工时间" → 提取 ["施工噪声", "禁止", "夜间"] 而不是 ["噪音施工时间"]
+          用户说"酒驾标准" → 提取 ["饮酒", "驾驶", "血液酒精"] 而不是 ["酒驾标准"]
+          用户说"试用期最长多久" → 提取 ["试用期", "期限"] 而不是 ["试用期最长"]
+        - 提取3-5个词，覆盖问题的不同维度（主体、行为、后果、时间等）
+        - 如果问题明确提到法律名称，填入"law"字段（写完整名称，如"中华人民共和国噪声污染防治法"）
+
         问题：\(question)
         """
         let extractRaw = (try? await chat(system: "只输出JSON，不要其他内容。", user: extractPrompt)) ?? ""
@@ -196,16 +203,18 @@ final class LegalExpertService {
             }
         }
         // Fallback / supplement: broad search
-        for kw in keywords.prefix(4) {
+        for kw in keywords.prefix(5) {
             for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: allCats, limit: 6) {
                 if seenIds.insert(a.nodeId).inserted { articles.append(a) }
             }
         }
 
-        let topArticles = Array(articles.prefix(15))
+        // Filter out unrelated articles using the same relevance check as expert pipeline
+        let filtered = filterArticles(question: question, articles: articles)
+        let topArticles = Array((filtered.isEmpty ? articles : filtered).prefix(15))
         let lawInfo = targetLaw.isEmpty ? "全库检索" : "目标：《\(targetLaw)》"
         onEvent(.thinkStep(name: "法条检索",
-                           content: "\(lawInfo)，关键词：\(keywords.joined(separator: "、"))，命中 \(topArticles.count) 条"))
+                           content: "\(lawInfo)，关键词：\(keywords.joined(separator: "、"))，命中 \(topArticles.count) 条（过滤后）"))
 
         if topArticles.isEmpty {
             let kws = keywords.joined(separator: "、")
