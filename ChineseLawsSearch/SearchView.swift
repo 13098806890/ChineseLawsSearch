@@ -183,7 +183,7 @@ struct SearchView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color(.secondarySystemBackground))
+        .background(Color.appSecondaryBackground)
     }
 
     // MARK: - 搜索

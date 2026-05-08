@@ -53,7 +53,7 @@ struct LawDetailView: View {
                     }
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemGroupedBackground))
+                    .background(Color.appSecondaryBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding()
                     .id(-1)
@@ -98,7 +98,7 @@ struct LawDetailView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Color(.secondarySystemBackground))
+                .background(Color.appSecondaryBackground)
             }
         }
         .overlay(alignment: .trailing) {
@@ -233,7 +233,7 @@ struct NodeRowView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 12)
                     .padding(.horizontal)
-                    .background(Color(.systemGroupedBackground))
+                    .background(Color.appSecondaryBackground)
             case "section":
                 Text(node.content)
                     .font(.subheadline).bold()

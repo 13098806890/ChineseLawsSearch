@@ -57,13 +57,13 @@ struct ContentView: View {
                         Text("设置")
                             .font(.caption2)
                     }
-                    .foregroundStyle(Color(.systemGray))
+                    .foregroundStyle(Color.appSecondaryLabel)
                     .frame(maxWidth: .infinity)
                 }
             }
             .frame(height: 56)
             .background(
-                Color(.systemBackground).ignoresSafeArea(edges: .bottom)
+                Color.appBackground.ignoresSafeArea(edges: .bottom)
             )
         }
         .sheet(isPresented: $showSettings) {
@@ -151,7 +151,7 @@ struct ContentView: View {
                 Text(title)
                     .font(.caption2)
             }
-            .foregroundStyle(tab == t ? AppColors.shared.searchHighlight : Color(.systemGray))
+            .foregroundStyle(tab == t ? AppColors.shared.searchHighlight : Color.appSecondaryLabel)
             .frame(maxWidth: .infinity)
         }
     }

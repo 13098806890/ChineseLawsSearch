@@ -73,7 +73,7 @@ struct LegalChatView: View {
                     .lineLimit(1...5)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(Color(.systemGray6))
+                    .background(Color.appTertiaryBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
                     .disabled(vm.isThinking)
                     .focused($inputFocused)
@@ -92,13 +92,13 @@ struct LegalChatView: View {
                     Image(systemName: vm.isThinking ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: 30))
                         .foregroundStyle(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking
-                                         ? Color(.systemGray3) : AppColors.shared.searchHighlight)
+                                         ? Color.appDisabled : AppColors.shared.searchHighlight)
                 }
                 .disabled(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(Color(.systemBackground))
+            .background(Color.appBackground)
 
             // Token counter
             if tokenCounter.session.total > 0 {
@@ -115,7 +115,7 @@ struct LegalChatView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
-                .background(Color(.systemBackground))
+                .background(Color.appBackground)
             }
         }
         .navigationTitle("法律咨询")
@@ -210,7 +210,7 @@ struct LegalChatView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(12)
-                    .background(Color(.secondarySystemBackground))
+                    .background(Color.appSecondaryBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
 
@@ -239,7 +239,7 @@ struct LegalChatView: View {
         HStack(spacing: 6) {
             ForEach(0..<3, id: \.self) { i in
                 Circle()
-                    .fill(Color(.systemGray3))
+                    .fill(Color.appDisabled)
                     .frame(width: 8, height: 8)
                     .scaleEffect(vm.dotScale[i])
                     .animation(
@@ -250,7 +250,7 @@ struct LegalChatView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color(.systemGray6))
+        .background(Color.appTertiaryBackground)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { vm.startDotAnimation() }
@@ -348,7 +348,7 @@ private struct MessageBubble: View {
                             Text(verbatim: message.text)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 10)
-                                .background(Color(.systemGray6))
+                                .background(Color.appTertiaryBackground)
                                 .foregroundStyle(.primary)
                                 .clipShape(RoundedRectangle(cornerRadius: 16))
                             Spacer(minLength: 48)
@@ -533,7 +533,7 @@ private struct ThinkStepRow: View {
                                             .font(.caption2)
                                             .padding(.horizontal, 5).padding(.vertical, 1)
                                             .background(a.tier == "司法解释"
-                                                        ? Color.blue.opacity(0.1) : Color(.systemGray5))
+                                                        ? Color.blue.opacity(0.1) : Color.appQuaternaryBackground)
                                             .clipShape(Capsule())
                                             .foregroundStyle(.secondary)
                                     }
@@ -543,10 +543,10 @@ private struct ThinkStepRow: View {
                                 }
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(.systemBackground).opacity(0.7))
+                                .background(Color.appTertiaryBackground)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                                 .overlay(RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color(.systemGray4), lineWidth: 0.5))
+                                    .stroke(Color.appSeparator, lineWidth: 0.5))
                             }
                             .buttonStyle(.plain)
                         }
@@ -608,7 +608,7 @@ private struct CitationList: View {
                                 .font(.caption2)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(c.tier == "司法解释"
-                                            ? Color.blue.opacity(0.12) : Color(.systemGray5))
+                                            ? Color.blue.opacity(0.12) : Color.appQuaternaryBackground)
                                 .clipShape(Capsule())
                                 .foregroundStyle(.secondary)
                         }
@@ -618,10 +618,10 @@ private struct CitationList: View {
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.systemBackground))
+                    .background(Color.appBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color(.systemGray4), lineWidth: 0.5))
+                        .stroke(Color.appSeparator, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
             }
