@@ -15,8 +15,11 @@ struct ChatMessage: Identifiable, Equatable {
     var thinkSteps: [ThinkStep]  = []
     var citations: [RAGCitation] = []
     var subQuestions: [String]   = []
-    var isClarifying: Bool       = false  // expert follow-up question bubble
-    var subQuestionIndex: Int?   = nil    // 1-based index when part of parallel sub-questions
+    var isClarifying: Bool       = false
+    var subQuestionIndex: Int?   = nil
+    var showSteps: Bool          = true
+    var showCitations: Bool      = false
+    var intent: MessageIntent?   = nil  // set on assistant messages
 
     init(role: Role, text: String = "", isClarifying: Bool = false) {
         self.role = role
@@ -50,6 +53,25 @@ enum RAGEvent {
     case subQuestions([String])
     case token(String)
     case clarifyingQuestion(String)   // expert asking user for more info
+    case expertsSelected([SubExpert]) // notifies ViewModel which experts were chosen
+}
+
+// MARK: - Message intent
+
+enum MessageIntent: String {
+    case caseNarration = "case"      // 陈述案情 → 完整专家流程
+    case followUp      = "follow_up" // 追问 → 复用上次专家，携带 history
+    case general       = "general"   // 法律知识 → LLM 决策路径
+    case offTopic      = "off_topic" // 闲聊 → hardcoded 引导语
+
+    var label: String {
+        switch self {
+        case .caseNarration: return "案情分析"
+        case .followUp:      return "追问"
+        case .general:       return "法律知识"
+        case .offTopic:      return "非法律问题"
+        }
+    }
 }
 
 // MARK: - Service

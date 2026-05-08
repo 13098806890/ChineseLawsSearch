@@ -51,6 +51,35 @@ struct ChatSession: Identifiable, Codable {
     var createdAt: Date
     var updatedAt: Date
     var messages: [PersistedMessage]
+
+    // 专家追问上下文（按 name 存储，loadSession 时反查 SubExpert）
+    var selectedExpertNames: [String]
+    var pendingFacts: [String: String]
+    var isAwaitingClarification: Bool
+    var followUpRound: Int
+
+    // Token 累计统计
+    var totalPromptTokens: Int
+    var totalCompletionTokens: Int
+
+    init(id: UUID, title: String, mode: String, createdAt: Date, updatedAt: Date,
+         messages: [PersistedMessage],
+         selectedExpertNames: [String] = [],
+         pendingFacts: [String: String] = [:],
+         isAwaitingClarification: Bool = false,
+         followUpRound: Int = 0,
+         totalPromptTokens: Int = 0,
+         totalCompletionTokens: Int = 0) {
+        self.id = id; self.title = title; self.mode = mode
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+        self.messages = messages
+        self.selectedExpertNames = selectedExpertNames
+        self.pendingFacts = pendingFacts
+        self.isAwaitingClarification = isAwaitingClarification
+        self.followUpRound = followUpRound
+        self.totalPromptTokens = totalPromptTokens
+        self.totalCompletionTokens = totalCompletionTokens
+    }
 }
 
 // MARK: - Store

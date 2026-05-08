@@ -11,6 +11,8 @@ struct LawDetailView: View {
     var canGoBack: Bool = false
     var goBack: () -> Void = {}
 
+    @EnvironmentObject private var userStore: UserStore
+
     @State private var nodes: [LawNode] = []
     @State private var outgoingMap: [Int: [OutgoingRef]] = [:]
     @State private var incomingMap: [Int: [IncomingRef]] = [:]
@@ -100,7 +102,7 @@ struct LawDetailView: View {
             }
         }
         .overlay(alignment: .trailing) {
-            if !nodes.isEmpty && !isSearching {
+            if !nodes.isEmpty && !isSearching && userStore.showSideIndex {
                 SideIndexBar(nodes: nodes) { nodeId, articleNum in
                     scrollPosition = nodeId
                     if let a = articleNum {
@@ -146,7 +148,12 @@ struct LawDetailView: View {
             }
         }
         .onChange(of: isSearching) { _, searching in
-            if searching { searchFocused = true }
+            if searching {
+                searchFocused = true
+                scrollPosition = nil
+            } else {
+                scrollPosition = nil
+            }
         }
         .navigationTitle(law.title)
         .navigationBarTitleDisplayMode(.inline)
