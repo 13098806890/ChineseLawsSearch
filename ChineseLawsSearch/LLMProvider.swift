@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Combine
 
 // MARK: - Error
 
@@ -43,6 +44,23 @@ protocol LLMProvider {
     func streamChat(messages: [[String: Any]], temperature: Double, onToken: @escaping (String) -> Void) async throws
 }
 
+// MARK: - Token tracking
+
+struct TokenUsage {
+    var promptTokens:     Int
+    var completionTokens: Int
+    var total: Int { promptTokens + completionTokens }
+}
+
+@MainActor
+final class TokenCounter: ObservableObject {
+    static let shared = TokenCounter()
+    @Published private(set) var session = TokenUsage(promptTokens: 0, completionTokens: 0)
+
+    func record(_ usage: TokenUsage) { session.promptTokens += usage.promptTokens; session.completionTokens += usage.completionTokens }
+    func reset() { session = TokenUsage(promptTokens: 0, completionTokens: 0) }
+}
+
 // MARK: - OpenAI-compatible helper (DeepSeek & Gemini share same wire format)
 
 private func openAIChat(
@@ -73,6 +91,7 @@ private func openAIStreamBytes(
 ) async throws -> (URLSession.AsyncBytes, URLResponse) {
     let body: [String: Any] = [
         "model": model, "stream": true,
+        "stream_options": ["include_usage": true],
         "temperature": temperature,
         "messages": messages
     ]
@@ -91,6 +110,11 @@ private func extractOpenAIContent(_ data: Data) throws -> String {
           let msg     = choices.first?["message"] as? [String: Any],
           let content = msg["content"] as? String
     else { throw URLError(.badServerResponse) }
+    if let usage    = obj["usage"] as? [String: Any],
+       let prompt   = usage["prompt_tokens"]     as? Int,
+       let complete = usage["completion_tokens"] as? Int {
+        Task { @MainActor in TokenCounter.shared.record(TokenUsage(promptTokens: prompt, completionTokens: complete)) }
+    }
     return content
 }
 
@@ -99,9 +123,16 @@ private func consumeSSELines(_ bytes: URLSession.AsyncBytes, onToken: @escaping 
         guard line.hasPrefix("data: ") else { continue }
         let json = String(line.dropFirst(6))
         guard json != "[DONE]",
-              let data    = json.data(using: .utf8),
-              let obj     = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = obj["choices"] as? [[String: Any]],
+              let data = json.data(using: .utf8),
+              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { continue }
+        // usage-only chunk (choices is empty or absent)
+        if let usage    = obj["usage"] as? [String: Any],
+           let prompt   = usage["prompt_tokens"]     as? Int,
+           let complete = usage["completion_tokens"] as? Int {
+            Task { @MainActor in TokenCounter.shared.record(TokenUsage(promptTokens: prompt, completionTokens: complete)) }
+        }
+        guard let choices = obj["choices"] as? [[String: Any]],
               let delta   = choices.first?["delta"] as? [String: Any],
               let token   = delta["content"] as? String
         else { continue }

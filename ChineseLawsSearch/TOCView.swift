@@ -143,7 +143,14 @@ struct TOCView: View {
             let law = DatabaseManager.shared.lawMeta(id: menuLaw.id)
             if let law {
                 selectedLaw = law
-                target = LawTarget(law: law, scrollToArticle: nil)
+                let newTarget = LawTarget(law: law, scrollToArticle: nil)
+                if target == newTarget {
+                    // 强制触发：先清空再赋值
+                    target = nil
+                    DispatchQueue.main.async { target = newTarget }
+                } else {
+                    target = newTarget
+                }
             }
         } label: {
             Text(menuLaw.title)

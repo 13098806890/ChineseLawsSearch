@@ -19,6 +19,7 @@ struct LawMeta: Identifiable, Hashable {
     let docNumber: String
     let totalArticles: Int
     let subjectArea: String
+    let aliases: [String]    // 法律别名，如 ["民诉法", "民事诉讼法"]
 }
 
 struct LawNode: Identifiable {
@@ -70,21 +71,42 @@ final class DatabaseManager {
     private var enhDb: OpaquePointer?
 
     private init() {
-        guard let url = Bundle.main.url(forResource: "law_content", withExtension: "db") else {
-            print("DatabaseManager: 找不到 law_content.db")
-            return
-        }
-        if sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
-            print("DatabaseManager: 无法打开数据库")
-            db = nil
-        }
+        db    = DatabaseManager.openDB(resource: "law_content",     ext: "db")
+        enhDb = DatabaseManager.openDB(resource: "law_enhancements", ext: "db")
+    }
 
-        if let enhUrl = Bundle.main.url(forResource: "law_enhancements", withExtension: "db") {
-            if sqlite3_open_v2(enhUrl.path, &enhDb, SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
-                print("DatabaseManager: 无法打开 law_enhancements.db")
-                enhDb = nil
-            }
+    private static func openDB(resource: String, ext: String) -> OpaquePointer? {
+        guard let bundleURL = Bundle.main.url(forResource: resource, withExtension: ext) else {
+            print("DatabaseManager: 找不到 \(resource).\(ext)")
+            return nil
         }
+        // Try opening directly from bundle first (works when DB is in delete/journal mode)
+        var ptr: OpaquePointer?
+        if sqlite3_open_v2(bundleURL.path, &ptr, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK {
+            return ptr
+        }
+        // Bundle open failed (e.g. WAL mode needs writable dir) — copy to Documents and retry
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let destURL = docs.appendingPathComponent("\(resource).\(ext)")
+        do {
+            if fm.fileExists(atPath: destURL.path) {
+                let bundleSize = (try? fm.attributesOfItem(atPath: bundleURL.path)[.size] as? Int) ?? 0
+                let destSize   = (try? fm.attributesOfItem(atPath: destURL.path)[.size]   as? Int) ?? 0
+                if bundleSize != destSize { try fm.removeItem(at: destURL) }
+            }
+            if !fm.fileExists(atPath: destURL.path) {
+                try fm.copyItem(at: bundleURL, to: destURL)
+            }
+        } catch {
+            print("DatabaseManager: 复制 \(resource).\(ext) 失败：\(error)")
+            return nil
+        }
+        if sqlite3_open_v2(destURL.path, &ptr, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) != SQLITE_OK {
+            print("DatabaseManager: 无法打开 \(resource).\(ext)")
+            return nil
+        }
+        return ptr
     }
 
     deinit {
@@ -182,7 +204,8 @@ final class DatabaseManager {
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
-                   COALESCE(subject_area, '') AS subject_area
+                   COALESCE(subject_area, '') AS subject_area,
+                   COALESCE(aliases, '') AS aliases
             FROM laws
             WHERE id = ?
             """
@@ -191,6 +214,7 @@ final class DatabaseManager {
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int(stmt, 1, Int32(id))
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        let aliasStr = str(stmt, 10)
         return LawMeta(
             id:            Int(sqlite3_column_int(stmt, 0)),
             title:         str(stmt, 1),
@@ -201,7 +225,8 @@ final class DatabaseManager {
             issuingOrg:    str(stmt, 6),
             docNumber:     str(stmt, 7),
             totalArticles: Int(sqlite3_column_int(stmt, 8)),
-            subjectArea:   str(stmt, 9)
+            subjectArea:   str(stmt, 9),
+            aliases:       aliasStr.isEmpty ? [] : aliasStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         )
     }
 
@@ -268,9 +293,10 @@ final class DatabaseManager {
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
-                   COALESCE(subject_area, '') AS subject_area
+                   COALESCE(subject_area, '') AS subject_area,
+                   COALESCE(aliases, '') AS aliases
             FROM laws
-            WHERE is_current = 1 AND title LIKE ?
+            WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?)
             ORDER BY title
             LIMIT ?
             """
@@ -280,9 +306,11 @@ final class DatabaseManager {
         defer { sqlite3_finalize(stmt) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(stmt, 1, "%\(query)%", -1, transient)
-        sqlite3_bind_int(stmt, 2, Int32(limit))
+        sqlite3_bind_text(stmt, 2, "%\(query)%", -1, transient)
+        sqlite3_bind_int(stmt, 3, Int32(limit))
 
         while sqlite3_step(stmt) == SQLITE_ROW {
+            let aliasStr = str(stmt, 10)
             result.append(LawMeta(
                 id:            Int(sqlite3_column_int(stmt, 0)),
                 title:         str(stmt, 1),
@@ -293,7 +321,8 @@ final class DatabaseManager {
                 issuingOrg:    str(stmt, 6),
                 docNumber:     str(stmt, 7),
                 totalArticles: Int(sqlite3_column_int(stmt, 8)),
-                subjectArea:   str(stmt, 9)
+                subjectArea:   str(stmt, 9),
+                aliases:       aliasStr.isEmpty ? [] : aliasStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             ))
         }
         return result
