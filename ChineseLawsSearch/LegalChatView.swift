@@ -28,93 +28,86 @@ struct LegalChatView: View {
     @FocusState private var inputFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        if vm.messages.isEmpty {
-                            placeholderView
-                        }
-                        ForEach(vm.messages) { msg in
-                            MessageBubble(message: msg, showThinking: showThinking,
-                                          navigate: navigate,
-                                          onToggleStep: { vm.toggleStep(messageId: msg.id, stepId: $0) },
-                                          onToggleSteps: { vm.toggleSteps(messageId: msg.id) },
-                                          onToggleCitations: { vm.toggleCitations(messageId: msg.id) })
-                                .id(msg.id)
-                        }
-                        if vm.isThinking {
-                            thinkingIndicator
-                                .id("thinking")
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if vm.messages.isEmpty {
+                        placeholderView
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                }
-                .onChange(of: vm.scrollToken) { _, _ in
-                    if let last = vm.messages.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    ForEach(vm.messages) { msg in
+                        MessageBubble(message: msg, showThinking: showThinking,
+                                      navigate: navigate,
+                                      onToggleStep: { vm.toggleStep(messageId: msg.id, stepId: $0) },
+                                      onToggleSteps: { vm.toggleSteps(messageId: msg.id) },
+                                      onToggleCitations: { vm.toggleCitations(messageId: msg.id) })
+                            .id(msg.id)
+                    }
+                    if vm.isThinking {
+                        thinkingIndicator
+                            .id("thinking")
                     }
                 }
-                .onChange(of: vm.isThinking) { _, thinking in
-                    if thinking {
-                        withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
-                    }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .onChange(of: vm.scrollToken) { _, _ in
+                if let last = vm.messages.last {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+            .onChange(of: vm.isThinking) { _, thinking in
+                if thinking {
+                    withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
                 }
             }
             #if os(iOS)
             .simultaneousGesture(TapGesture().onEnded { inputFocused = false })
             #endif
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    // Input bar
+                    HStack(alignment: .bottom, spacing: 8) {
+                        TextField(vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…",
+                                  text: $vm.inputText, axis: .vertical)
+                            .lineLimit(1...5)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.appTertiaryBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .disabled(vm.isThinking)
+                            .focused($inputFocused)
 
-            // Input bar
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField(vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…",
-                          text: $vm.inputText, axis: .vertical)
-                    .lineLimit(1...5)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.appTertiaryBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .disabled(vm.isThinking)
-                    .focused($inputFocused)
-                    #if os(iOS)
-                    .toolbar {
-                        ToolbarItemGroup(placement: .keyboard) {
-                            Spacer()
-                            Button("完成") { inputFocused = false }
+                        Button {
+                            Task { await vm.send(historyStore: historyStore) }
+                        } label: {
+                            Image(systemName: vm.isThinking ? "stop.circle.fill" : "arrow.up.circle.fill")
+                                .font(.system(size: 26))
+                                .foregroundStyle(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking
+                                                 ? Color.appDisabled : AppColors.shared.searchHighlight)
                         }
+                        .disabled(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking)
                     }
-                    #endif
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
 
-                Button {
-                    Task { await vm.send(historyStore: historyStore) }
-                } label: {
-                    Image(systemName: vm.isThinking ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 26))
-                        .foregroundStyle(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking
-                                         ? Color.appDisabled : AppColors.shared.searchHighlight)
+                    // Token counter
+                    if tokenCounter.session.total > 0 {
+                        HStack(spacing: 12) {
+                            Spacer()
+                            Label("\(formatTokens(tokenCounter.session.promptTokens))", systemImage: "arrow.up")
+                            Label("\(formatTokens(tokenCounter.session.completionTokens))", systemImage: "arrow.down")
+                            Text("共 \(formatTokens(tokenCounter.session.total)) tokens")
+                            let cost = Double(tokenCounter.session.promptTokens) / 1_000_000 * 1.0
+                                   + Double(tokenCounter.session.completionTokens) / 1_000_000 * 2.0
+                            Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 4)
+                    }
                 }
-                .disabled(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
-
-            // Token counter
-            if tokenCounter.session.total > 0 {
-                HStack(spacing: 12) {
-                    Spacer()
-                    Label("\(formatTokens(tokenCounter.session.promptTokens))", systemImage: "arrow.up")
-                    Label("\(formatTokens(tokenCounter.session.completionTokens))", systemImage: "arrow.down")
-                    Text("共 \(formatTokens(tokenCounter.session.total)) tokens")
-                    let cost = Double(tokenCounter.session.promptTokens) / 1_000_000 * 1.0
-                           + Double(tokenCounter.session.completionTokens) / 1_000_000 * 2.0
-                    Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
                 .background(.bar)
             }
         }
