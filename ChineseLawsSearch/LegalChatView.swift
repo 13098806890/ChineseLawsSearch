@@ -118,6 +118,7 @@ struct LegalChatView: View {
                 .background(.bar)
             }
         }
+        .ignoresSafeArea(.keyboard)
         .navigationTitle("法律咨询")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
