@@ -692,11 +692,21 @@ struct ChatHistorySidebar: View {
                 .font(.subheadline)
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-            Text("\(session.messages.count / 2) 轮对话")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("\(session.messages.count / 2) 轮对话")
+                if session.totalPromptTokens + session.totalCompletionTokens > 0 {
+                    Text("·")
+                    Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+
+    private func formatTokens(_ n: Int) -> String {
+        n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
     }
 }
 
@@ -743,9 +753,15 @@ struct ChatHistorySheet: View {
                                         .font(.subheadline)
                                         .foregroundStyle(.primary)
                                         .lineLimit(2)
-                                    Text("\(session.messages.count / 2) 轮对话")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    HStack(spacing: 8) {
+                                        Text("\(session.messages.count / 2) 轮对话")
+                                        if session.totalPromptTokens + session.totalCompletionTokens > 0 {
+                                            Text("·")
+                                            Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
+                                        }
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                                 }
                                 .padding(.vertical, 2)
                             }
@@ -767,6 +783,10 @@ struct ChatHistorySheet: View {
                 }
             }
         }
+    }
+
+    private func formatTokens(_ n: Int) -> String {
+        n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
     }
 }
 
@@ -792,6 +812,9 @@ final class LegalChatViewModel: ObservableObject {
     // Session identity for history
     var sessionId = UUID()
     var sessionCreatedAt = Date()
+    // Token base from persisted session (new tokens are added on top)
+    var tokenBasePrompt: Int = 0
+    var tokenBaseCompletion: Int = 0
 
     private var dotTask: Task<Void, Never>?
     @AppStorage("maxFollowUpRounds") var maxFollowUpRounds: Int = 3
@@ -828,6 +851,8 @@ final class LegalChatViewModel: ObservableObject {
         lastSelectedExperts = []
         sessionId = UUID()
         sessionCreatedAt = Date()
+        tokenBasePrompt = 0
+        tokenBaseCompletion = 0
         TokenCounter.shared.reset()
     }
 
@@ -865,6 +890,8 @@ final class LegalChatViewModel: ObservableObject {
         pendingFacts            = session.pendingFacts
         lastSelectedExperts     = resolveExperts(names: session.selectedExpertNames)
         conversationHistory     = buildConversationHistory()
+        tokenBasePrompt         = session.totalPromptTokens
+        tokenBaseCompletion     = session.totalCompletionTokens
         TokenCounter.shared.reset()
     }
 
@@ -1110,8 +1137,8 @@ final class LegalChatViewModel: ObservableObject {
             pendingFacts: pendingFacts,
             isAwaitingClarification: isAwaitingClarification,
             followUpRound: followUpRound,
-            totalPromptTokens: TokenCounter.shared.session.promptTokens,
-            totalCompletionTokens: TokenCounter.shared.session.completionTokens
+            totalPromptTokens: tokenBasePrompt + TokenCounter.shared.session.promptTokens,
+            totalCompletionTokens: tokenBaseCompletion + TokenCounter.shared.session.completionTokens
         )
         historyStore.save(session)
     }
