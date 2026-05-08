@@ -18,7 +18,7 @@ enum ChatMode: String, CaseIterable, Codable {
 
 struct LegalChatView: View {
     @ObservedObject var vm: LegalChatViewModel
-    @ObservedObject var historyStore: ChatHistoryStore
+    let historyStore: ChatHistoryStore
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
     var showHistoryButton: Bool = true
