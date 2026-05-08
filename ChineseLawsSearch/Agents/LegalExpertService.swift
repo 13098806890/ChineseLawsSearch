@@ -210,8 +210,8 @@ final class LegalExpertService {
         }
 
         // Filter out unrelated articles using the same relevance check as expert pipeline
-        let filtered = filterArticles(question: question, articles: articles)
-        let topArticles = Array((filtered.isEmpty ? articles : filtered).prefix(15))
+        let filtered = await filterArticles(question: question, articles: articles)
+        let topArticles = filtered.isEmpty ? Array(articles.prefix(15)) : filtered
         let lawInfo = targetLaw.isEmpty ? "全库检索" : "目标：《\(targetLaw)》"
         onEvent(.thinkStep(name: "法条检索",
                            content: "\(lawInfo)，关键词：\(keywords.joined(separator: "、"))，命中 \(topArticles.count) 条（过滤后）"))
@@ -492,7 +492,7 @@ final class LegalExpertService {
 
             var articles = retrieveForExpert(expert: expert, question: expertContext, facts: knownFacts)
             articles = expandReferences(articles: articles)
-            articles = filterArticles(question: expertContext, articles: articles)
+            articles = await filterArticles(question: expertContext, articles: articles)
             expertArticles[expert.name] = articles
 
             let answer = try await analyzeWithExpert(expert: expert, question: expertContext,
@@ -507,7 +507,7 @@ final class LegalExpertService {
         }
         onEvent(.thinkStepWithArticles(
             name: "专家检索",
-            content: "共检索 \(totalArticleCount) 条条文（\(allSelectedExperts.count) 位专家）",
+            content: "相关度过滤后共 \(totalArticleCount) 条（\(allSelectedExperts.count) 位专家）",
             articles: allArticlesForDisplay))
 
         // Step 4: 按专家组合并同组专家的分析
@@ -788,10 +788,48 @@ final class LegalExpertService {
     // MARK: - Article filter (light, non-streaming)
 
     private func filterArticles(question: String,
-                                articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
-        guard articles.count > 5 else { return articles }
+                                articles: [DatabaseManager.RAGArticle]) async -> [DatabaseManager.RAGArticle] {
         let cap = UserDefaults.standard.integer(forKey: "maxContextArticles")
-        return Array(articles.prefix(cap > 0 ? cap : 20))
+        let maxCtx = cap > 0 ? cap : 40
+        guard articles.count > 5 else { return articles }
+
+        // Batch relevance scoring via LLM
+        let articleList = articles.enumerated().map { i, a in
+            "[\(i)] 《\(a.lawTitle)》\(a.articleNumber)：\(String(a.content.prefix(120)))"
+        }.joined(separator: "\n")
+
+        let prompt = """
+        对以下法条与问题的相关度打分（0-10），0=完全无关，10=直接回答问题。
+        只输出JSON数组，格式：[{"i":0,"s":7},{"i":1,"s":2},...]，不要其他内容。
+
+        问题：\(question)
+
+        法条列表：
+        \(articleList)
+        """
+        let raw = (try? await chat(system: "只输出JSON数组，不要任何其他内容。", user: prompt)) ?? ""
+        let jsonStr = extractJSON(raw, open: "[", close: "]")
+
+        if let data = jsonStr.data(using: .utf8),
+           let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            let scores = arr.reduce(into: [Int: Int]()) { dict, obj in
+                if let i = obj["i"] as? Int, let s = obj["s"] as? Int { dict[i] = s }
+            }
+            let threshold = 4
+            let filtered = articles.enumerated().compactMap { i, a -> DatabaseManager.RAGArticle? in
+                guard (scores[i] ?? 0) >= threshold else { return nil }
+                return a
+            }
+            // Sort by score descending, cap to maxCtx
+            let sorted = articles.enumerated()
+                .filter { i, _ in (scores[i] ?? 0) >= threshold }
+                .sorted { (scores[$0.offset] ?? 0) > (scores[$1.offset] ?? 0) }
+                .map { $0.element }
+            return Array((sorted.isEmpty ? articles : sorted).prefix(maxCtx))
+        }
+
+        // Fallback: plain prefix if LLM scoring fails
+        return Array(articles.prefix(maxCtx))
     }
 
     // MARK: - Step 4b: Expert analysis
@@ -803,7 +841,7 @@ final class LegalExpertService {
             return "（\(expert.name)：未检索到相关条文，无法分析。）"
         }
         let cap      = UserDefaults.standard.integer(forKey: "maxContextArticles")
-        let ctxMax   = cap > 0 ? cap : 20
+        let ctxMax   = cap > 0 ? cap : 40
         let lawArts    = Array(articles.filter { $0.category != "司法解释" }.prefix(ctxMax * 2 / 3 + 1))
         let interpArts = Array(articles.filter { $0.category == "司法解释" }.prefix(ctxMax / 3 + 1))
 
