@@ -840,7 +840,7 @@ final class LegalChatViewModel: ObservableObject {
             var msg = ChatMessage(
                 role: pm.role == "user" ? .user : .assistant,
                 text: pm.text,
-                isClarifying: false
+                isClarifying: pm.isClarifying
             )
             msg.thinkSteps = pm.thinkSteps.map { ts in
                 var step = ThinkStep(name: ts.name, content: ts.content)
@@ -1102,7 +1102,8 @@ final class LegalChatViewModel: ObservableObject {
                                           articleNumber: $0.articleNumber, articleNum: $0.articleNum,
                                           category: $0.category, content: $0.content)
                     },
-                    subQuestions: msg.subQuestions
+                    subQuestions: msg.subQuestions,
+                    isClarifying: msg.isClarifying
                 )
             },
             selectedExpertNames: lastSelectedExperts.map { $0.name },

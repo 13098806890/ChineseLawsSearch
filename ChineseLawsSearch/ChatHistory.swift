@@ -40,6 +40,25 @@ struct PersistedMessage: Codable {
     var thinkSteps: [PersistedThinkStep]
     var citations: [PersistedCitation]
     var subQuestions: [String]
+    var isClarifying: Bool
+
+    init(role: String, text: String, thinkSteps: [PersistedThinkStep] = [],
+         citations: [PersistedCitation] = [], subQuestions: [String] = [],
+         isClarifying: Bool = false) {
+        self.role = role; self.text = text; self.thinkSteps = thinkSteps
+        self.citations = citations; self.subQuestions = subQuestions
+        self.isClarifying = isClarifying
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        role         = try c.decode(String.self, forKey: .role)
+        text         = try c.decode(String.self, forKey: .text)
+        thinkSteps   = (try? c.decodeIfPresent([PersistedThinkStep].self, forKey: .thinkSteps)) ?? []
+        citations    = (try? c.decodeIfPresent([PersistedCitation].self, forKey: .citations)) ?? []
+        subQuestions = (try? c.decodeIfPresent([String].self, forKey: .subQuestions)) ?? []
+        isClarifying = (try? c.decodeIfPresent(Bool.self, forKey: .isClarifying)) ?? false
+    }
 }
 
 // MARK: - Session
