@@ -821,7 +821,8 @@ final class LegalExpertService {
             factsText = "\n\n【已知情况】\n" + facts.map { "- \($0.key)：\($0.value)" }.joined(separator: "\n")
         }
         let userMsg = "法条：\n\(parts.joined(separator: "\n"))\(factsText)\n\n用户问题：\(question)"
-        return try await chat(system: expert.answerTemplate, user: userMsg)
+        let systemWithConstraint = expert.answerTemplate + "\n【严格限制】只能引用上方提供的法条，不得引用任何未在法条列表中出现的法律法规。"
+        return try await chat(system: systemWithConstraint, user: userMsg)
     }
 
     // MARK: - Step 5: Group synthesis
@@ -848,6 +849,7 @@ final class LegalExpertService {
     重要原则：
     - 使用第三方客观视角，不预设提问者是哪方当事人（可能是当事人本人、家属、律师或第三方）
     - 法律判断（谁违约、谁承担责任、行为是否合法）由你独立作出，不要推给提问者判断
+    - 【严格限制】只能引用"检索到的法条"中出现的条文。不得引用任何未在检索结果中列出的法律法规，即使你知道相关规定存在。
     格式要求：
     1. 开头直接给出核心结论
     2. 按问题或专家组分段陈述详细法律分析，在分析中直接引用条文编号（如"依据第X条"）
