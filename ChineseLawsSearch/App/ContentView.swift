@@ -80,7 +80,7 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            if userStore.showWelcomeOnLaunch || userStore.lastRead == nil {
+            if isCompact && (userStore.showWelcomeOnLaunch || userStore.lastRead == nil) {
                 showWelcome = true
             } else {
                 restoreLastRead()

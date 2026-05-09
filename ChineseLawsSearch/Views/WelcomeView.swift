@@ -6,6 +6,8 @@
 import SwiftUI
 
 struct WelcomeView: View {
+    private let appBlue = AppColors.shared.searchHighlight
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
@@ -26,7 +28,7 @@ struct WelcomeView: View {
                 Group {
                     featureSection(
                         icon: "doc.text",
-                        iconColor: .blue,
+                        iconColor: appBlue,
                         title: "法律浏览",
                         items: [
                             ("按领域目录浏览", "法律、行政法规、司法解释按部门法分类，逐层展开查阅。"),
@@ -37,7 +39,7 @@ struct WelcomeView: View {
 
                     featureSection(
                         icon: "message",
-                        iconColor: .green,
+                        iconColor: appBlue,
                         title: "法律顾问",
                         items: [
                             ("直接描述您的问题", "用日常语言描述纠纷或问题即可，无需使用法律术语。系统会自动将问题规范化并检索相关法条。"),
@@ -49,10 +51,10 @@ struct WelcomeView: View {
 
                     featureSection(
                         icon: "gearshape",
-                        iconColor: .gray,
+                        iconColor: appBlue,
                         title: "设置",
                         items: [
-                            ("选择 AI 模型", "支持 Groq（免费）、Gemini（免费额度）、DeepSeek（按量计费）。在设置中填入 API Key 即可使用。"),
+                            ("AI 模型", "目前使用 DeepSeek，需在设置中填入您自己的 DeepSeek API Key。注册 DeepSeek 账号后即可在平台申请，新用户有免费额度，国内可直连。"),
                             ("分析模式", "节省 / 标准 / 详细三档，控制追问轮次与检索深度。"),
                             ("搜索偏好", "可设置仅搜标题、搜索结果数量上限等。"),
                         ]
