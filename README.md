@@ -18,7 +18,7 @@
 - 口语化问题自动规范化（"楼上噪音扰民" → 补充相邻关系、侵权责任等法律术语）
 - 思考过程逐步展示，参考法条点击跳转
 - 对话历史自动保存，重启后完整恢复（含专家上下文）
-- 支持 Gemini Flash、DeepSeek、Groq、本地 Ollama
+- 支持 Gemini Flash、DeepSeek、Groq
 
 ---
 
@@ -330,6 +330,6 @@ ChineseLawsSearch/
 | UI | SwiftUI（iOS 17+） |
 | 数据库 | SQLite（C API 直接调用） |
 | 全文检索 | FTS5 trigram + unicode61 + LIKE 兜底 |
-| LLM | Gemini Flash 2.0 / DeepSeek V3 / Groq Llama 3.3 70B / Ollama |
+| LLM | Gemini Flash 2.0 / DeepSeek V3 / Groq Llama 3.3 70B |
 | 同步 | iCloud KV Store + iCloud Documents + iCloud Keychain |
 | 最低系统 | iOS 17 / iPadOS 17 |

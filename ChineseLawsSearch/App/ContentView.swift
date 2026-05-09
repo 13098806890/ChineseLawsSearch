@@ -287,7 +287,7 @@ private struct SettingsSheet: View {
                     Text(footerText)
                 }
 
-                // 当前选中 provider 的 Key 输入（Ollama 不需要）
+                // 当前选中 provider 的 Key 输入
                 if let provider = LLMProviderRegistry.provider(id: userStore.selectedProviderId),
                    !provider.keychainKey.isEmpty {
                     Section {
