@@ -229,8 +229,8 @@ ChineseLawsSearch/
 │
 ├── Services/
 │   ├── DatabaseManager.swift        # SQLite 封装（只读 bundle DB）
-│   ├── LegalRAGService.swift        # RAG pipeline（事件流 RAGEvent）
-│   ├── LLMProvider.swift            # LLM 多后端抽象
+│   ├── LegalTypes.swift             # 共享数据类型（RAGEvent / RAGCitation / MessageIntent 等）
+│   ├── LLMProvider.swift            # LLM 多后端抽象（Gemini / DeepSeek / Groq）
 │   └── ChatHistory.swift            # 对话历史持久化（iCloud Documents 同步）
 │
 ├── Agents/
