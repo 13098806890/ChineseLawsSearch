@@ -787,40 +787,38 @@ struct ChatHistorySheet: View {
                 } else {
                     List {
                         ForEach(historyStore.sessions) { session in
-                            Button {
-                                onSelect(session)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Label(session.mode == "专家" ? "专家" : "快速",
-                                              systemImage: session.mode == "专家" ? "person.3" : "bolt")
-                                            .font(.caption2)
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 7).padding(.vertical, 3)
-                                            .background(AppColors.shared.searchHighlight)
-                                            .clipShape(Capsule())
-                                        Spacer()
-                                        Text(session.updatedAt, style: .relative)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Text(session.title)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                    HStack(spacing: 8) {
-                                        Text("\(session.messages.count / 2) 轮对话")
-                                        if session.totalPromptTokens + session.totalCompletionTokens > 0 {
-                                            Text("·")
-                                            Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
-                                        }
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Label(session.mode == "专家" ? "专家" : "快速",
+                                          systemImage: session.mode == "专家" ? "person.3" : "bolt")
+                                        .font(.caption2)
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 7).padding(.vertical, 3)
+                                        .background(AppColors.shared.searchHighlight)
+                                        .clipShape(Capsule())
+                                    Spacer()
+                                    Text(session.updatedAt, style: .relative)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
                                 }
-                                .padding(.vertical, 2)
+                                Text(session.title)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                HStack(spacing: 8) {
+                                    Text("\(session.messages.count / 2) 轮对话")
+                                    if session.totalPromptTokens + session.totalCompletionTokens > 0 {
+                                        Text("·")
+                                        Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
-                            .buttonStyle(.plain)
+                            .padding(.vertical, 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture { onSelect(session) }
                         }
                         .onDelete { offsets in
                             offsets.forEach { idx in
