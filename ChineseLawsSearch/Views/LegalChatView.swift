@@ -23,17 +23,27 @@ struct LegalChatView: View {
     let navigate: (Int, Int?) -> Void
     var showHistoryButton: Bool = true
     var showNewSessionButton: Bool = false
+    var onOpenSettings: (() -> Void)? = nil
 
     @ObservedObject private var tokenCounter = TokenCounter.shared
     @State private var showHistory = false
     @FocusState private var inputFocused: Bool
+
+    private var hasAPIKey: Bool {
+        let key = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+        return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if vm.messages.isEmpty {
-                        placeholderView
+                        if hasAPIKey {
+                            placeholderView
+                        } else {
+                            noAPIKeyView
+                        }
                     }
                     ForEach(vm.messages) { msg in
                         MessageBubble(message: msg, showThinking: showThinking,
@@ -74,7 +84,7 @@ struct LegalChatView: View {
                             .padding(.vertical, 8)
                             .background(Color.appTertiaryBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            .disabled(vm.isThinking)
+                            .disabled(vm.isThinking || !hasAPIKey)
                             .focused($inputFocused)
 
                         Button {
@@ -153,6 +163,39 @@ struct LegalChatView: View {
 
     private func formatTokens(_ n: Int) -> String {
         n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
+    }
+
+    private var noAPIKeyView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "key.slash")
+                .font(.system(size: 48, weight: .light))
+                .foregroundStyle(AppColors.shared.searchHighlight.opacity(0.6))
+            VStack(spacing: 6) {
+                Text("尚未配置 API Key")
+                    .font(.title3.bold())
+                Text("法律顾问功能需要 DeepSeek API Key 才能使用")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button {
+                onOpenSettings?()
+            } label: {
+                Label("前往设置", systemImage: "gearshape")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 10)
+                    .background(AppColors.shared.searchHighlight)
+                    .clipShape(Capsule())
+            }
+            Link("注册 DeepSeek 账号获取免费 Key →",
+                 destination: URL(string: "https://platform.deepseek.com/api_keys")!)
+                .font(.footnote)
+                .foregroundStyle(AppColors.shared.searchHighlight)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 32)
     }
 
     private var placeholderView: some View {

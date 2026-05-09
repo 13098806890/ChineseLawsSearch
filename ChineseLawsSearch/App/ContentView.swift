@@ -132,7 +132,8 @@ struct ContentView: View {
             if isCompact {
                 NavigationStack {
                     LegalChatView(vm: chatVM, historyStore: historyStore,
-                                  showThinking: userStore.showThinking, navigate: navigate)                }
+                                  showThinking: userStore.showThinking, navigate: navigate,
+                                  onOpenSettings: { showSettings = true })                }
             } else {
                 NavigationSplitView {
                     ChatHistorySidebar(historyStore: historyStore, vm: chatVM)
@@ -140,7 +141,8 @@ struct ContentView: View {
                     NavigationStack {
                         LegalChatView(vm: chatVM, historyStore: historyStore,
                                       showThinking: userStore.showThinking, navigate: navigate,
-                                      showHistoryButton: false, showNewSessionButton: true)
+                                      showHistoryButton: false, showNewSessionButton: true,
+                                      onOpenSettings: { showSettings = true })
                     }
                 }
             }
@@ -293,6 +295,7 @@ private struct SettingsSheet: View {
 
                 // DeepSeek API Key 输入
                 let provider = LLMProviderRegistry.provider(id: "deepseek")!
+                let currentKey = KeychainHelper.load(forKey: provider.keychainKey) ?? ""
                 Section {
                     HStack {
                         SecureField("粘贴 DeepSeek API Key…", text: Binding(
@@ -308,6 +311,14 @@ private struct SettingsSheet: View {
                     }
                     Button("保存 Key") { saveKey(for: provider) }
                         .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if !currentKey.isEmpty {
+                        Button(role: .destructive) {
+                            KeychainHelper.delete(forKey: provider.keychainKey)
+                            savedKeys[provider.id] = ""
+                        } label: {
+                            Label("删除已保存的 Key", systemImage: "trash")
+                        }
+                    }
                     if let url = provider.keyURL {
                         Link("前往 DeepSeek 获取 API Key →", destination: url)
                             .font(.footnote)
@@ -315,7 +326,9 @@ private struct SettingsSheet: View {
                 } header: {
                     Text("DeepSeek API Key")
                 } footer: {
-                    Text("Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
+                    Text(currentKey.isEmpty
+                         ? "尚未配置 API Key，法律顾问功能暂不可用。"
+                         : "Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
                         .font(.caption)
                 }
             }
