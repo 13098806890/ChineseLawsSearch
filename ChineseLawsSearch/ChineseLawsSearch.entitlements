@@ -6,7 +6,7 @@
 	<string>development</string>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>iCloud.Personal.ChineseLawsSearch</string>
+		<string>iCloud.com.doxie.chineseLawsAgent</string>
 	</array>
 	<key>com.apple.developer.icloud-services</key>
 	<array>
@@ -14,10 +14,10 @@
 		<string>CloudDocuments</string>
 	</array>
 	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
-	<string>$(TeamIdentifierPrefix)Personal.ChineseLawsSearch</string>
+	<string>$(TeamIdentifierPrefix)com.doxie.chineseLawsAgent</string>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)Personal.ChineseLawsSearch</string>
+		<string>$(AppIdentifierPrefix)com.doxie.chineseLawsAgent</string>
 	</array>
 </dict>
 </plist>
