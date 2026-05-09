@@ -20,7 +20,8 @@ enum KeychainHelper {
     }
 
     static func load(forKey key: String) -> String? {
-        let query: [CFString: Any] = [
+        // Try synchronizable item first (current format)
+        let syncQuery: [CFString: Any] = [
             kSecClass:                kSecClassGenericPassword,
             kSecAttrAccount:          key,
             kSecAttrSynchronizable:   kCFBooleanTrue!,
@@ -28,10 +29,29 @@ enum KeychainHelper {
             kSecMatchLimit:           kSecMatchLimitOne
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data
-        else { return nil }
-        return String(data: data, encoding: .utf8)
+        if SecItemCopyMatching(syncQuery as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data,
+           let value = String(data: data, encoding: .utf8) {
+            return value
+        }
+
+        // Fall back to legacy non-synchronizable item and migrate it
+        let legacyQuery: [CFString: Any] = [
+            kSecClass:                kSecClassGenericPassword,
+            kSecAttrAccount:          key,
+            kSecAttrSynchronizable:   kSecAttrSynchronizableAny,
+            kSecReturnData:           true,
+            kSecMatchLimit:           kSecMatchLimitOne
+        ]
+        result = nil
+        if SecItemCopyMatching(legacyQuery as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data,
+           let value = String(data: data, encoding: .utf8) {
+            save(value, forKey: key)   // migrate to synchronizable format
+            return value
+        }
+
+        return nil
     }
 
     static func delete(forKey key: String) {
