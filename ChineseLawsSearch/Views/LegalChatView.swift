@@ -293,7 +293,6 @@ struct LegalChatView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color.appTertiaryBackground)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { vm.startDotAnimation() }
