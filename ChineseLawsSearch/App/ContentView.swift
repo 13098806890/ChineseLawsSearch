@@ -326,7 +326,11 @@ private struct SettingsSheet: View {
                         Button(role: .destructive) {
                             showDeleteKeyConfirm = true
                         } label: {
-                            Label("删除已保存的 Key", systemImage: "trash")
+                            Label { Text("删除已保存的 Key") } icon: {
+                                Image(systemName: "trash")
+                                    .font(.footnote)
+                                    .foregroundStyle(.red)
+                            }
                         }
                         .confirmationDialog("确认删除 API Key？", isPresented: $showDeleteKeyConfirm, titleVisibility: .visible) {
                             Button("删除", role: .destructive) {
