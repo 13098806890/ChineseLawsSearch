@@ -113,7 +113,7 @@ final class UserStore: ObservableObject {
 
     // MARK: - 模型选择
 
-    @AppStorage("selected_llm_provider") var selectedProviderId: String = "gemini"
+    @AppStorage("selected_llm_provider") var selectedProviderId: String = "deepseek"
 
     // MARK: - iCloud KV 变更监听
 

@@ -275,46 +275,48 @@ private struct SettingsSheet: View {
                 }
 
                 Section {
-                    Picker("模型", selection: $userStore.selectedProviderId) {
-                        ForEach(LLMProviderRegistry.all, id: \.id) { p in
-                            Text(p.displayName).tag(p.id)
-                        }
+                    // 目前仅支持 DeepSeek（国内直连），其他 provider 代码保留但不在 UI 展示
+                    let deepseek = LLMProviderRegistry.provider(id: "deepseek")!
+                    HStack {
+                        Label(deepseek.displayName, systemImage: "cpu")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(AppColors.shared.searchHighlight)
+                            .font(.footnote.bold())
                     }
-                    .pickerStyle(.menu)
                 } header: {
-                    Text("模型选择")
+                    Text("AI 模型")
                 } footer: {
-                    Text(footerText)
+                    Text("当前使用 DeepSeek，需在下方填入您的 API Key。DeepSeek 新用户注册即有免费额度，价格低廉，国内可直连。")
                 }
 
-                // 当前选中 provider 的 Key 输入
-                if let provider = LLMProviderRegistry.provider(id: userStore.selectedProviderId),
-                   !provider.keychainKey.isEmpty {
-                    Section {
-                        HStack {
-                            SecureField("粘贴 API Key…", text: Binding(
-                                get: { savedKeys[provider.id] ?? "" },
-                                set: { savedKeys[provider.id] = $0 }
-                            ))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            if savedFeedback == provider.id {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                            }
+                // DeepSeek API Key 输入
+                let provider = LLMProviderRegistry.provider(id: "deepseek")!
+                Section {
+                    HStack {
+                        SecureField("粘贴 DeepSeek API Key…", text: Binding(
+                            get: { savedKeys[provider.id] ?? "" },
+                            set: { savedKeys[provider.id] = $0 }
+                        ))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        if savedFeedback == provider.id {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
                         }
-                        Button("保存 Key") { saveKey(for: provider) }
-                            .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if let url = provider.keyURL {
-                            Link("前往 \(provider.displayName) 获取 API Key →", destination: url)
-                                .font(.footnote)
-                        }
-                    } header: {
-                        Text("\(provider.displayName) API Key")
-                    } footer: {
-                        Text("Key 加密存储在系统 Keychain 中。")
-                            .font(.caption)
                     }
+                    Button("保存 Key") { saveKey(for: provider) }
+                        .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let url = provider.keyURL {
+                        Link("前往 DeepSeek 获取 API Key →", destination: url)
+                            .font(.footnote)
+                    }
+                } header: {
+                    Text("DeepSeek API Key")
+                } footer: {
+                    Text("Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
+                        .font(.caption)
                 }
             }
             .navigationTitle("设置")
@@ -337,14 +339,7 @@ private struct SettingsSheet: View {
         }
     }
 
-    private var footerText: String {
-        switch userStore.selectedProviderId {
-        case "groq":    return "Groq 免费，无需绑卡，国内可直连。使用 Llama 3.3 70B 模型，中文能力较好。"
-        case "gemini":  return "Gemini Flash 免费额度：每天 100 万 tokens。部分地区需要 VPN 申请 Key。"
-        case "deepseek": return "DeepSeek 按量计费，价格较低。需要在账户中充值。"
-        default:        return ""
-        }
-    }
+    private var footerText: String { "" }
 
     private func saveKey(for provider: any LLMProvider) {
         let trimmed = (savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

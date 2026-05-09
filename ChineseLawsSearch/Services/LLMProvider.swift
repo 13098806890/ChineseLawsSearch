@@ -265,8 +265,8 @@ enum LLMProviderRegistry {
     }
 
     static var current: any LLMProvider {
-        let saved = UserDefaults.standard.string(forKey: "selected_llm_provider") ?? "groq"
-        return provider(id: saved) ?? GroqProvider()
+        let saved = UserDefaults.standard.string(forKey: "selected_llm_provider") ?? "deepseek"
+        return provider(id: saved) ?? DeepSeekProvider()
     }
 }
 
