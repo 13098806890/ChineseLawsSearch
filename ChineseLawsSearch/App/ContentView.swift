@@ -81,14 +81,16 @@ struct ContentView: View {
         }
         .onAppear {
             let isFirstLaunch = !userStore.hasLaunchedBefore
+            if isFirstLaunch {
+                userStore.hasLaunchedBefore = true  // mark before async to avoid double-trigger
+            }
             let shouldShowWelcome = userStore.showWelcomeOnLaunch || isFirstLaunch
             if isCompact && shouldShowWelcome {
-                showWelcome = true
+                // Delay one run-loop so the view hierarchy is fully settled
+                // before presenting the sheet, preventing auto-dismiss
+                DispatchQueue.main.async { showWelcome = true }
             } else {
                 restoreLastRead()
-            }
-            if isFirstLaunch {
-                userStore.hasLaunchedBefore = true
             }
         }
         .onChange(of: target) {
@@ -138,7 +140,9 @@ struct ContentView: View {
                 NavigationStack {
                     LegalChatView(vm: chatVM, historyStore: historyStore,
                                   showThinking: userStore.showThinking, navigate: navigate,
-                                  onOpenSettings: { showSettings = true })                }
+                                  onOpenSettings: { showSettings = true },
+                                  isActive: tab == .chat)
+                }
             } else {
                 NavigationSplitView {
                     ChatHistorySidebar(historyStore: historyStore, vm: chatVM)
@@ -147,7 +151,8 @@ struct ContentView: View {
                         LegalChatView(vm: chatVM, historyStore: historyStore,
                                       showThinking: userStore.showThinking, navigate: navigate,
                                       showHistoryButton: false, showNewSessionButton: true,
-                                      onOpenSettings: { showSettings = true })
+                                      onOpenSettings: { showSettings = true },
+                                      isActive: tab == .chat)
                     }
                 }
             }

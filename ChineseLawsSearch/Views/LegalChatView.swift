@@ -24,6 +24,8 @@ struct LegalChatView: View {
     var showHistoryButton: Bool = true
     var showNewSessionButton: Bool = false
     var onOpenSettings: (() -> Void)? = nil
+    /// Whether this view is currently the active tab (controls no-key alert timing)
+    var isActive: Bool = true
 
     @ObservedObject private var tokenCounter = TokenCounter.shared
     @State private var showHistory = false
@@ -42,7 +44,7 @@ struct LegalChatView: View {
                     if vm.messages.isEmpty {
                         placeholderView
                             .onAppear {
-                                if !hasAPIKey { showNoKeyAlert = true }
+                                if isActive && !hasAPIKey { showNoKeyAlert = true }
                             }
                     }
                     ForEach(vm.messages) { msg in
@@ -89,7 +91,6 @@ struct LegalChatView: View {
                             .onTapGesture {
                                 if !hasAPIKey { showNoKeyAlert = true }
                             }
-
                         Button {
                             Task { await vm.send(historyStore: historyStore) }
                         } label: {
