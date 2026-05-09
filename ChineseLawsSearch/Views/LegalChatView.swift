@@ -75,6 +75,27 @@ struct LegalChatView: View {
                             .padding(.bottom, 2)
                     }
                     Divider()
+                    // Network error retry banner
+                    if vm.lastFailedQuestion != nil {
+                        HStack(spacing: 8) {
+                            Image(systemName: "wifi.exclamationmark")
+                                .foregroundStyle(.orange)
+                            Text("发送失败，问题已回填到输入框")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                vm.lastFailedQuestion = nil
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                        .background(Color.orange.opacity(0.08))
+                    }
                     // Input bar
                     HStack(alignment: .bottom, spacing: 8) {
                         TextField(vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…",
@@ -841,6 +862,7 @@ final class LegalChatViewModel: ObservableObject {
     @Published var dotScale   = [1.0, 1.0, 1.0]
     @Published var scrollToken = 0
     @Published var mode: ChatMode = .expert
+    @Published var lastFailedQuestion: String? = nil  // set on network error, cleared on retry
 
     // Follow-up state (expert mode)
     var isAwaitingClarification = false
@@ -942,6 +964,7 @@ final class LegalChatViewModel: ObservableObject {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !isThinking else { return }
         let currentSessionId = sessionId  // capture before any await
+        lastFailedQuestion = nil
         inputText = ""
         messages.append(ChatMessage(role: .user, text: q))
 
@@ -1035,9 +1058,16 @@ final class LegalChatViewModel: ObservableObject {
 
         } catch {
             await MainActor.run {
+                // Remove the empty assistant bubble if present
                 if let last = messages.last, last.role == .assistant, last.text.isEmpty {
-                    messages[messages.count - 1].text = error.localizedDescription
+                    messages.removeLast()
                 }
+                // Remove the user message and restore to input box for retry
+                if let last = messages.last, last.role == .user {
+                    messages.removeLast()
+                }
+                inputText = q
+                lastFailedQuestion = q
             }
         }
 
@@ -1045,9 +1075,12 @@ final class LegalChatViewModel: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.sessionId == currentSessionId else { return }
             self.isThinking = false
-            let assistantText = self.messages.last(where: { $0.role == .assistant })?.text ?? ""
-            self.conversationHistory.append((user: q, assistant: assistantText))
-            self.autoSave(historyStore: capturedStore)
+            if self.lastFailedQuestion == nil {
+                // Only save on success
+                let assistantText = self.messages.last(where: { $0.role == .assistant })?.text ?? ""
+                self.conversationHistory.append((user: q, assistant: assistantText))
+                self.autoSave(historyStore: capturedStore)
+            }
         }
     }
 
