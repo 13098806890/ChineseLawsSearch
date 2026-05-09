@@ -27,6 +27,7 @@ struct LegalChatView: View {
 
     @ObservedObject private var tokenCounter = TokenCounter.shared
     @State private var showHistory = false
+    @State private var showNoKeyAlert = false
     @FocusState private var inputFocused: Bool
 
     private var hasAPIKey: Bool {
@@ -39,11 +40,10 @@ struct LegalChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if vm.messages.isEmpty {
-                        if hasAPIKey {
-                            placeholderView
-                        } else {
-                            noAPIKeyView
-                        }
+                        placeholderView
+                            .onAppear {
+                                if !hasAPIKey { showNoKeyAlert = true }
+                            }
                     }
                     ForEach(vm.messages) { msg in
                         MessageBubble(message: msg, showThinking: showThinking,
@@ -86,6 +86,9 @@ struct LegalChatView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                             .disabled(vm.isThinking || !hasAPIKey)
                             .focused($inputFocused)
+                            .onTapGesture {
+                                if !hasAPIKey { showNoKeyAlert = true }
+                            }
 
                         Button {
                             Task { await vm.send(historyStore: historyStore) }
@@ -157,45 +160,18 @@ struct LegalChatView: View {
                 vm.newSession()
             })
         }
+        .alert("需要配置 API Key", isPresented: $showNoKeyAlert) {
+            Button("前往设置") { onOpenSettings?() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("法律顾问功能需要 DeepSeek API Key 才能使用，请在设置中填入您的 Key。")
+        }
     }
 
     // MARK: Placeholder
 
     private func formatTokens(_ n: Int) -> String {
         n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
-    }
-
-    private var noAPIKeyView: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "key.slash")
-                .font(.system(size: 48, weight: .light))
-                .foregroundStyle(AppColors.shared.searchHighlight.opacity(0.6))
-            VStack(spacing: 6) {
-                Text("尚未配置 API Key")
-                    .font(.title3.bold())
-                Text("法律顾问功能需要 DeepSeek API Key 才能使用")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            Button {
-                onOpenSettings?()
-            } label: {
-                Label("前往设置", systemImage: "gearshape")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 10)
-                    .background(AppColors.shared.searchHighlight)
-                    .clipShape(Capsule())
-            }
-            Link("注册 DeepSeek 账号获取免费 Key →",
-                 destination: URL(string: "https://platform.deepseek.com/api_keys")!)
-                .font(.footnote)
-                .foregroundStyle(AppColors.shared.searchHighlight)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 32)
     }
 
     private var placeholderView: some View {

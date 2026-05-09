@@ -62,6 +62,8 @@ final class UserStore: ObservableObject {
     @AppStorage("searchResultLimit")   var searchResultLimit: Int = 100
     /// true = 每次启动显示使用说明；false = 恢复上次阅读记录（默认）
     @AppStorage("showWelcomeOnLaunch") var showWelcomeOnLaunch: Bool = false
+    /// 标记是否已经完成过首次启动（首次安装时为 false）
+    @AppStorage("hasLaunchedBefore") var hasLaunchedBefore: Bool = false
 
     // MARK: - 对话偏好
 

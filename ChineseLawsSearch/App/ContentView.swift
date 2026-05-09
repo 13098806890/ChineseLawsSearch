@@ -80,10 +80,15 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            if isCompact && (userStore.showWelcomeOnLaunch || userStore.lastRead == nil) {
+            let isFirstLaunch = !userStore.hasLaunchedBefore
+            let shouldShowWelcome = userStore.showWelcomeOnLaunch || isFirstLaunch
+            if isCompact && shouldShowWelcome {
                 showWelcome = true
             } else {
                 restoreLastRead()
+            }
+            if isFirstLaunch {
+                userStore.hasLaunchedBefore = true
             }
         }
         .onChange(of: target) {
@@ -234,6 +239,7 @@ private struct SettingsSheet: View {
     }()
     @State private var savedFeedback: String? = nil
     @State private var showWelcome = false
+    @State private var showDeleteKeyConfirm = false
 
     var body: some View {
         NavigationStack {
@@ -313,10 +319,18 @@ private struct SettingsSheet: View {
                         .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if !currentKey.isEmpty {
                         Button(role: .destructive) {
-                            KeychainHelper.delete(forKey: provider.keychainKey)
-                            savedKeys[provider.id] = ""
+                            showDeleteKeyConfirm = true
                         } label: {
                             Label("删除已保存的 Key", systemImage: "trash")
+                        }
+                        .confirmationDialog("确认删除 API Key？", isPresented: $showDeleteKeyConfirm, titleVisibility: .visible) {
+                            Button("删除", role: .destructive) {
+                                KeychainHelper.delete(forKey: provider.keychainKey)
+                                savedKeys[provider.id] = ""
+                            }
+                            Button("取消", role: .cancel) {}
+                        } message: {
+                            Text("删除后法律顾问功能将无法使用，需重新填入 Key。")
                         }
                     }
                     if let url = provider.keyURL {
