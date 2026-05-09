@@ -676,8 +676,7 @@ struct ChatHistorySidebar: View {
     private func historyRow(_ session: ChatSession) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Label(session.mode == "专家" ? "专家" : "快速",
-                      systemImage: session.mode == "专家" ? "person.3" : "bolt")
+                Label("专家", systemImage: "person.3")
                     .font(.caption2)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 7).padding(.vertical, 3)
