@@ -5,6 +5,31 @@
 
 import SwiftUI
 
+// MARK: - Highlight helper
+
+private func highlighted(_ text: String, query: String,
+                          baseFont: Font = .caption,
+                          highlightColor: Color = AppColors.shared.searchHighlight) -> Text {
+    guard !query.isEmpty else { return Text(text).font(baseFont) }
+    var result = Text("")
+    var remaining = text[...]
+    let lower = text.lowercased()
+    let lowerQ = query.lowercased()
+    var searchFrom = lower.startIndex
+    while let range = lower.range(of: lowerQ, range: searchFrom..<lower.endIndex) {
+        // text before match
+        let before = String(remaining[remaining.startIndex..<range.lowerBound])
+        result = result + Text(before).font(baseFont)
+        // matched text (use original casing)
+        let matched = String(text[range])
+        result = result + Text(matched).font(baseFont).bold().foregroundColor(highlightColor)
+        remaining = remaining[range.upperBound...]
+        searchFrom = range.upperBound
+    }
+    result = result + Text(String(remaining)).font(baseFont)
+    return result
+}
+
 struct TOCView: View {
     @Binding var selectedLaw: LawMeta?
     @Binding var target: LawTarget?
@@ -93,8 +118,8 @@ struct TOCView: View {
                                 selectedLaw = law
                                 target = LawTarget(law: law, scrollToArticle: nil)
                             } label: {
-                                Text(law.title)
-                                    .font(.subheadline)
+                                highlighted(law.title, query: searchQuery,
+                                            baseFont: .subheadline)
                                     .foregroundStyle(.primary)
                             }
                             .buttonStyle(.plain)
@@ -111,14 +136,14 @@ struct TOCView: View {
                                 }
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(result.lawTitle)
-                                        .font(.caption)
+                                    highlighted(result.lawTitle, query: searchQuery,
+                                                baseFont: .caption)
                                         .foregroundStyle(.secondary)
                                     Text(result.articleNumber)
                                         .font(.caption.bold())
                                         .foregroundStyle(.primary)
-                                    Text(result.content)
-                                        .font(.caption)
+                                    highlighted(result.content, query: searchQuery,
+                                                baseFont: .caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(3)
                                 }
