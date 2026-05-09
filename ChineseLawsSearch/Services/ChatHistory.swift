@@ -105,6 +105,7 @@ struct ChatSession: Identifiable, Codable {
 
 final class ChatHistoryStore: ObservableObject {
     @Published var sessions: [ChatSession] = []
+    @Published var isLoading: Bool = false
 
     private static let fileName = "chat_history.json"
 
@@ -124,8 +125,8 @@ final class ChatHistoryStore: ObservableObject {
     private var metadataQuery: NSMetadataQuery?
 
     init() {
-        load()
         startICloudQuery()
+        loadAsync()
     }
 
     func save(_ session: ChatSession) {
@@ -140,6 +141,21 @@ final class ChatHistoryStore: ObservableObject {
     func delete(id: UUID) {
         sessions.removeAll { $0.id == id }
         persist()
+    }
+
+    private func loadAsync() {
+        isLoading = true
+        let url = fileURL
+        Task.detached(priority: .userInitiated) {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            let decoded = (try? Data(contentsOf: url))
+                .flatMap { try? JSONDecoder().decode([ChatSession].self, from: $0) }
+                ?? []
+            await MainActor.run {
+                self.sessions = decoded
+                self.isLoading = false
+            }
+        }
     }
 
     private func load() {
@@ -168,7 +184,7 @@ final class ChatHistoryStore: ObservableObject {
             object: q,
             queue: .main
         ) { [weak self] _ in
-            self?.load()
+            self?.loadAsync()
         }
         q.start()
         metadataQuery = q

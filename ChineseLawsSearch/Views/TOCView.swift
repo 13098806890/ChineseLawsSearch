@@ -70,8 +70,20 @@ struct TOCView: View {
                     .listRowBackground(Color.clear)
             } else if titleResults.isEmpty && articleResults.isEmpty {
                 // 无结果
-                ContentUnavailableView.search(text: searchQuery)
-                    .listRowBackground(Color.clear)
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(.tertiary)
+                    Text("未找到「\(searchQuery)」相关内容")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("请尝试其他关键词，建议使用 3 个字以上")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+                .listRowBackground(Color.clear)
             } else {
                 // 搜索结果
                 if !titleResults.isEmpty {

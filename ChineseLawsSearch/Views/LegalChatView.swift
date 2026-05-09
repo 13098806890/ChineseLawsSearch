@@ -639,7 +639,15 @@ struct ChatHistorySidebar: View {
 
     var body: some View {
         Group {
-            if historyStore.sessions.isEmpty {
+            if historyStore.isLoading {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("加载中…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if historyStore.sessions.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "bubble.left.and.bubble.right")
                         .font(.system(size: 24, weight: .light))
@@ -720,7 +728,15 @@ struct ChatHistorySheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if historyStore.sessions.isEmpty {
+                if historyStore.isLoading {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("加载中…")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if historyStore.sessions.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "bubble.left.and.bubble.right")
                             .font(.system(size: 24, weight: .light))

@@ -38,16 +38,10 @@ final class LegalExpertService {
     ///   - history: Recent conversation turns (last 2 used)
     func classifyIntent(message: String,
                         history: [(user: String, assistant: String)]) async -> MessageIntent {
-        // Fast-path: no history + very short message with no legal keywords → off_topic
-        let legalKeywords = ["合同","侵权","违约","诉讼","法院","赔偿","解除","仲裁",
-                             "劳动","离婚","继承","公司","股东","刑事","行政","执行",
-                             "借款","担保","抵押","保证","租赁","房屋","土地","消费者",
-                             "噪音","扰民","邻居","相邻","物业","业主","投诉","报警",
-                             "纠纷","维权","权益","赔偿","损失","责任","举报","起诉",
-                             "欺诈","骚扰","打人","伤害","偷","抢","盗","欠钱","还款",
-                             "解雇","开除","工资","加班","押金","退款","保修","质量"]
-        let hasLegal = legalKeywords.contains { message.contains($0) }
-        if history.isEmpty && message.count < 15 && !hasLegal {
+        // Fast-path: pure greeting/chat patterns with no factual content → skip LLM
+        let obviousOffTopic = ["你好", "hello", "hi", "谢谢", "再见", "bye", "👋"]
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if history.isEmpty && message.count < 8 && obviousOffTopic.contains(where: { trimmed.hasPrefix($0) }) {
             return .offTopic
         }
 
@@ -61,11 +55,11 @@ final class LegalExpertService {
         {"intent": "<类型>"}
 
         类型说明：
-        - "case"：用户陈述具体纠纷事实，包含当事人、争议内容、损失、时间等具体信息。**日常生活纠纷同样属于此类**，例如：楼上噪音扰民、邻居堵门、狗咬人、商家不退款、被打伤、欠钱不还、房东不退押金、网购收到假货等——这些都是法律纠纷，应判定为 case
+        - "case"：用户陈述具体纠纷事实或生活问题，哪怕措辞口语化。**日常生活纠纷同样属于此类**，例如：楼上噪音扰民、邻居堵门、狗咬人、商家不退款、被打伤、欠钱不还、房东不退押金、网购收到假货、周末施工噪音等——这些都是法律纠纷，应判定为 case
         - "follow_up"：基于历史对话中已有的**具体案情**继续追问，如"那我应该去哪个法院"、"这种情况能否申请保全"
         - "law_lookup"：用户想查某条具体法律规定、某部法律的内容、某类行为的法律规范，如"合同法第几条规定了违约金"、"未成年人保护法对网络游戏有什么规定"、"酒驾的法律标准是什么"、"劳动法规定试用期最长多久"
         - "general"：法律知识提问或使用咨询，不依赖具体案情，如"什么是连带责任"、"我应该怎么描述我的问题"、"你能帮我做什么"
-        - "off_topic"：纯粹的问候、闲聊、与任何法律或纠纷完全无关的内容，以及询问 app 使用方式、对话格式等功能性问题。**注意：日常生活中的纠纷（噪音、邻里矛盾、消费投诉、人身伤害等）不属于 off_topic，应判定为 case 或 general**
+        - "off_topic"：**仅限**纯粹的问候、闲聊、与任何法律或纠纷完全无关的内容（如"今天天气真好"、"你会唱歌吗"），以及询问 app 使用方式、对话格式等功能性问题。**任何涉及人与人之间矛盾、生活纠纷、权益问题的内容都不属于 off_topic**
 
         注意：
         - "follow_up" 必须以历史对话中存在明确的具体案情为前提；若历史对话中没有案情，只有 off_topic/general 回复，则当前消息不能判定为 follow_up
@@ -73,6 +67,7 @@ final class LegalExpertService {
         - 询问"如何输入问题"、"需要什么格式"、"你是谁"等使用引导性问题属于 off_topic
         - 有历史对话时，如果用户引入了与之前完全不同的新案情，判定为 "case"
         - 无历史对话时，纯法律知识问题判定为 "general" 或 "law_lookup"，不要判定为 "case"
+        - **对不确定的情况，宁可判定为 "case" 或 "general"，不要轻易判定为 "off_topic"**
         """
         let user = "历史对话：\n\(historySection)\n\n当前消息：\(message)"
 
@@ -85,7 +80,35 @@ final class LegalExpertService {
             // fallback: if history exists assume follow_up, otherwise case
             return history.isEmpty ? .caseNarration : .followUp
         }
+
+        // If LLM still says off_topic, try to rescue by extracting legal elements
+        if intent == .offTopic {
+            return await rescueOffTopicIfPossible(message: message) ?? .offTopic
+        }
+
         return intent
+    }
+
+    /// When intent is classified as off_topic, attempt to extract legal elements.
+    /// If the message contains any actionable legal angle, treat it as caseNarration.
+    private func rescueOffTopicIfPossible(message: String) async -> MessageIntent? {
+        let system = """
+        你是中国法律顾问。判断以下用户描述是否包含可分析的法律要素（如：侵权、扰民、权益受损、纠纷、违规行为等）。
+
+        输出JSON：{"has_legal_element": true/false, "legal_angle": "简短说明（如：噪音扰民涉及相邻权纠纷）或空字符串"}
+
+        判断标准：
+        - 如果用户描述了某种困扰、纠纷、他人行为侵害自己权益的情况，即使措辞非常口语化，也判定为 true
+        - 只有纯粹的闲聊、问候、与任何权益无关的内容才判定为 false
+        - 宁可判 true 也不要漏判
+        """
+        guard let raw  = try? await chat(system: system, user: message),
+              let data = extractJSON(raw, open: "{", close: "}").data(using: .utf8),
+              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hasElement = obj["has_legal_element"] as? Bool,
+              hasElement
+        else { return nil }
+        return .caseNarration
     }
 
     /// Handle a general legal knowledge question.
@@ -1066,8 +1089,8 @@ final class LegalExpertService {
                                      conversationHistory: [(user: String, assistant: String)]) async -> String {
         // 追问场景不改写（已有上下文，改写反而会失真）
         if !conversationHistory.isEmpty && question.count < 60 { return question }
-        // 极短问题不改写
-        if question.count < 8 { return question }
+        // 极短问题（纯问候等）不改写
+        if question.count < 4 { return question }
 
         let system = """
         你是中国法律助手，负责将用户的口语化问题改写为规范的法律描述，以便后续精确检索法律条文。
