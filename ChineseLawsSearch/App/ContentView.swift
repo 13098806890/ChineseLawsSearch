@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var selectedLaw: LawMeta?
     @State private var target: LawTarget?
     @State private var showSettings = false
+    @State private var showWelcome = false
     @State private var backStack: [BackItem] = []
 
     @StateObject private var userStore    = UserStore()
@@ -46,8 +47,8 @@ struct ContentView: View {
 
             Divider()
             HStack(spacing: 0) {
-                tabButton(title: "法律浏览", icon: "books.vertical", tab: .browse)
-                tabButton(title: "法律咨询", icon: "bubble.left.and.text.bubble.right", tab: .chat)
+                tabButton(title: "法律浏览", icon: "doc.text", tab: .browse)
+                tabButton(title: "法律咨询", icon: "message", tab: .chat)
                 Button {
                     showSettings = true
                 } label: {
@@ -68,16 +69,28 @@ struct ContentView: View {
             SettingsSheet()
                 .environmentObject(userStore)
         }
-        .onAppear {
-            restoreLastRead()
-        }
-        .onChange(of: target) { newTarget in
-            // 记录当前阅读位置（target 变化时同步，包含从 TOC 直接点击的情况）
-            if let t = newTarget {
-                userStore.recordRead(lawId: t.law.id, articleNum: t.scrollToArticle)
+        .sheet(isPresented: $showWelcome) {
+            NavigationStack {
+                WelcomeView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { showWelcome = false }
+                        }
+                    }
             }
-            // 同步持久化 backStack
-            persistBackStack()
+        }
+        .onAppear {
+            if userStore.showWelcomeOnLaunch || userStore.lastRead == nil {
+                showWelcome = true
+            } else {
+                restoreLastRead()
+            }
+        }
+        .onChange(of: target) {
+            if let t = target {
+                userStore.recordRead(lawId: t.law.id, articleNum: t.scrollToArticle)
+                persistBackStack()
+            }
         }
     }
 
@@ -106,8 +119,7 @@ struct ContentView: View {
                     }
                     .id(t)
                 } else {
-                    Text("选择一部法律")
-                        .foregroundStyle(.secondary)
+                    WelcomeView()
                 }
             }
         }
@@ -123,14 +135,12 @@ struct ContentView: View {
                                   showThinking: userStore.showThinking, navigate: navigate)                }
             } else {
                 NavigationSplitView {
-                    ChatHistorySidebar(historyStore: historyStore, vm: chatVM) {
-                        chatVM.newSession()
-                    }
+                    ChatHistorySidebar(historyStore: historyStore, vm: chatVM)
                 } detail: {
                     NavigationStack {
                         LegalChatView(vm: chatVM, historyStore: historyStore,
                                       showThinking: userStore.showThinking, navigate: navigate,
-                                      showHistoryButton: false)
+                                      showHistoryButton: false, showNewSessionButton: true)
                     }
                 }
             }
@@ -166,7 +176,7 @@ struct ContentView: View {
 
     /// 持久化当前 backStack + target 到 UserDefaults
     private func persistBackStack() {
-        var items = backStack.map { item in
+        let items = backStack.map { item in
             PersistedBackItem(
                 tab: item.tab == .browse ? "browse" : "chat",
                 lawId: item.target?.law.id,
@@ -221,22 +231,47 @@ private struct SettingsSheet: View {
         return d
     }()
     @State private var savedFeedback: String? = nil
+    @State private var showWelcome = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("法律浏览") {
                     Toggle("显示右侧条文索引", isOn: $userStore.showSideIndex)
+                    Toggle("仅搜索法律标题", isOn: $userStore.searchTitleOnly)
+                    Toggle("搜索时忽略条号匹配", isOn: $userStore.searchExcludeArtNum)
+                    Picker("搜索结果上限", selection: $userStore.searchResultLimit) {
+                        Text("50 条").tag(50)
+                        Text("100 条").tag(100)
+                        Text("200 条").tag(200)
+                    }
+                    Toggle("每次启动显示使用说明", isOn: $userStore.showWelcomeOnLaunch)
+                    Button("查看使用说明") { showWelcome = true }
                 }
 
-                Section("对话") {
+                Section {
                     Toggle("显示思考过程", isOn: $userStore.showThinking)
-                    Stepper("专家最多追问 \(userStore.maxFollowUpRounds) 轮",
-                            value: $userStore.maxFollowUpRounds, in: 0...5)
-                    let label = userStore.maxCitations == 0 ? "参考法条：不限数量" : "参考法条最多 \(userStore.maxCitations) 条"
-                    Stepper(label, value: $userStore.maxCitations, in: 0...200, step: 10)
-                    Stepper("每专家上下文法条 \(userStore.maxContextArticles) 条",
-                            value: $userStore.maxContextArticles, in: 5...1000, step: 5)
+
+                    Picker("分析模式", selection: $userStore.chatQualityMode) {
+                        Text("节省").tag("economy")
+                        Text("标准").tag("standard")
+                        Text("详细").tag("detailed")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: userStore.chatQualityMode) {
+                        userStore.applyQualityMode(userStore.chatQualityMode)
+                    }
+                } header: {
+                    Text("对话")
+                } footer: {
+                    switch userStore.chatQualityMode {
+                    case "economy":
+                        Text("节省模式：追问 1 轮，上下文法条 15 条，参考法条 5 条。回答更简洁，消耗 token 最少。")
+                    case "detailed":
+                        Text("详细模式：追问 5 轮，法条上下文与引用数量不设上限。分析最全面，消耗 token 最多。")
+                    default:
+                        Text("标准模式：追问 3 轮，上下文法条 40 条，参考法条 80 条。兼顾质量与成本。")
+                    }
                 }
 
                 Section {
@@ -287,6 +322,16 @@ private struct SettingsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showWelcome) {
+                NavigationStack {
+                    WelcomeView()
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("完成") { showWelcome = false }
+                            }
+                        }
                 }
             }
         }

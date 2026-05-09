@@ -22,6 +22,7 @@ struct LegalChatView: View {
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
     var showHistoryButton: Bool = true
+    var showNewSessionButton: Bool = false
 
     @ObservedObject private var tokenCounter = TokenCounter.shared
     @State private var showHistory = false
@@ -89,15 +90,18 @@ struct LegalChatView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
 
-                    // Token counter
-                    if tokenCounter.session.total > 0 {
+                    // Token counter — show base (from loaded history) + current session
+                    let totalPrompt     = vm.tokenBasePrompt     + tokenCounter.session.promptTokens
+                    let totalCompletion = vm.tokenBaseCompletion + tokenCounter.session.completionTokens
+                    let totalTokens     = totalPrompt + totalCompletion
+                    if totalTokens > 0 {
                         HStack(spacing: 12) {
                             Spacer()
-                            Label("\(formatTokens(tokenCounter.session.promptTokens))", systemImage: "arrow.up")
-                            Label("\(formatTokens(tokenCounter.session.completionTokens))", systemImage: "arrow.down")
-                            Text("共 \(formatTokens(tokenCounter.session.total)) tokens")
-                            let cost = Double(tokenCounter.session.promptTokens) / 1_000_000 * 1.0
-                                   + Double(tokenCounter.session.completionTokens) / 1_000_000 * 2.0
+                            Label("\(formatTokens(totalPrompt))", systemImage: "arrow.up")
+                            Label("\(formatTokens(totalCompletion))", systemImage: "arrow.down")
+                            Text("共 \(formatTokens(totalTokens)) tokens")
+                            let cost = Double(totalPrompt)     / 1_000_000 * 1.0
+                                     + Double(totalCompletion) / 1_000_000 * 2.0
                             Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
                         }
                         .font(.caption2)
@@ -114,30 +118,34 @@ struct LegalChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if showHistoryButton {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        vm.newSession()
-                    } label: {
-                        Image(systemName: "square.and.pencil")
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    HStack(spacing: 16) {
+                        Button { showHistory = true } label: {
+                            Image(systemName: "clock")
+                        }
+                        Button { vm.newSession() } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                        .disabled(vm.isThinking)
+                    }
+                }
+            }
+            if !showHistoryButton && showNewSessionButton {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { vm.newSession() } label: {
+                        Image(systemName: "plus.circle")
                     }
                     .disabled(vm.isThinking)
                 }
             }
-            if showHistoryButton {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showHistory = true
-                    } label: {
-                        Image(systemName: "clock")
-                    }
-                }
-            }
         }
         .sheet(isPresented: $showHistory) {
-            ChatHistorySheet(historyStore: historyStore) { session in
+            ChatHistorySheet(historyStore: historyStore, onSelect: { session in
                 vm.loadSession(session)
                 showHistory = false
-            }
+            }, onNewSession: {
+                vm.newSession()
+            })
         }
     }
 
@@ -156,7 +164,7 @@ struct LegalChatView: View {
                     Image(systemName: "person.3.fill")
                         .font(.system(size: 44))
                         .foregroundStyle(AppColors.shared.searchHighlight.opacity(0.7))
-                    Text("中国法律顾问")
+                    Text("法律顾问")
                         .font(.title2.bold())
                     Text("多位细分领域专家协作分析，给出更深入的法律意见")
                         .font(.subheadline)
@@ -185,7 +193,7 @@ struct LegalChatView: View {
                            title: "在同一会话里继续追问",
                            body: "对答复中不清楚的地方直接追问，专家会沿用已有案情上下文，无需重复描述背景。")
 
-                    tipRow(icon: "plus.bubble",
+                    tipRow(icon: "plus.circle",
                            title: "新案情开新会话",
                            body: "遇到完全不同的纠纷，点击「+」新建对话，避免不同案情互相干扰。")
                 }
@@ -628,17 +636,17 @@ private struct CitationList: View {
 struct ChatHistorySidebar: View {
     @ObservedObject var historyStore: ChatHistoryStore
     let vm: LegalChatViewModel
-    let onNewSession: () -> Void
 
     var body: some View {
         Group {
             if historyStore.sessions.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "clock")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
+                VStack(spacing: 8) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 24, weight: .light))
+                        .foregroundStyle(.tertiary)
                     Text("暂无历史记录")
-                        .foregroundStyle(.secondary)
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -663,13 +671,6 @@ struct ChatHistorySidebar: View {
         }
         .navigationTitle("历史记录")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button { onNewSession() } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-            }
-        }
     }
 
     private func historyRow(_ session: ChatSession) -> some View {
@@ -714,18 +715,20 @@ struct ChatHistorySidebar: View {
 struct ChatHistorySheet: View {
     @ObservedObject var historyStore: ChatHistoryStore
     let onSelect: (ChatSession) -> Void
+    let onNewSession: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Group {
                 if historyStore.sessions.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.secondary)
+                    VStack(spacing: 8) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 24, weight: .light))
+                            .foregroundStyle(.tertiary)
                         Text("暂无历史记录")
-                            .foregroundStyle(.secondary)
+                            .font(.footnote)
+                            .foregroundStyle(.tertiary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -777,6 +780,14 @@ struct ChatHistorySheet: View {
             .navigationTitle("历史记录")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        onNewSession()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "plus.circle")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
@@ -923,7 +934,7 @@ final class LegalChatViewModel: ObservableObject {
             // ── Off-topic: hardcoded reply, zero LLM calls ─────────────────────
             case .offTopic:
                 var reply = ChatMessage(role: .assistant,
-                                        text: "您好！我是中国法律顾问助手，专门解答中国法律问题。\n请描述您遇到的法律问题或纠纷，例如合同纠纷、劳动争议、侵权责任等，我将为您提供专业分析。")
+                                        text: "您好！我是法律顾问助手，专门解答中国法律问题。\n请描述您遇到的法律问题或纠纷，例如合同纠纷、劳动争议、侵权责任等，我将为您提供专业分析。")
                 reply.intent = .offTopic
                 messages.append(reply)
 

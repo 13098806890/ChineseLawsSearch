@@ -126,15 +126,9 @@ struct LawDetailView: View {
             highlightedArticle = nil
             scrollPosition = -1
 
-            async let nodesTask = Task.detached(priority: .userInitiated) {
-                await DatabaseManager.shared.nodes(lawId: lawId)
-            }.value
-            async let ogTask = Task.detached(priority: .userInitiated) {
-                await DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId)
-            }.value
-            async let icTask = Task.detached(priority: .userInitiated) {
-                await DatabaseManager.shared.incomingRefsForLaw(lawId: lawId)
-            }.value
+            async let nodesTask = DatabaseManager.shared.nodes(lawId: lawId)
+            async let ogTask    = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId)
+            async let icTask    = DatabaseManager.shared.incomingRefsForLaw(lawId: lawId)
             let (loadedNodes, ogList, icList) = await (nodesTask, ogTask, icTask)
             nodes = loadedNodes
             outgoingMap = Dictionary(grouping: ogList, by: \.fromArticleNum)

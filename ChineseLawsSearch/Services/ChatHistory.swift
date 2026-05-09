@@ -106,12 +106,27 @@ struct ChatSession: Identifiable, Codable {
 final class ChatHistoryStore: ObservableObject {
     @Published var sessions: [ChatSession] = []
 
-    private let fileURL: URL = {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appendingPathComponent("chat_history.json")
-    }()
+    private static let fileName = "chat_history.json"
 
-    init() { load() }
+    /// Returns the iCloud Documents URL if available, otherwise falls back to local Documents.
+    private var fileURL: URL {
+        if let ubiq = FileManager.default.url(forUbiquityContainerIdentifier: nil)?
+            .appendingPathComponent("Documents") {
+            if !FileManager.default.fileExists(atPath: ubiq.path) {
+                try? FileManager.default.createDirectory(at: ubiq, withIntermediateDirectories: true)
+            }
+            return ubiq.appendingPathComponent(Self.fileName)
+        }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent(Self.fileName)
+    }
+
+    private var metadataQuery: NSMetadataQuery?
+
+    init() {
+        load()
+        startICloudQuery()
+    }
 
     func save(_ session: ChatSession) {
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
@@ -128,14 +143,34 @@ final class ChatHistoryStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
+        let url = fileURL
+        // Trigger iCloud download if the file exists in cloud but not locally
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode([ChatSession].self, from: data)
         else { return }
         sessions = decoded
     }
 
     private func persist() {
+        let url = fileURL
         guard let data = try? JSONEncoder().encode(sessions) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        try? data.write(to: url, options: .atomic)
+    }
+
+    // Watch for iCloud updates to the file and reload when it changes remotely.
+    private func startICloudQuery() {
+        let q = NSMetadataQuery()
+        q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
+        q.predicate = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, Self.fileName)
+        NotificationCenter.default.addObserver(
+            forName: .NSMetadataQueryDidUpdate,
+            object: q,
+            queue: .main
+        ) { [weak self] _ in
+            self?.load()
+        }
+        q.start()
+        metadataQuery = q
     }
 }

@@ -339,22 +339,22 @@ final class DatabaseManager {
         let cjkChars = query.unicodeScalars.filter {
             $0.value >= 0x4E00 && $0.value <= 0x9FFF
         }
-        let useBigram = cjkChars.count < 3
+        let useLike = cjkChars.count < 3   // 短词用 LIKE，避免 bigram 单字拆开无结果
 
         let sql: String
         let ftsQuery: String
 
-        if useBigram {
-            // bigram 表：每个字空格分开（AND 语义）
-            ftsQuery = cjkChars.map { String($0) }.joined(separator: " ")
+        if useLike {
+            // 短词（1-2字）：LIKE '%keyword%' 全扫，准确可靠
+            let col = excludeArticleNumber ? "n.content" : "(n.article_number || n.content)"
             sql = """
                 SELECT n.id, n.law_id, l.title, n.article_number, n.content, n.article_num
-                FROM nodes_fts_bigram f
-                JOIN nodes n ON f.rowid = n.id
-                JOIN laws  l ON n.law_id = l.id
-                WHERE nodes_fts_bigram MATCH ? AND n.type = 'article' AND l.is_current = 1
+                FROM nodes n
+                JOIN laws l ON n.law_id = l.id
+                WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1
                 LIMIT ?
                 """
+            ftsQuery = "%\(query)%"
         } else {
             ftsQuery = query
             // 屏蔽条号时搜 content_body 列，否则搜全文
@@ -380,13 +380,6 @@ final class DatabaseManager {
 
         while sqlite3_step(stmt) == SQLITE_ROW {
             let content = str(stmt, 4)
-            // 短词屏蔽条号：bigram 无 content_body，在 Swift 侧过滤
-            if useBigram && excludeArticleNumber {
-                let artNum = str(stmt, 3)
-                let body   = content.replacingOccurrences(of: artNum, with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                if !body.contains(query) { continue }
-            }
             let artNumCol = sqlite3_column_type(stmt, 5)
             let artNum: Int? = artNumCol == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 5))
             result.append(SearchResult(

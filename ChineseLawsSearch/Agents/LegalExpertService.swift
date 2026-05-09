@@ -41,7 +41,11 @@ final class LegalExpertService {
         // Fast-path: no history + very short message with no legal keywords → off_topic
         let legalKeywords = ["合同","侵权","违约","诉讼","法院","赔偿","解除","仲裁",
                              "劳动","离婚","继承","公司","股东","刑事","行政","执行",
-                             "借款","担保","抵押","保证","租赁","房屋","土地","消费者"]
+                             "借款","担保","抵押","保证","租赁","房屋","土地","消费者",
+                             "噪音","扰民","邻居","相邻","物业","业主","投诉","报警",
+                             "纠纷","维权","权益","赔偿","损失","责任","举报","起诉",
+                             "欺诈","骚扰","打人","伤害","偷","抢","盗","欠钱","还款",
+                             "解雇","开除","工资","加班","押金","退款","保修","质量"]
         let hasLegal = legalKeywords.contains { message.contains($0) }
         if history.isEmpty && message.count < 15 && !hasLegal {
             return .offTopic
@@ -57,11 +61,11 @@ final class LegalExpertService {
         {"intent": "<类型>"}
 
         类型说明：
-        - "case"：用户陈述具体纠纷事实，包含当事人、争议内容、损失、时间等具体信息
+        - "case"：用户陈述具体纠纷事实，包含当事人、争议内容、损失、时间等具体信息。**日常生活纠纷同样属于此类**，例如：楼上噪音扰民、邻居堵门、狗咬人、商家不退款、被打伤、欠钱不还、房东不退押金、网购收到假货等——这些都是法律纠纷，应判定为 case
         - "follow_up"：基于历史对话中已有的**具体案情**继续追问，如"那我应该去哪个法院"、"这种情况能否申请保全"
         - "law_lookup"：用户想查某条具体法律规定、某部法律的内容、某类行为的法律规范，如"合同法第几条规定了违约金"、"未成年人保护法对网络游戏有什么规定"、"酒驾的法律标准是什么"、"劳动法规定试用期最长多久"
         - "general"：法律知识提问或使用咨询，不依赖具体案情，如"什么是连带责任"、"我应该怎么描述我的问题"、"你能帮我做什么"
-        - "off_topic"：问候、闲聊、与法律无关的内容，以及询问 app 使用方式、对话格式等功能性问题
+        - "off_topic"：纯粹的问候、闲聊、与任何法律或纠纷完全无关的内容，以及询问 app 使用方式、对话格式等功能性问题。**注意：日常生活中的纠纷（噪音、邻里矛盾、消费投诉、人身伤害等）不属于 off_topic，应判定为 case 或 general**
 
         注意：
         - "follow_up" 必须以历史对话中存在明确的具体案情为前提；若历史对话中没有案情，只有 off_topic/general 回复，则当前消息不能判定为 follow_up
@@ -157,83 +161,57 @@ final class LegalExpertService {
     /// Extracts law name + topic keywords, does precise FTS, returns full articles + explanation.
     func askLawLookup(question: String,
                       onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-        onEvent(.thinkStep(name: "法条查询", content: "识别目标法律和查询关键词…"))
 
-        // Step 1: LLM extracts target law name + keywords
-        let extractPrompt = """
-        用户想查找特定法律规定。从问题中提取检索信息，输出JSON：
-        {"law": "完整法律名称或空字符串", "keywords": ["词1", "词2", "词3"]}
+        // Step 1: 路由专家（与 case 流程相同）
+        let analysis = await characterizeAndRoute(question: question, knownFacts: [:])
+        let experts  = analysis.experts
+        onEvent(.thinkStep(name: "法律定性", content: analysis.characterization))
+        onEvent(.thinkStep(name: "细分专家", content: experts.isEmpty ? "未匹配到专家" : experts.map { $0.name }.joined(separator: "、")))
+        onEvent(.expertsSelected(experts))
 
-        关键词提取规则：
-        - 每个关键词必须是**单个最小语义单元**（2-4个汉字），不要提取组合短语
-        - 优先使用法条中的规范用语，例如：
-          用户说"噪音施工时间" → 提取 ["施工噪声", "禁止", "夜间"] 而不是 ["噪音施工时间"]
-          用户说"酒驾标准" → 提取 ["饮酒", "驾驶", "血液酒精"] 而不是 ["酒驾标准"]
-          用户说"试用期最长多久" → 提取 ["试用期", "期限"] 而不是 ["试用期最长"]
-        - 提取3-5个词，覆盖问题的不同维度（主体、行为、后果、时间等）
-        - 如果问题明确提到法律名称，填入"law"字段（写完整名称，如"中华人民共和国噪声污染防治法"）
-
-        问题：\(question)
-        """
-        let extractRaw = (try? await chat(system: "只输出JSON，不要其他内容。", user: extractPrompt)) ?? ""
-        var targetLaw = ""
-        var keywords: [String] = []
-        if let data = extractJSON(extractRaw, open: "{", close: "}").data(using: .utf8),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            targetLaw = (obj["law"] as? String) ?? ""
-            keywords  = (obj["keywords"] as? [String]) ?? []
-        }
-        if keywords.isEmpty { keywords = simpleKeywords(from: question) }
-
+        // Step 2: 每位专家用 LLM 知识定位法条 → 精确 DB 查询
         let db = DatabaseManager.shared
         var seenIds = Set<Int>()
-        var articles: [DatabaseManager.RAGArticle] = []
-        let allDomains = ["宪法相关法", "民法典", "民法商法", "刑法",
-                          "行政法", "经济法", "社会法", "诉讼与非诉讼程序法"]
-        let allCats = ["法律", "宪法", "修正案", "法律解释", "司法解释", "行政法规", "监察法规"]
+        var allArticles: [DatabaseManager.RAGArticle] = []
+        var expertSummaries: [String] = []
 
-        // Boost: if target law name given, search within that law first
-        if !targetLaw.isEmpty {
-            for kw in keywords.prefix(4) {
-                for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: allCats, limit: 8) {
-                    if a.lawTitle.contains(targetLaw) || targetLaw.contains(a.lawTitle) {
-                        if seenIds.insert(a.nodeId).inserted { articles.append(a) }
-                    }
-                }
-            }
-        }
-        // Fallback / supplement: broad search
-        for kw in keywords.prefix(5) {
-            for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: allCats, limit: 6) {
-                if seenIds.insert(a.nodeId).inserted { articles.append(a) }
-            }
+        let effectiveExperts = experts.isEmpty
+            ? [SubExpert(name: "综合法律顾问",
+                         domain: "综合",
+                         requiredInfo: [],
+                         lawTitles: [],
+                         chapterIdHints: [],
+                         ftsDomains: ["宪法相关法","民法典","民法商法","刑法","行政法","经济法","社会法","诉讼与非诉讼程序法"],
+                         ftsCategories: ["法律","宪法","修正案","法律解释","司法解释","行政法规","监察法规"],
+                         ftsKeywordsExtra: [],
+                         answerTemplate: "你是中国法律专家。")]
+            : experts
+
+        for expert in effectiveExperts {
+            let expertArticles = try await lookupArticlesWithExpert(expert: expert, question: question, db: db, seenIds: &seenIds)
+            allArticles += expertArticles
+            let summary = expertArticles.isEmpty
+                ? "\(expert.name)：未找到相关条文"
+                : "\(expert.name)：找到 \(expertArticles.count) 条（\(expertArticles.map { $0.articleNumber }.joined(separator: "、"))）"
+            expertSummaries.append(summary)
         }
 
-        // Filter out unrelated articles using the same relevance check as expert pipeline
-        let filtered = await filterArticles(question: question, articles: articles)
-        let topArticles = filtered.isEmpty ? Array(articles.prefix(15)) : filtered
-        let lawInfo = targetLaw.isEmpty ? "全库检索" : "目标：《\(targetLaw)》"
         onEvent(.thinkStep(name: "法条检索",
-                           content: "\(lawInfo)，关键词：\(keywords.joined(separator: "、"))，命中 \(topArticles.count) 条（过滤后）"))
+                           content: expertSummaries.joined(separator: "\n") + "\n共 \(allArticles.count) 条"))
 
-        if topArticles.isEmpty {
-            let kws = keywords.joined(separator: "、")
-            let msg = targetLaw.isEmpty
-                ? "未找到与「\(kws)」相关的法律条文，请尝试换用其他关键词。"
-                : "未找到《\(targetLaw)》中与「\(kws)」相关的条文，请确认法律名称或关键词。"
-            onEvent(.token(msg))
+        if allArticles.isEmpty {
+            onEvent(.token("各专家均未在数据库中找到相关条文。请尝试换用具体法律名称或条文关键词重新查询。"))
             return []
         }
 
-        let citations = topArticles.map {
+        let citations = allArticles.map {
             RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
                         articleNumber: $0.articleNumber, articleNum: $0.articleNum,
                         category: $0.category, content: $0.content)
         }
-        let artText = topArticles.map {
-            "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)"
-        }.joined(separator: "\n\n")
 
+        // Step 3: 汇总输出原文
+        let artText = allArticles.map { "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)" }.joined(separator: "\n\n")
         let systemPrompt = """
         你是中国法律条文检索助手。根据检索到的法条，直接引用原文回答用户的查询。
         - 先点名具体是哪部法律第几条
@@ -241,15 +219,91 @@ final class LegalExpertService {
         - 如有多条相关条文，逐条列出
         - 不要发表评论，不要推测案情，只陈述法条规定
         - 严禁使用Markdown格式
+        【严格限制】只能引用上方提供的法条，不得引用任何未在列表中出现的条文。
         """
-        let userMsg = "相关法条：\n\(artText)\n\n用户查询：\(question)"
         try await LLMProviderRegistry.current.streamChat(
             messages: [["role": "system", "content": systemPrompt],
-                       ["role": "user",   "content": userMsg]],
+                       ["role": "user",   "content": "相关法条：\n\(artText)\n\n用户查询：\(question)"]],
             temperature: 0.05,
             onToken: { onEvent(.token($0)) }
         )
         return citations
+    }
+
+    /// 单个专家用 LLM 知识识别法条编号，再精确查询 DB，FTS 兜底。
+    private func lookupArticlesWithExpert(expert: SubExpert,
+                                          question: String,
+                                          db: DatabaseManager,
+                                          seenIds: inout Set<Int>) async throws -> [DatabaseManager.RAGArticle] {
+        let identifyPrompt = """
+        你是【\(expert.name)】，专精领域：\(expert.domain)。
+        根据用户的查询，列出在你的专业领域内**直接相关**的法律条文。
+
+        规则：
+        - 只列属于你专业领域的条文，不要列其他领域的条文
+        - 法律全称（中文，不要简称），条文编号用"第X条"格式（汉字数字）
+        - 每部法律最多5条，总共最多10条
+        - 如不确定具体条文号，可只写法律名称，articles 填空数组
+        - 如该查询与你的专业领域无关，输出 {"laws": []}
+
+        输出纯 JSON：{"laws": [{"name": "完整法律名称", "articles": ["第X条", ...]}, ...]}
+
+        用户查询：\(question)
+        """
+        let raw = (try? await chat(system: "只输出JSON，不要markdown。", user: identifyPrompt)) ?? ""
+        let json = extractJSON(raw, open: "{", close: "}")
+
+        struct LawRef { let name: String; let articles: [String] }
+        var lawRefs: [LawRef] = []
+        if let data = json.data(using: .utf8),
+           let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let arr  = obj["laws"] as? [[String: Any]] {
+            for item in arr {
+                let name = (item["name"] as? String) ?? ""
+                let arts = (item["articles"] as? [String]) ?? []
+                if !name.isEmpty { lawRefs.append(LawRef(name: name, articles: arts)) }
+            }
+        }
+
+        var result: [DatabaseManager.RAGArticle] = []
+        var missedAny = false
+        let allDomains = expert.ftsDomains.isEmpty ? ["宪法相关法","民法典","民法商法","刑法","行政法","经济法","社会法","诉讼与非诉讼程序法"] : expert.ftsDomains
+        let allCats    = expert.ftsCategories.isEmpty ? ["法律","宪法","修正案","法律解释","司法解释","行政法规","监察法规"] : expert.ftsCategories
+
+        for ref in lawRefs {
+            let shortName = ref.name.replacingOccurrences(of: "中华人民共和国", with: "")
+            if ref.articles.isEmpty {
+                // No specific article — FTS within this law
+                for kw in simpleKeywords(from: question).prefix(3) {
+                    for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: allCats, limit: 5) {
+                        if (a.lawTitle.contains(shortName) || a.lawTitle.contains(ref.name))
+                            && seenIds.insert(a.nodeId).inserted {
+                            result.append(a)
+                        }
+                    }
+                }
+            } else {
+                for artNum in ref.articles {
+                    let found = db.articleByRef(lawTitleFragment: shortName, articleNumber: artNum)
+                              ?? db.articleByRef(lawTitleFragment: ref.name, articleNumber: artNum)
+                    if let a = found, seenIds.insert(a.nodeId).inserted {
+                        result.append(a)
+                    } else if found == nil {
+                        missedAny = true
+                    }
+                }
+            }
+        }
+
+        // FTS fallback if LLM gave no refs or all refs missed
+        if missedAny || (result.isEmpty && !lawRefs.isEmpty) {
+            for kw in simpleKeywords(from: question).prefix(4) {
+                for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: allCats, limit: 6) {
+                    if seenIds.insert(a.nodeId).inserted { result.append(a) }
+                }
+            }
+        }
+        return result
     }
 
     /// Handle a follow-up question, reusing previously selected experts.
@@ -348,14 +402,24 @@ final class LegalExpertService {
              followUpRound: Int,
              maxFollowUpRounds: Int,
              onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-        let decomposed = await decomposeQuestion(question)
+
+        // Step 0: 问题法律化改写（口语 → 规范法律描述）
+        let rewritten = await rewriteToLegalForm(question: question,
+                                                  conversationHistory: conversationHistory)
+        if rewritten != question {
+            onEvent(.thinkStep(name: "问题改写",
+                               content: "原始：\(question)\n\n改写：\(rewritten)"))
+        }
+        let workingQuestion = rewritten
+
+        let decomposed = await decomposeQuestion(workingQuestion)
         let subQs = decomposed.questions
         let displayLines = subQs.isEmpty
             ? "问题无需拆分，直接分析。"
             : subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")
         onEvent(.thinkStep(name: "拆分问题", content: displayLines))
         if !subQs.isEmpty { onEvent(.subQuestions(subQs)) }
-        return try await runPipeline(question: question, factContext: decomposed.preamble, subQs: subQs,
+        return try await runPipeline(question: workingQuestion, factContext: decomposed.preamble, subQs: subQs,
                                      conversationHistory: conversationHistory,
                                      knownFacts: knownFacts,
                                      followUpRound: followUpRound,
@@ -816,10 +880,6 @@ final class LegalExpertService {
                 if let i = obj["i"] as? Int, let s = obj["s"] as? Int { dict[i] = s }
             }
             let threshold = 4
-            let filtered = articles.enumerated().compactMap { i, a -> DatabaseManager.RAGArticle? in
-                guard (scores[i] ?? 0) >= threshold else { return nil }
-                return a
-            }
             // Sort by score descending, cap to maxCtx
             let sorted = articles.enumerated()
                 .filter { i, _ in (scores[i] ?? 0) >= threshold }
@@ -997,6 +1057,36 @@ final class LegalExpertService {
 
 
     // MARK: - Helpers
+
+    // MARK: - 问题法律化改写
+
+    /// 将口语化问题改写为规范的法律表述，补充法律性质、当事人关系、可能适用的法律领域。
+    /// 若问题已足够规范，或为追问/知识查询，则原文返回。
+    private func rewriteToLegalForm(question: String,
+                                     conversationHistory: [(user: String, assistant: String)]) async -> String {
+        // 追问场景不改写（已有上下文，改写反而会失真）
+        if !conversationHistory.isEmpty && question.count < 60 { return question }
+        // 极短问题不改写
+        if question.count < 8 { return question }
+
+        let system = """
+        你是中国法律助手，负责将用户的口语化问题改写为规范的法律描述，以便后续精确检索法律条文。
+
+        改写规则：
+        1. 补充法律性质（如：侵权行为、合同违约、相邻权纠纷、行政违规等）
+        2. 明确当事人关系（如：租户与房东、相邻业主、雇主与雇员等）
+        3. 补充可能适用的法律领域关键词（如：《民法典》相邻关系、《治安管理处罚法》噪音扰民等）
+        4. 保留原始事实，不要捏造细节，不要改变用户原意
+        5. 改写后长度不超过原问题的3倍，语言简洁
+        6. 如果原问题已是规范法律表述，或是纯粹的法律知识查询（不涉及具体纠纷），直接输出原文
+
+        只输出改写后的问题，不要解释，不要前缀，不要引号。
+        """
+        let result = try? await chat(system: system, user: question)
+        guard let r = result?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !r.isEmpty, r != question else { return question }
+        return r
+    }
 
     private func decomposeQuestion(_ question: String) async -> DecomposedQuestion {
         let none = DecomposedQuestion(preamble: "", questions: [])
