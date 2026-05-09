@@ -200,20 +200,21 @@ struct SearchView: View {
         let onlyTitle = titleOnly
         let variant   = DatabaseManager.numberVariant(of: q)
 
+        let db = DatabaseManager.shared
         Task.detached(priority: .userInitiated) {
-            var titles = DatabaseManager.shared.searchByTitle(query: q)
+            var titles = db.searchByTitle(query: q)
             if let v = variant {
-                let extra = DatabaseManager.shared.searchByTitle(query: v)
+                let extra = db.searchByTitle(query: v)
                 let seen  = Set(titles.map(\.id))
                 titles += extra.filter { !seen.contains($0.id) }
             }
 
             var articles: [SearchResult] = []
             if !onlyTitle {
-                articles = DatabaseManager.shared.searchContent(
+                articles = db.searchContent(
                     query: q, limit: limit, excludeArticleNumber: excl)
                 if let v = variant {
-                    let extra = DatabaseManager.shared.searchContent(
+                    let extra = db.searchContent(
                         query: v, limit: limit, excludeArticleNumber: excl)
                     let seen = Set(articles.map(\.id))
                     articles += extra.filter { !seen.contains($0.id) }

@@ -11,23 +11,19 @@ private func highlighted(_ text: String, query: String,
                           baseFont: Font = .caption,
                           highlightColor: Color = AppColors.shared.searchHighlight) -> Text {
     guard !query.isEmpty else { return Text(text).font(baseFont) }
-    var result = Text("")
-    var remaining = text[...]
+    var attr = AttributedString(text)
     let lower = text.lowercased()
     let lowerQ = query.lowercased()
     var searchFrom = lower.startIndex
     while let range = lower.range(of: lowerQ, range: searchFrom..<lower.endIndex) {
-        // text before match
-        let before = String(remaining[remaining.startIndex..<range.lowerBound])
-        result = result + Text(before).font(baseFont)
-        // matched text (use original casing)
-        let matched = String(text[range])
-        result = result + Text(matched).font(baseFont).bold().foregroundColor(highlightColor)
-        remaining = remaining[range.upperBound...]
+        // Map String range → AttributedString range
+        if let attrRange = Range(range, in: attr) {
+            attr[attrRange].font = UIFont.boldSystemFont(ofSize: UIFont.systemFontSize)
+            attr[attrRange].foregroundColor = UIColor(highlightColor)
+        }
         searchFrom = range.upperBound
     }
-    result = result + Text(String(remaining)).font(baseFont)
-    return result
+    return Text(attr).font(baseFont)
 }
 
 struct TOCView: View {
@@ -185,25 +181,28 @@ struct TOCView: View {
         let limit     = resultLimit
         let onlyTitle = titleOnly
         let variant   = DatabaseManager.numberVariant(of: q)
+        let db = DatabaseManager.shared
         Task.detached(priority: .userInitiated) {
-            var titles = DatabaseManager.shared.searchByTitle(query: q)
+            var titles = db.searchByTitle(query: q)
             if let v = variant {
-                let extra = DatabaseManager.shared.searchByTitle(query: v)
+                let extra = db.searchByTitle(query: v)
                 let seen  = Set(titles.map(\.id))
                 titles += extra.filter { !seen.contains($0.id) }
             }
             var articles: [SearchResult] = []
             if !onlyTitle {
-                articles = DatabaseManager.shared.searchContent(query: q, limit: limit, excludeArticleNumber: excl)
+                articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl)
                 if let v = variant {
-                    let extra = DatabaseManager.shared.searchContent(query: v, limit: limit, excludeArticleNumber: excl)
+                    let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl)
                     let seen  = Set(articles.map(\.id))
                     articles += extra.filter { !seen.contains($0.id) }
                 }
             }
+            let finalTitles   = titles
+            let finalArticles = articles
             await MainActor.run {
-                titleResults   = titles
-                articleResults = articles
+                titleResults   = finalTitles
+                articleResults = finalArticles
                 isRunning      = false
             }
         }

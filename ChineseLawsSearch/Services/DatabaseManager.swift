@@ -67,8 +67,8 @@ struct IncomingRef: Identifiable {
 final class DatabaseManager {
     static let shared = DatabaseManager()
 
-    private var db: OpaquePointer?
-    private var enhDb: OpaquePointer?
+    nonisolated(unsafe) private var db: OpaquePointer?
+    nonisolated(unsafe) private var enhDb: OpaquePointer?
 
     private init() {
         db    = DatabaseManager.openDB(resource: "law_content",     ext: "db")
@@ -289,7 +289,7 @@ final class DatabaseManager {
 
     // MARK: 按标题搜索法律
 
-    func searchByTitle(query: String, limit: Int = 50) -> [LawMeta] {
+    nonisolated func searchByTitle(query: String, limit: Int = 50) -> [LawMeta] {
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
@@ -332,7 +332,7 @@ final class DatabaseManager {
     // 1-2字走 bigram FTS，3字以上走 trigram FTS，均为毫秒级
     // excludeArticleNumber: 屏蔽条号前缀匹配（3字以上走 content_body 列，短词在 Swift 过滤）
 
-    func searchContent(query: String, limit: Int = 100,
+    nonisolated func searchContent(query: String, limit: Int = 100,
                        excludeArticleNumber: Bool = false) -> [SearchResult] {
         guard !query.isEmpty else { return [] }
 
@@ -825,7 +825,7 @@ final class DatabaseManager {
 
     // MARK: 工具
 
-    private func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {
+    nonisolated private func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {
         guard let cstr = sqlite3_column_text(stmt, col) else { return "" }
         return String(cString: cstr)
     }
