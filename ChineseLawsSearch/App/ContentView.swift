@@ -142,6 +142,7 @@ struct ContentView: View {
                                   showThinking: userStore.showThinking, navigate: navigate,
                                   onOpenSettings: { showSettings = true },
                                   isActive: tab == .chat)
+                        .environmentObject(userStore)
                 }
             } else {
                 NavigationSplitView {
@@ -153,6 +154,7 @@ struct ContentView: View {
                                       showHistoryButton: false, showNewSessionButton: true,
                                       onOpenSettings: { showSettings = true },
                                       isActive: tab == .chat)
+                            .environmentObject(userStore)
                     }
                 }
             }
@@ -245,6 +247,12 @@ private struct SettingsSheet: View {
     @State private var savedFeedback: String? = nil
     @State private var showWelcome = false
     @State private var showDeleteKeyConfirm = false
+    @State private var testStatus: TestStatus = .idle
+
+    enum TestStatus {
+        case idle, testing, success, failure(String)
+        var isLoading: Bool { if case .testing = self { return true }; return false }
+    }
 
     var body: some View {
         NavigationStack {
@@ -322,6 +330,36 @@ private struct SettingsSheet: View {
                     }
                     Button("保存 Key") { saveKey(for: provider) }
                         .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    // 测试连接
+                    if !currentKey.isEmpty {
+                        HStack {
+                            Button {
+                                Task { await testConnection(provider: provider) }
+                            } label: {
+                                if testStatus.isLoading {
+                                    HStack(spacing: 6) {
+                                        ProgressView().scaleEffect(0.8)
+                                        Text("测试中…")
+                                    }
+                                } else {
+                                    Label("测试连接", systemImage: "network")
+                                }
+                            }
+                            .disabled(testStatus.isLoading)
+                            Spacer()
+                            switch testStatus {
+                            case .success:
+                                Label("连接成功", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green).font(.footnote)
+                            case .failure(let msg):
+                                Label(msg, systemImage: "xmark.circle.fill")
+                                    .foregroundStyle(.red).font(.footnote)
+                                    .lineLimit(1)
+                            default:
+                                EmptyView()
+                            }
+                        }
+                    }
                     if !currentKey.isEmpty {
                         Button(role: .destructive) {
                             showDeleteKeyConfirm = true
@@ -336,6 +374,8 @@ private struct SettingsSheet: View {
                             Button("删除", role: .destructive) {
                                 KeychainHelper.delete(forKey: provider.keychainKey)
                                 savedKeys[provider.id] = ""
+                                userStore.refreshAPIKeyState()
+                                testStatus = .idle
                             }
                             Button("取消", role: .cancel) {}
                         } message: {
@@ -384,8 +424,30 @@ private struct SettingsSheet: View {
         } else {
             KeychainHelper.save(trimmed, forKey: provider.keychainKey)
         }
+        userStore.refreshAPIKeyState()
+        testStatus = .idle
         savedFeedback = provider.id
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { savedFeedback = nil }
+    }
+
+    private func testConnection(provider: any LLMProvider) async {
+        testStatus = .testing
+        do {
+            _ = try await provider.chat(
+                messages: [["role": "user", "content": "hi"]],
+                temperature: 0
+            )
+            await MainActor.run { testStatus = .success }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            await MainActor.run { if case .success = testStatus { testStatus = .idle } }
+        } catch LLMError.apiKeyMissing {
+            await MainActor.run { testStatus = .failure("Key 未配置") }
+        } catch LLMError.apiKeyInvalid {
+            await MainActor.run { testStatus = .failure("Key 无效") }
+        } catch {
+            let msg = error.localizedDescription.prefix(20)
+            await MainActor.run { testStatus = .failure(String(msg)) }
+        }
     }
 }
 

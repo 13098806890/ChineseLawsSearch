@@ -21,6 +21,18 @@ final class UserStore: ObservableObject {
 
     private let kv = NSUbiquitousKeyValueStore.default
 
+    // MARK: - API Key 状态（供跨视图响应）
+
+    @Published var apiKeyConfigured: Bool = {
+        let k = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+        return !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }()
+
+    func refreshAPIKeyState() {
+        let k = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+        apiKeyConfigured = !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     // MARK: - 阅读记录（当前 target）
 
     var lastReadLawId: Int {

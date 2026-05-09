@@ -31,11 +31,9 @@ struct LegalChatView: View {
     @State private var showHistory = false
     @State private var showNoKeyAlert = false
     @FocusState private var inputFocused: Bool
+    @EnvironmentObject private var userStore: UserStore
 
-    private var hasAPIKey: Bool {
-        let key = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
-        return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    private var hasAPIKey: Bool { userStore.apiKeyConfigured }
 
     var body: some View {
         ScrollViewReader { proxy in
