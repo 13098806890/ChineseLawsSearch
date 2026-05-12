@@ -177,6 +177,45 @@ struct DeepSeekProvider: LLMProvider {
     }
 }
 
+// MARK: - BuiltinDeepSeekProvider（免费/付费 agent 使用，不存入 Keychain）
+
+struct BuiltinDeepSeekProvider: LLMProvider {
+    let id          = "builtin_deepseek"
+    let displayName = "DeepSeek"
+    let modelName   = "deepseek-chat"
+    let keychainKey = ""   // 不使用 Keychain
+    let keyURL: URL? = nil
+
+    private var apiURL: URL { URL(string: "https://api.deepseek.com/chat/completions")! }
+
+    // 内置 key — 仅供 app 内 agent 功能使用，不在 UI 展示
+    private func key() throws -> String {
+        guard let k = Bundle.main.object(forInfoDictionaryKey: "BuiltinAPIKey") as? String,
+              !k.isEmpty else {
+            throw LLMError.apiKeyMissing(displayName)
+        }
+        return k
+    }
+
+    func chat(messages: [[String: Any]], temperature: Double) async throws -> String {
+        let data = try await openAIChat(url: apiURL, apiKey: try key(), providerName: displayName,
+                                        model: modelName, messages: messages,
+                                        temperature: temperature, stream: false)
+        return try extractOpenAIContent(data)
+    }
+
+    func streamChat(messages: [[String: Any]], temperature: Double, onToken: @escaping (String) -> Void) async throws {
+        let (bytes, response) = try await openAIStreamBytes(url: apiURL, apiKey: try key(),
+                                                            providerName: displayName, model: modelName,
+                                                            messages: messages, temperature: temperature)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            var raw = Data(); for try await b in bytes { raw.append(b) }
+            throw LLMError.fromHTTP(statusCode: http.statusCode, data: raw, provider: displayName)
+        }
+        try await consumeSSELines(bytes, onToken: onToken)
+    }
+}
+
 // MARK: - Groq
 
 struct GroqProvider: LLMProvider {
@@ -267,6 +306,16 @@ enum LLMProviderRegistry {
     static var current: any LLMProvider {
         let saved = UserDefaults.standard.string(forKey: "selected_llm_provider") ?? "deepseek"
         return provider(id: saved) ?? DeepSeekProvider()
+    }
+
+    /// Agent 功能专用 provider：
+    /// 优先使用用户自己配置的 DeepSeek key；若未配置则使用内置 key（免费/付费配额管控）。
+    static var agentProvider: any LLMProvider {
+        let userKey = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+        if !userKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return DeepSeekProvider()
+        }
+        return BuiltinDeepSeekProvider()
     }
 }
 

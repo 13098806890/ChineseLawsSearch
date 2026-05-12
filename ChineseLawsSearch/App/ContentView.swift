@@ -248,6 +248,8 @@ struct ContentView: View {
 private struct SettingsSheet: View {
     @EnvironmentObject private var userStore: UserStore
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var pm = PurchaseManager.shared
+    @State private var showPaywall = false
     @State private var savedKeys: [String: String] = {
         var d: [String: String] = [:]
         for p in LLMProviderRegistry.all where !p.keychainKey.isEmpty {
@@ -268,6 +270,43 @@ private struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // MARK: Agent 解锁状态
+                Section {
+                    switch pm.access {
+                    case .paid:
+                        Label("法律顾问已解锁", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                    case .free(let remaining):
+                        HStack {
+                            Label("免费剩余 \(remaining) 次", systemImage: "gift")
+                            Spacer()
+                            Button("解锁无限使用") { showPaywall = true }
+                                .font(.footnote)
+                                .foregroundStyle(AppColors.shared.searchHighlight)
+                        }
+                    case .noAccess:
+                        HStack {
+                            Label("免费次数已用完", systemImage: "exclamationmark.circle")
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("购买解锁") { showPaywall = true }
+                                .font(.footnote)
+                                .foregroundStyle(AppColors.shared.searchHighlight)
+                        }
+                    }
+                } header: {
+                    Text("法律顾问")
+                } footer: {
+                    switch pm.access {
+                    case .paid:
+                        Text("感谢支持，您可无限使用法律顾问功能。")
+                    case .free(let remaining):
+                        Text("每位用户免费赠送 20 次体验，剩余 \(remaining) 次。购买后无限使用。")
+                    case .noAccess:
+                        Text("免费体验已用完。购买后即可无限使用，也可在下方填入自己的 API Key 使用。")
+                    }
+                }
+
                 Section("法律浏览") {
                     Toggle("显示右侧条文索引", isOn: $userStore.showSideIndex)
                     Toggle("仅搜索法律标题", isOn: $userStore.searchTitleOnly)
@@ -413,6 +452,9 @@ private struct SettingsSheet: View {
                             }
                         }
                 }
+            }
+            .sheet(isPresented: $showPaywall) {
+                PaywallView(pm: pm)
             }
         }
     }

@@ -28,12 +28,23 @@ struct LegalChatView: View {
     var isActive: Bool = true
 
     @ObservedObject private var tokenCounter = TokenCounter.shared
+    @ObservedObject private var pm = PurchaseManager.shared
     @State private var showHistory = false
     @State private var showNoKeyAlert = false
+    @State private var showPaywall = false
     @FocusState private var inputFocused: Bool
     @EnvironmentObject private var userStore: UserStore
 
     private var hasAPIKey: Bool { userStore.apiKeyConfigured }
+
+    /// 用户有自己的 Key，或者还有免费次数/已购买
+    private var canUseAgent: Bool {
+        if hasAPIKey { return true }
+        switch pm.access {
+        case .paid, .free: return true
+        case .noAccess: return false
+        }
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -42,7 +53,8 @@ struct LegalChatView: View {
                     if vm.messages.isEmpty {
                         placeholderView
                             .onAppear {
-                                if isActive && !hasAPIKey { showNoKeyAlert = true }
+                                // 无 key 且免费次数用完时弹 paywall
+                                if isActive && !canUseAgent { showPaywall = true }
                             }
                     }
                     ForEach(vm.messages) { msg in
@@ -104,10 +116,10 @@ struct LegalChatView: View {
                             .padding(.vertical, 8)
                             .background(Color.appTertiaryBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            .disabled(vm.isThinking || !hasAPIKey)
+                            .disabled(vm.isThinking || !canUseAgent)
                             .focused($inputFocused)
                             .onTapGesture {
-                                if !hasAPIKey { showNoKeyAlert = true }
+                                if !canUseAgent { showPaywall = true }
                             }
                         Button {
                             Task { await vm.send(historyStore: historyStore) }
@@ -120,7 +132,41 @@ struct LegalChatView: View {
                         .disabled(vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isThinking)
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.top, 10)
+
+                    // Free uses hint
+                    if !hasAPIKey {
+                        switch pm.access {
+                        case .free(let remaining):
+                            HStack(spacing: 4) {
+                                Text("免费剩余 \(remaining) 次")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("·")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Button { showPaywall = true } label: {
+                                    Text("解锁无限使用")
+                                        .font(.caption2)
+                                        .foregroundStyle(AppColors.shared.searchHighlight)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                        case .noAccess:
+                            HStack(spacing: 4) {
+                                Text("免费次数已用完")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("·")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Button { showPaywall = true } label: {
+                                    Text("购买解锁")
+                                        .font(.caption2)
+                                        .foregroundStyle(AppColors.shared.searchHighlight)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                        case .paid:
+                            EmptyView()
+                        }
+                    }
 
                     // Token counter — show base (from loaded history) + current session
                     let totalPrompt     = vm.tokenBasePrompt     + tokenCounter.session.promptTokens
@@ -177,6 +223,9 @@ struct LegalChatView: View {
             }, onNewSession: {
                 vm.newSession()
             })
+        }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView(pm: pm)
         }
         .alert("需要配置 API Key", isPresented: $showNoKeyAlert) {
             Button("前往设置") { onOpenSettings?() }
@@ -982,6 +1031,12 @@ final class LegalChatViewModel: ObservableObject {
     func send(historyStore: ChatHistoryStore) async {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !isThinking else { return }
+
+        // Access control: consume a free use (no-op if user has own key or is paid)
+        let userKey = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+        let needsQuota = userKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if needsQuota && !PurchaseManager.shared.consumeIfAllowed() { return }
+
         let currentSessionId = sessionId  // capture before any await
         lastFailedQuestion = nil
         inputText = ""
