@@ -73,8 +73,16 @@ struct LawDetailView: View {
                 }
 
                 if isSearching && !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty && displayedNodes.isEmpty {
-                    ContentUnavailableView.search(text: searchQuery)
-                        .padding(.top, 40)
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 28, weight: .light))
+                            .foregroundStyle(.tertiary)
+                        Text("未找到「\(searchQuery)」相关条文")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
                 }
             }
             .scrollTargetLayout()
@@ -342,35 +350,50 @@ struct SideIndexBar: View {
     let nodes: [LawNode]
     let onSelect: (Int, Int?) -> Void
 
-    // 只取 article 节点，按 globalOrder 排好
-    private var articles: [LawNode] {
-        nodes.filter { $0.type == "article" }
+    // 只取 article 节点，按 globalOrder 排好（预计算，不在手势事件中重算）
+    private let articles: [LawNode]
+    private let precomputedSamples: [(label: String, idx: Int)]
+
+    init(nodes: [LawNode], onSelect: @escaping (Int, Int?) -> Void) {
+        self.nodes = nodes
+        self.onSelect = onSelect
+        let arts = nodes.filter { $0.type == "article" }
             .sorted { $0.globalOrder < $1.globalOrder }
-    }
-
-    // 根据高度均匀采样，返回 (label, index-in-articles)
-    private func samples(maxCount: Int) -> [(label: String, idx: Int)] {
-        let arts = articles
-        guard !arts.isEmpty else { return [] }
-        let count = min(maxCount, arts.count)
-        guard count > 0 else { return [] }
-        var result: [(String, Int)] = []
-        for i in 0..<count {
-            let idx = i * (arts.count - 1) / max(1, count - 1)
-            let node = arts[min(idx, arts.count - 1)]
-            let label = node.articleNum.map { "\($0)" } ?? "\(idx + 1)"
-            result.append((label, idx))
+        self.articles = arts
+        // Pre-sample with a generous max; body will slice to visible count
+        let maxSamples = min(120, arts.count)
+        var samples: [(String, Int)] = []
+        if maxSamples > 0 {
+            for i in 0..<maxSamples {
+                let idx = i * (arts.count - 1) / max(1, maxSamples - 1)
+                let node = arts[min(idx, arts.count - 1)]
+                let label = node.articleNum.map { "\($0)" } ?? "\(idx + 1)"
+                samples.append((label, idx))
+            }
         }
-        return result
+        self.precomputedSamples = samples
     }
 
-    // 按触摸 Y 比例跳到对应 article
-    private func jump(fraction: CGFloat) {
-        let arts = articles
-        guard !arts.isEmpty else { return }
-        let idx = Int((fraction * CGFloat(arts.count)).rounded(.towardZero))
-            .clamped(to: 0...(arts.count - 1))
-        let node = arts[idx]
+    private func samples(maxCount: Int) -> [(label: String, idx: Int)] {
+        guard !precomputedSamples.isEmpty else { return [] }
+        let count = min(maxCount, precomputedSamples.count)
+        guard count > 0 else { return [] }
+        let step = max(1, precomputedSamples.count / count)
+        return stride(from: 0, to: precomputedSamples.count, by: step)
+            .prefix(count)
+            .map { precomputedSamples[$0] }
+    }
+
+    // 按触摸 Y 跳到离触摸点最近的那个标注数字对应的 article
+    private func jump(locationY: CGFloat, firstCenter: CGFloat, rowH: CGFloat,
+                      items: [(offset: Int, element: (label: String, idx: Int))]) {
+        guard !items.isEmpty else { return }
+        let nearest = items.min(by: { a, b in
+            let yA = firstCenter + CGFloat(a.offset) * rowH * 2
+            let yB = firstCenter + CGFloat(b.offset) * rowH * 2
+            return abs(yA - locationY) < abs(yB - locationY)
+        })!
+        let node = articles[nearest.element.idx]
         onSelect(node.id, node.articleNum)
     }
 
@@ -391,8 +414,6 @@ struct SideIndexBar: View {
 
             // 第一个标签中心 Y
             let firstCenter = listTop + rowH / 2
-            // 最后一个标签中心 Y（每个标签之间有一个点行）
-            let lastCenter  = listTop + CGFloat(labelCount + dotCount - 1) * rowH + rowH / 2
 
             ZStack(alignment: .center) {
                 Color.clear
@@ -400,14 +421,8 @@ struct SideIndexBar: View {
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { v in
-                                let span = lastCenter - firstCenter
-                                guard span > 0 else {
-                                    jump(fraction: 0.5)
-                                    return
-                                }
-                                let fraction = ((v.location.y - firstCenter) / span)
-                                    .clamped(to: 0...1)
-                                jump(fraction: fraction)
+                                jump(locationY: v.location.y, firstCenter: firstCenter,
+                                     rowH: rowH, items: Array(items.enumerated()))
                             }
                     )
 

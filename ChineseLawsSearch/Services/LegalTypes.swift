@@ -67,19 +67,31 @@ enum RAGEvent {
 // MARK: - Message intent
 
 enum MessageIntent: String {
-    case caseNarration = "case"
-    case followUp      = "follow_up"
-    case general       = "general"
-    case lawLookup     = "law_lookup"
-    case offTopic      = "off_topic"
+    case legalQuery = "legal_query"
+    case followUp   = "follow_up"
+    case offTopic   = "off_topic"
 
     var label: String {
         switch self {
-        case .caseNarration: return "案情分析"
-        case .followUp:      return "追问"
-        case .general:       return "法律知识"
-        case .lawLookup:     return "法条查询"
-        case .offTopic:      return "非法律问题"
+        case .legalQuery: return "法律咨询"
+        case .followUp:   return "追问"
+        case .offTopic:   return "非法律问题"
+        }
+    }
+}
+
+// MARK: - Query mode (resolved after intent = legalQuery)
+
+enum QueryMode: String {
+    case caseAnalysis      = "case"       // 案情分析：有具体事实，需追问，给策略建议
+    case legalAdvisory     = "advisory"   // 法律咨询：假设场景，给一般性权利义务结论
+    case conceptAndStatute = "statute"    // 概念/法条：解释定义或检索原文，不评价案情
+
+    var label: String {
+        switch self {
+        case .caseAnalysis:      return "案情分析"
+        case .legalAdvisory:     return "法律咨询"
+        case .conceptAndStatute: return "法条检索"
         }
     }
 }

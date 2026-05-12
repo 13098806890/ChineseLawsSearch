@@ -27,8 +27,9 @@ private func highlighted(_ text: String, query: String,
 }
 
 struct TOCView: View {
-    @Binding var selectedLaw: LawMeta?
     @Binding var target: LawTarget?
+
+    private var selectedLawId: Int? { target?.law.id }
 
     @AppStorage("searchExcludeArtNum") private var excludeArtNum: Bool = true
     @AppStorage("searchTitleOnly")     private var titleOnly: Bool = false
@@ -111,7 +112,6 @@ struct TOCView: View {
                     Section("法律名称") {
                         ForEach(titleResults) { law in
                             Button {
-                                selectedLaw = law
                                 target = LawTarget(law: law, scrollToArticle: nil)
                             } label: {
                                 highlighted(law.title, query: searchQuery,
@@ -127,7 +127,6 @@ struct TOCView: View {
                         ForEach(articleResults) { result in
                             Button {
                                 if let law = DatabaseManager.shared.lawMeta(id: result.lawId) {
-                                    selectedLaw = law
                                     target = LawTarget(law: law, scrollToArticle: result.nodeArticleNum)
                                 }
                             } label: {
@@ -161,10 +160,6 @@ struct TOCView: View {
         .onChange(of: excludeArtNum) { _, _ in runSearch(searchQuery) }
         .onChange(of: titleOnly)     { _, _ in runSearch(searchQuery) }
         .onChange(of: resultLimit)   { _, _ in runSearch(searchQuery) }
-        .onChange(of: selectedLaw) { old, law in
-            guard let law, target?.law.id != law.id else { return }
-            target = LawTarget(law: law, scrollToArticle: nil)
-        }
         .task {
             menu = DatabaseManager.shared.loadMenu()
         }
@@ -256,17 +251,10 @@ struct TOCView: View {
 
     @ViewBuilder
     func lawRow(_ menuLaw: DatabaseManager.MenuLaw) -> some View {
-        let isSelected = selectedLaw?.id == menuLaw.id
+        let isSelected = selectedLawId == menuLaw.id
         Button {
             if let law = DatabaseManager.shared.lawMeta(id: menuLaw.id) {
-                selectedLaw = law
-                let newTarget = LawTarget(law: law, scrollToArticle: nil)
-                if target == newTarget {
-                    target = nil
-                    DispatchQueue.main.async { target = newTarget }
-                } else {
-                    target = newTarget
-                }
+                target = LawTarget(law: law, scrollToArticle: nil)
             }
         } label: {
             Text(menuLaw.title)

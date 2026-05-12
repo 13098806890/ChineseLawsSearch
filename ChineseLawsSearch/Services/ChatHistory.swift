@@ -109,20 +109,22 @@ final class ChatHistoryStore: ObservableObject {
 
     private static let fileName = "chat_history.json"
 
-    /// Returns the iCloud Documents URL if available, otherwise falls back to local Documents.
-    private var fileURL: URL {
+    /// 计算一次并缓存，避免每次调用 FileManager.url(forUbiquityContainerIdentifier:)
+    private let fileURL: URL = {
         if let ubiq = FileManager.default.url(forUbiquityContainerIdentifier: nil)?
             .appendingPathComponent("Documents") {
             if !FileManager.default.fileExists(atPath: ubiq.path) {
                 try? FileManager.default.createDirectory(at: ubiq, withIntermediateDirectories: true)
             }
-            return ubiq.appendingPathComponent(Self.fileName)
+            return ubiq.appendingPathComponent(ChatHistoryStore.fileName)
         }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appendingPathComponent(Self.fileName)
-    }
+        return docs.appendingPathComponent(ChatHistoryStore.fileName)
+    }()
 
     private var metadataQuery: NSMetadataQuery?
+    /// Debounce iCloud update notifications to avoid hammering disk on rapid sync events.
+    private var reloadWorkItem: DispatchWorkItem?
 
     init() {
         startICloudQuery()
@@ -135,12 +137,12 @@ final class ChatHistoryStore: ObservableObject {
         } else {
             sessions.insert(session, at: 0)
         }
-        persist()
+        persistAsync()
     }
 
     func delete(id: UUID) {
         sessions.removeAll { $0.id == id }
-        persist()
+        persistAsync()
     }
 
     private func loadAsync() {
@@ -158,20 +160,14 @@ final class ChatHistoryStore: ObservableObject {
         }
     }
 
-    private func load() {
+    /// 异步序列化 + 写文件，不阻塞主线程。
+    private func persistAsync() {
+        let snapshot = sessions
         let url = fileURL
-        // Trigger iCloud download if the file exists in cloud but not locally
-        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([ChatSession].self, from: data)
-        else { return }
-        sessions = decoded
-    }
-
-    private func persist() {
-        let url = fileURL
-        guard let data = try? JSONEncoder().encode(sessions) else { return }
-        try? data.write(to: url, options: .atomic)
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
     }
 
     // Watch for iCloud updates to the file and reload when it changes remotely.
@@ -184,7 +180,11 @@ final class ChatHistoryStore: ObservableObject {
             object: q,
             queue: .main
         ) { [weak self] _ in
-            self?.loadAsync()
+            // Debounce: ignore rapid successive iCloud metadata events
+            self?.reloadWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in self?.loadAsync() }
+            self?.reloadWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
         }
         q.start()
         metadataQuery = q

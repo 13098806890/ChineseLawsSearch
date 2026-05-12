@@ -67,8 +67,11 @@ struct IncomingRef: Identifiable {
 final class DatabaseManager {
     static let shared = DatabaseManager()
 
-    nonisolated(unsafe) private var db: OpaquePointer?
-    nonisolated(unsafe) private var enhDb: OpaquePointer?
+    private var db: OpaquePointer?
+    private var enhDb: OpaquePointer?
+
+    /// 所有 SQLite 操作必须在此队列上执行，保证线程安全。
+    private let queue = DispatchQueue(label: "com.lushu.dbqueue", qos: .userInitiated)
 
     private init() {
         db    = DatabaseManager.openDB(resource: "law_content",     ext: "db")
@@ -82,7 +85,7 @@ final class DatabaseManager {
         }
         // Try opening directly from bundle first (works when DB is in delete/journal mode)
         var ptr: OpaquePointer?
-        if sqlite3_open_v2(bundleURL.path, &ptr, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK {
+        if sqlite3_open_v2(bundleURL.path, &ptr, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK {
             return ptr
         }
         // Bundle open failed (e.g. WAL mode needs writable dir) — copy to Documents and retry
@@ -102,7 +105,7 @@ final class DatabaseManager {
             print("DatabaseManager: 复制 \(resource).\(ext) 失败：\(error)")
             return nil
         }
-        if sqlite3_open_v2(destURL.path, &ptr, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) != SQLITE_OK {
+        if sqlite3_open_v2(destURL.path, &ptr, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
             print("DatabaseManager: 无法打开 \(resource).\(ext)")
             return nil
         }
@@ -167,6 +170,10 @@ final class DatabaseManager {
     // MARK: 某部法律的全部节点
 
     func nodes(lawId: Int) -> [LawNode] {
+        queue.sync { _nodes(lawId: lawId) }
+    }
+
+    private func _nodes(lawId: Int) -> [LawNode] {
         let sql = """
             SELECT id, law_id, parent_id, type, title, content, global_order, article_num
             FROM nodes
@@ -201,6 +208,10 @@ final class DatabaseManager {
     // MARK: 法律元数据（by id）
 
     func lawMeta(id: Int) -> LawMeta? {
+        queue.sync { _lawMeta(id: id) }
+    }
+
+    private func _lawMeta(id: Int) -> LawMeta? {
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
@@ -233,6 +244,10 @@ final class DatabaseManager {
     // MARK: 某部法律的全部出向引用（按条文分组用）
 
     func outgoingRefsForLaw(lawId: Int) -> [OutgoingRef] {
+        queue.sync { _outgoingRefsForLaw(lawId: lawId) }
+    }
+
+    private func _outgoingRefsForLaw(lawId: Int) -> [OutgoingRef] {
         let sql = """
             SELECT ar.id, ar.from_article_num, ar.raw_text, ar.to_law_id, l.title, ar.to_article_num
             FROM article_references ar
@@ -261,6 +276,10 @@ final class DatabaseManager {
     // MARK: 某部法律的全部入向引用（按条文分组用）
 
     func incomingRefsForLaw(lawId: Int) -> [IncomingRef] {
+        queue.sync { _incomingRefsForLaw(lawId: lawId) }
+    }
+
+    private func _incomingRefsForLaw(lawId: Int) -> [IncomingRef] {
         let sql = """
             SELECT ar.id, ar.to_article_num, ar.from_law_id, l.title, ar.from_article_num, n.article_number
             FROM article_references ar
@@ -290,6 +309,10 @@ final class DatabaseManager {
     // MARK: 按标题搜索法律
 
     nonisolated func searchByTitle(query: String, limit: Int = 50) -> [LawMeta] {
+        queue.sync { _searchByTitle(query: query, limit: limit) }
+    }
+
+    private func _searchByTitle(query: String, limit: Int = 50) -> [LawMeta] {
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
@@ -333,6 +356,11 @@ final class DatabaseManager {
     // excludeArticleNumber: 屏蔽条号前缀匹配（3字以上走 content_body 列，短词在 Swift 过滤）
 
     nonisolated func searchContent(query: String, limit: Int = 100,
+                       excludeArticleNumber: Bool = false) -> [SearchResult] {
+        queue.sync { _searchContent(query: query, limit: limit, excludeArticleNumber: excludeArticleNumber) }
+    }
+
+    private func _searchContent(query: String, limit: Int = 100,
                        excludeArticleNumber: Bool = false) -> [SearchResult] {
         guard !query.isEmpty else { return [] }
 
@@ -413,11 +441,13 @@ final class DatabaseManager {
         return nil
     }
 
+    private static let arabicRegex   = try! NSRegularExpression(pattern: #"[0-9]+"#)
+    private static let chineseRegex  = try! NSRegularExpression(pattern: "[零一二三四五六七八九十百千万]+")
+
     private static func arabicToChinese(_ s: String) -> String {
-        let pattern = try! NSRegularExpression(pattern: #"[0-9]+"#)
         var result = s
         var offset = 0
-        for match in pattern.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
+        for match in arabicRegex.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
             let range  = Range(match.range, in: s)!
             let numStr = String(s[range])
             guard let n = Int(numStr) else { continue }
@@ -431,10 +461,9 @@ final class DatabaseManager {
     }
 
     private static func chineseToArabic(_ s: String) -> String {
-        let pattern = try! NSRegularExpression(pattern: "[零一二三四五六七八九十百千万]+")
         var result = s
         var offset = 0
-        for match in pattern.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
+        for match in chineseRegex.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
             let range  = Range(match.range, in: s)!
             let cnStr  = String(s[range])
             let n      = chineseToInt(cnStr)
@@ -498,6 +527,10 @@ final class DatabaseManager {
 
     /// 别名扩展：colloquial → [legal_term]（term_aliases + alias_patches 两表合并）
     func legalTerms(for colloquial: String) -> [String] {
+        queue.sync { _legalTerms(for: colloquial) }
+    }
+
+    private func _legalTerms(for colloquial: String) -> [String] {
         guard let edb = enhDb else { return [] }
         var result: [String] = []
         var seen = Set<String>()
@@ -518,6 +551,10 @@ final class DatabaseManager {
 
     /// keyword_synonyms: LLM词 → [精确FTS词]
     func synonyms(for keyword: String) -> [String] {
+        queue.sync { _synonyms(for: keyword) }
+    }
+
+    private func _synonyms(for keyword: String) -> [String] {
         guard let edb = enhDb else { return [] }
         let sql = "SELECT target_kw FROM keyword_synonyms WHERE source_kw = ? ORDER BY fts_hits DESC"
         var stmt: OpaquePointer?
@@ -532,6 +569,10 @@ final class DatabaseManager {
 
     /// topic_law_hints: keywords → [(priority, lawTitle)]，已按 priority 排序去重
     func topicLawHints(for keywords: [String]) -> [String] {
+        queue.sync { _topicLawHints(for: keywords) }
+    }
+
+    private func _topicLawHints(for keywords: [String]) -> [String] {
         guard let edb = enhDb else { return [] }
         var seen = Set<String>()
         var hints: [(Int, String)] = []
@@ -567,6 +608,10 @@ final class DatabaseManager {
 
     /// FTS 检索单个关键词，在指定 legal_domain 和 category 范围内
     func ftsSearch(keyword: String, domains: [String], categories: [String], limit: Int = 10) -> [RAGArticle] {
+        queue.sync { _ftsSearch(keyword: keyword, domains: domains, categories: categories, limit: limit) }
+    }
+
+    private func _ftsSearch(keyword: String, domains: [String], categories: [String], limit: Int = 10) -> [RAGArticle] {
         guard !keyword.isEmpty, let db = db else { return [] }
         let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
         let domainPH = domains.map { _ in "?" }.joined(separator: ",")
@@ -634,6 +679,10 @@ final class DatabaseManager {
 
     /// hint law 检索：在指定法律标题内 FTS 搜索
     func ftsSearchInLaw(keyword: String, lawTitle: String, categories: [String], limit: Int = 10) -> [RAGArticle] {
+        queue.sync { _ftsSearchInLaw(keyword: keyword, lawTitle: lawTitle, categories: categories, limit: limit) }
+    }
+
+    private func _ftsSearchInLaw(keyword: String, lawTitle: String, categories: [String], limit: Int = 10) -> [RAGArticle] {
         guard !keyword.isEmpty, let db = db else { return [] }
         let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
         guard cjk >= 3 else { return [] }
@@ -678,6 +727,10 @@ final class DatabaseManager {
 
     /// FTS 命中数（用于关键词精确度排序）
     func ftsHitCount(keyword: String) -> Int {
+        queue.sync { _ftsHitCount(keyword: keyword) }
+    }
+
+    private func _ftsHitCount(keyword: String) -> Int {
         guard !keyword.isEmpty, let db = db else { return 999 }
         let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
         guard cjk >= 3 else { return 999 }
@@ -700,6 +753,10 @@ final class DatabaseManager {
     }
 
     func lawId(title: String) -> Int? {
+        queue.sync { _lawId(title: title) }
+    }
+
+    private func _lawId(title: String) -> Int? {
         guard let db = db else { return nil }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
@@ -713,6 +770,10 @@ final class DatabaseManager {
     }
 
     func lawStructure(lawId: Int) -> [LawStructureNode] {
+        queue.sync { _lawStructure(lawId: lawId) }
+    }
+
+    private func _lawStructure(lawId: Int) -> [LawStructureNode] {
         guard let db = db else { return [] }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
@@ -733,6 +794,10 @@ final class DatabaseManager {
     }
 
     func articlesInNode(_ nodeId: Int) -> [RAGArticle] {
+        queue.sync { _articlesInNode(nodeId) }
+    }
+
+    private func _articlesInNode(_ nodeId: Int) -> [RAGArticle] {
         guard let db = db else { return [] }
         // direct articles
         var stmt: OpaquePointer?
@@ -760,11 +825,15 @@ final class DatabaseManager {
         sqlite3_bind_int(sectionStmt, 1, Int32(nodeId))
         var subIds: [Int] = []
         while sqlite3_step(sectionStmt) == SQLITE_ROW { subIds.append(Int(sqlite3_column_int(sectionStmt, 0))) }
-        for subId in subIds { result += articlesInNode(subId) }
+        for subId in subIds { result += _articlesInNode(subId) }
         return result
     }
 
     func articleByRef(lawTitleFragment: String, articleNumber: String) -> RAGArticle? {
+        queue.sync { _articleByRef(lawTitleFragment: lawTitleFragment, articleNumber: articleNumber) }
+    }
+
+    private func _articleByRef(lawTitleFragment: String, articleNumber: String) -> RAGArticle? {
         guard let db = db else { return nil }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
@@ -790,25 +859,33 @@ final class DatabaseManager {
     func articlesByNumber(articleNumber: String,
                           lawTitleFragment: String? = nil,
                           lawIds: [Int] = []) -> [RAGArticle] {
+        queue.sync { _articlesByNumber(articleNumber: articleNumber, lawTitleFragment: lawTitleFragment, lawIds: lawIds) }
+    }
+
+    private func _articlesByNumber(articleNumber: String,
+                                   lawTitleFragment: String? = nil,
+                                   lawIds: [Int] = []) -> [RAGArticle] {
         guard let db = db else { return [] }
-        var sql = """
+        // lawIds: integer values only — safe to inline (no user input)
+        let idsPart = lawIds.isEmpty ? "" : " AND n.law_id IN (\(lawIds.map { String($0) }.joined(separator: ",")))"
+        // lawTitleFragment comes from LLM output — use parameter binding to prevent SQL injection
+        let titlePart = (lawTitleFragment?.isEmpty == false) ? " AND l.title LIKE ?" : ""
+        let sql = """
             SELECT n.id, n.law_id, l.title, l.category, l.legal_domain,
                    n.article_number, n.article_num, n.content
             FROM nodes n JOIN laws l ON n.law_id = l.id
             WHERE n.article_number = ? AND n.type = 'article' AND l.is_current = 1
+            \(idsPart)\(titlePart)
+            LIMIT 10
             """
-        if !lawIds.isEmpty {
-            sql += " AND n.law_id IN (\(lawIds.map { String($0) }.joined(separator: ",")))"
-        }
-        if let frag = lawTitleFragment, !frag.isEmpty {
-            sql += " AND l.title LIKE '%\(frag)%'"
-        }
-        sql += " LIMIT 10"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(stmt, 1, articleNumber, -1, t)
+        if let frag = lawTitleFragment, !frag.isEmpty {
+            sqlite3_bind_text(stmt, 2, "%\(frag)%", -1, t)
+        }
         var result: [RAGArticle] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             result.append(RAGArticle(
@@ -823,9 +900,56 @@ final class DatabaseManager {
         return result
     }
 
+    // MARK: 双向引用扩展
+
+    /// 给定一批 nodeId，返回它们通过 article_references 引用或被引用的所有条文（双向），
+    /// 排除已在 seenIds 中的节点。
+    func referencedArticles(nodeIds: [Int], excludingIds: Set<Int>) -> [RAGArticle] {
+        queue.sync { _referencedArticles(nodeIds: nodeIds, excludingIds: excludingIds) }
+    }
+
+    private func _referencedArticles(nodeIds: [Int], excludingIds: Set<Int>) -> [RAGArticle] {
+        guard let db = db, !nodeIds.isEmpty else { return [] }
+        let idList = nodeIds.map { String($0) }.joined(separator: ",")
+        // 出向引用：当前条文 → 被引用条文（to_node_id 有值）
+        // 入向引用：引用当前条文的其他条文（from_node_id）
+        let sql = """
+            SELECT DISTINCT n.id, n.law_id, l.title, l.category, l.legal_domain,
+                   n.article_number, n.article_num, n.content
+            FROM article_references ar
+            JOIN nodes n ON (
+                (ar.from_node_id IN (\(idList)) AND n.id = ar.to_node_id)
+                OR
+                (ar.to_node_id IN (\(idList)) AND n.id = ar.from_node_id)
+            )
+            JOIN laws l ON n.law_id = l.id
+            WHERE ar.resolved = 1
+              AND n.type = 'article'
+              AND l.is_current = 1
+            LIMIT 30
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        var result: [RAGArticle] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let nodeId = Int(sqlite3_column_int(stmt, 0))
+            guard !excludingIds.contains(nodeId) else { continue }
+            result.append(RAGArticle(
+                nodeId: nodeId,
+                lawId:  Int(sqlite3_column_int(stmt, 1)),
+                lawTitle: str(stmt, 2), category: str(stmt, 3), legalDomain: str(stmt, 4),
+                articleNumber: str(stmt, 5),
+                articleNum: sqlite3_column_type(stmt, 6) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 6)) : nil,
+                content: str(stmt, 7), pinned: false
+            ))
+        }
+        return result
+    }
+
     // MARK: 工具
 
-    nonisolated private func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {
+    private func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {
         guard let cstr = sqlite3_column_text(stmt, col) else { return "" }
         return String(cString: cstr)
     }

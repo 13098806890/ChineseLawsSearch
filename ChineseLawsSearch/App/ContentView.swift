@@ -5,14 +5,25 @@
 
 import SwiftUI
 
-struct LawTarget: Equatable, Hashable {
+/// Identifies a navigation destination: which law, and which article to scroll to.
+/// Each call to `init` creates a unique instance (via `id`), so navigation always
+/// fires even when law + article are the same — e.g. tapping the same search result twice.
+struct LawTarget: Identifiable, Hashable {
+    let id: UUID = UUID()
     let law: LawMeta
     let scrollToArticle: Int?
+
+    init(law: LawMeta, scrollToArticle: Int?) {
+        self.law = law
+        self.scrollToArticle = scrollToArticle
+    }
+
+    static func == (lhs: LawTarget, rhs: LawTarget) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 struct ContentView: View {
     @State private var tab: Tab = .browse
-    @State private var selectedLaw: LawMeta?
     @State private var target: LawTarget?
     @State private var showSettings = false
     @State private var showWelcome = false
@@ -64,6 +75,7 @@ struct ContentView: View {
             }
             .frame(height: 56)
             .background(.bar)
+            .ignoresSafeArea(.keyboard)
         }
         .sheet(isPresented: $showSettings) {
             SettingsSheet()
@@ -74,7 +86,10 @@ struct ContentView: View {
                 WelcomeView()
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("完成") { showWelcome = false }
+                            Button("完成") {
+                                showWelcome = false
+                                restoreLastRead()
+                            }
                         }
                     }
             }
@@ -82,16 +97,13 @@ struct ContentView: View {
         .onAppear {
             let isFirstLaunch = !userStore.hasLaunchedBefore
             if isFirstLaunch {
-                userStore.hasLaunchedBefore = true  // mark before async to avoid double-trigger
+                userStore.hasLaunchedBefore = true
             }
             let shouldShowWelcome = userStore.showWelcomeOnLaunch || isFirstLaunch
             if isCompact && shouldShowWelcome {
-                // Delay one run-loop so the view hierarchy is fully settled
-                // before presenting the sheet, preventing auto-dismiss
                 DispatchQueue.main.async { showWelcome = true }
-            } else {
-                restoreLastRead()
             }
+            restoreLastRead()
         }
         .onChange(of: target) {
             if let t = target {
@@ -107,7 +119,7 @@ struct ContentView: View {
     private var browseView: some View {
         if isCompact {
             NavigationStack {
-                TOCView(selectedLaw: $selectedLaw, target: $target)
+                TOCView(target: $target)
                     .navigationDestination(item: $target) { t in
                         LawDetailView(target: t, navigate: navigate,
                                       canGoBack: !backStack.isEmpty, goBack: goBack)
@@ -116,7 +128,7 @@ struct ContentView: View {
             }
         } else {
             NavigationSplitView {
-                TOCView(selectedLaw: $selectedLaw, target: $target)
+                TOCView(target: $target)
             } detail: {
                 if let t = target {
                     NavigationStack {
@@ -182,9 +194,7 @@ struct ContentView: View {
         if let law = DatabaseManager.shared.lawMeta(id: lawId) {
             backStack.append(BackItem(tab: tab, target: target))
             tab = .browse
-            selectedLaw = law
             target = LawTarget(law: law, scrollToArticle: articleNum)
-            persistBackStack()
         }
     }
 
@@ -207,7 +217,6 @@ struct ContentView: View {
         guard let last = userStore.lastRead else { return }
         guard let law = DatabaseManager.shared.lawMeta(id: last.lawId) else { return }
 
-        // 恢复 backStack
         let persistedItems = userStore.loadBackStack()
         backStack = persistedItems.compactMap { item -> BackItem? in
             let t: Tab = item.tab == "browse" ? .browse : .chat
@@ -218,8 +227,6 @@ struct ContentView: View {
             }
         }
 
-        // 直接设置 target，不走 navigate（避免把 target 自己压入 backStack）
-        selectedLaw = law
         target = LawTarget(law: law, scrollToArticle: last.articleNum)
     }
 
@@ -227,7 +234,11 @@ struct ContentView: View {
         guard let prev = backStack.popLast() else { return }
         tab = prev.tab
         target = prev.target
-        selectedLaw = prev.target?.law
+        // If returning to chat tab, restore the most recent saved session so the
+        // conversation is not blank (especially after a kill-relaunch cycle).
+        if prev.tab == .chat, let latest = historyStore.sessions.first {
+            chatVM.loadSession(latest)
+        }
         persistBackStack()
     }
 }
@@ -323,42 +334,33 @@ private struct SettingsSheet: View {
                         ))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                        if savedFeedback == provider.id {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
+                        switch testStatus {
+                        case .testing:
+                            ProgressView().scaleEffect(0.8)
+                        case .success:
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        case .failure:
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                        case .idle:
+                            EmptyView()
                         }
                     }
-                    Button("保存 Key") { saveKey(for: provider) }
-                        .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    // 测试连接
-                    if !currentKey.isEmpty {
-                        HStack {
-                            Button {
-                                Task { await testConnection(provider: provider) }
-                            } label: {
-                                if testStatus.isLoading {
-                                    HStack(spacing: 6) {
-                                        ProgressView().scaleEffect(0.8)
-                                        Text("测试中…")
-                                    }
-                                } else {
-                                    Label("测试连接", systemImage: "network")
-                                }
+                    Button {
+                        Task { await saveKeyWithTest(provider: provider) }
+                    } label: {
+                        if testStatus.isLoading {
+                            HStack(spacing: 6) {
+                                ProgressView().scaleEffect(0.8)
+                                Text("验证中…")
                             }
-                            .disabled(testStatus.isLoading)
-                            Spacer()
-                            switch testStatus {
-                            case .success:
-                                Label("连接成功", systemImage: "checkmark.circle.fill")
-                                    .foregroundStyle(.green).font(.footnote)
-                            case .failure(let msg):
-                                Label(msg, systemImage: "xmark.circle.fill")
-                                    .foregroundStyle(.red).font(.footnote)
-                                    .lineLimit(1)
-                            default:
-                                EmptyView()
-                            }
+                        } else {
+                            Text("验证并保存")
                         }
+                    }
+                    .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || testStatus.isLoading)
+                    if case .failure(let msg) = testStatus {
+                        Label(msg, systemImage: "xmark.circle.fill")
+                            .foregroundStyle(.red).font(.footnote)
                     }
                     if !currentKey.isEmpty {
                         Button(role: .destructive) {
@@ -415,38 +417,35 @@ private struct SettingsSheet: View {
         }
     }
 
-    private var footerText: String { "" }
-
-    private func saveKey(for provider: any LLMProvider) {
+    @MainActor
+    private func saveKeyWithTest(provider: any LLMProvider) async {
         let trimmed = (savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            KeychainHelper.delete(forKey: provider.keychainKey)
-        } else {
-            KeychainHelper.save(trimmed, forKey: provider.keychainKey)
-        }
-        userStore.refreshAPIKeyState()
-        testStatus = .idle
-        savedFeedback = provider.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { savedFeedback = nil }
-    }
-
-    private func testConnection(provider: any LLMProvider) async {
+        guard !trimmed.isEmpty else { return }
         testStatus = .testing
+        KeychainHelper.save(trimmed, forKey: provider.keychainKey)
         do {
             _ = try await provider.chat(
                 messages: [["role": "user", "content": "hi"]],
                 temperature: 0
             )
-            await MainActor.run { testStatus = .success }
+            testStatus = .success
+            userStore.refreshAPIKeyState()
+            savedFeedback = provider.id
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            await MainActor.run { if case .success = testStatus { testStatus = .idle } }
+            if case .success = testStatus { testStatus = .idle }
         } catch LLMError.apiKeyMissing {
-            await MainActor.run { testStatus = .failure("Key 未配置") }
+            KeychainHelper.delete(forKey: provider.keychainKey)
+            userStore.refreshAPIKeyState()
+            testStatus = .failure("Key 未配置")
         } catch LLMError.apiKeyInvalid {
-            await MainActor.run { testStatus = .failure("Key 无效") }
+            KeychainHelper.delete(forKey: provider.keychainKey)
+            userStore.refreshAPIKeyState()
+            testStatus = .failure("Key 无效，请检查后重试")
         } catch {
-            let msg = error.localizedDescription.prefix(20)
-            await MainActor.run { testStatus = .failure(String(msg)) }
+            // Network error — keep key saved (could be temporary)
+            testStatus = .failure("网络错误，Key 已保存")
+            userStore.refreshAPIKeyState()
+            savedFeedback = provider.id
         }
     }
 }

@@ -109,20 +109,7 @@ final class UserStore: ObservableObject {
 
     func applyQualityMode(_ mode: String) {
         chatQualityMode = mode
-        switch mode {
-        case "economy":
-            UserDefaults.standard.set(1,  forKey: "maxFollowUpRounds")
-            UserDefaults.standard.set(15, forKey: "maxContextArticles")
-            UserDefaults.standard.set(5,  forKey: "maxCitations")
-        case "detailed":
-            UserDefaults.standard.set(5,  forKey: "maxFollowUpRounds")
-            UserDefaults.standard.set(0,  forKey: "maxContextArticles")
-            UserDefaults.standard.set(0,  forKey: "maxCitations")
-        default:
-            UserDefaults.standard.set(3,  forKey: "maxFollowUpRounds")
-            UserDefaults.standard.set(40, forKey: "maxContextArticles")
-            UserDefaults.standard.set(80, forKey: "maxCitations")
-        }
+        // maxContextArticles / maxCitations / maxFollowUpRounds 由计算属性实时计算，无需额外写入
     }
 
     // MARK: - 模型选择

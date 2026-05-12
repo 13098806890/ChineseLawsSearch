@@ -19,7 +19,8 @@ let allExpertGroups: [String: ExpertGroup] = [
         description: "处理刑事犯罪问题：财产犯罪、人身伤害、经济犯罪、职务犯罪",
         subExperts: allCriminalExperts,
         routingKeywords: ["犯罪","刑事","坐牢","判刑","立案","报案","刑法",
-                          "盗窃","诈骗","抢劫","故意伤害","故意杀人","贪污","受贿"]
+                          "盗窃","诈骗","抢劫","故意伤害","故意杀人","贪污","受贿",
+                          "交通肇事","肇事逃逸","醉驾","危险驾驶","构成要件","量刑","罪名"]
     ),
     "劳动法专家组": ExpertGroup(
         name: "劳动法专家组",

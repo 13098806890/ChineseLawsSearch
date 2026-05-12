@@ -19,6 +19,28 @@ private struct ArticleBag {
 final class LegalExpertService {
     static let shared = LegalExpertService()
 
+    // MARK: - Quality settings (mirrors UserStore computed properties)
+    // Reads chatQualityMode from UserDefaults (the same key @AppStorage uses)
+    // so LegalExpertService always sees the latest user preference without
+    // coupling to UserStore directly.
+    private var qualityMode: String {
+        UserDefaults.standard.string(forKey: "chatQualityMode") ?? "standard"
+    }
+    private var maxContextArticles: Int {
+        switch qualityMode {
+        case "economy":  return 15
+        case "detailed": return 0
+        default:         return 40
+        }
+    }
+    private var maxCitationsLimit: Int {
+        switch qualityMode {
+        case "economy":  return 5
+        case "detailed": return 0
+        default:         return 80
+        }
+    }
+
     /// Result of decomposing a multi-question input.
     struct DecomposedQuestion {
         let preamble:  String    // shared factual context (empty if none)
@@ -27,22 +49,17 @@ final class LegalExpertService {
 
     // MARK: - Public entry point
 
-    /// Decompose a question into preamble + individual sub-questions.
-    func decomposeWithFacts(question: String) async -> DecomposedQuestion {
-        await decomposeQuestion(question)
-    }
+    // MARK: - Mod 1: Unified intent + mode classification (single LLM call)
 
-    /// Classify the user's message intent before routing.
-    /// - Parameters:
-    ///   - message: Current user input
-    ///   - history: Recent conversation turns (last 2 used)
-    func classifyIntent(message: String,
-                        history: [(user: String, assistant: String)]) async -> MessageIntent {
-        // Fast-path: pure greeting/chat patterns with no factual content → skip LLM
+    /// Classify intent AND query mode in one LLM call.
+    /// Returns (.offTopic, nil), (.followUp, nil), or (.legalQuery, QueryMode?)
+    func classifyIntentAndMode(message: String,
+                               history: [(user: String, assistant: String)]) async -> (MessageIntent, QueryMode?) {
+        // Fast-path: pure greeting/chat with no factual content
         let obviousOffTopic = ["你好", "hello", "hi", "谢谢", "再见", "bye", "👋"]
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if history.isEmpty && message.count < 8 && obviousOffTopic.contains(where: { trimmed.hasPrefix($0) }) {
-            return .offTopic
+            return (.offTopic, nil)
         }
 
         let recentHistory = history.suffix(2)
@@ -51,23 +68,27 @@ final class LegalExpertService {
         let historySection = recentHistory.isEmpty ? "（无历史对话）" : recentHistory
 
         let system = """
-        你是意图分类器。判断用户消息属于以下哪种类型，输出JSON（严格格式，不要其他内容）：
-        {"intent": "<类型>"}
+        你是意图分类器。判断用户消息属于以下哪种类型，输出JSON（严格格式，不要其他内容）。
 
         类型说明：
-        - "case"：用户陈述具体纠纷事实或生活问题，哪怕措辞口语化。**日常生活纠纷同样属于此类**，例如：楼上噪音扰民、邻居堵门、狗咬人、商家不退款、被打伤、欠钱不还、房东不退押金、网购收到假货、周末施工噪音等——这些都是法律纠纷，应判定为 case
-        - "follow_up"：基于历史对话中已有的**具体案情**继续追问，如"那我应该去哪个法院"、"这种情况能否申请保全"
-        - "law_lookup"：用户想查某条具体法律规定、某部法律的内容、某类行为的法律规范，如"合同法第几条规定了违约金"、"未成年人保护法对网络游戏有什么规定"、"酒驾的法律标准是什么"、"劳动法规定试用期最长多久"
-        - "general"：法律知识提问或使用咨询，不依赖具体案情，如"什么是连带责任"、"我应该怎么描述我的问题"、"你能帮我做什么"
-        - "off_topic"：**仅限**纯粹的问候、闲聊、与任何法律或纠纷完全无关的内容（如"今天天气真好"、"你会唱歌吗"），以及询问 app 使用方式、对话格式等功能性问题。**任何涉及人与人之间矛盾、生活纠纷、权益问题的内容都不属于 off_topic**
+        - "legal_query"：一切与法律相关的问题，包括：陈述具体纠纷事实、询问法律概念、查询法条规定、询问权利义务、法律知识提问等。**任何涉及人与人之间矛盾、生活纠纷、权益问题、法律规定的内容都属于此类**。即使措辞非常口语化（"邻居每天放很大声音"、"老板不给我发工资"），只要描述了某种困扰、纠纷、权益受损或他人侵害，也判定为 legal_query。
+        - "follow_up"：基于历史对话中已有的具体案情继续追问，如"那我应该去哪个法院"、"这种情况能否申请保全"。必须以历史对话中存在明确具体案情为前提。
+        - "off_topic"：**仅限**纯粹的问候、闲聊、与任何法律/权益/纠纷完全无关的内容（如"今天天气真好"、"你会唱歌吗"、"你叫什么"），以及询问 app 使用方式等功能性问题。
+
+        当 intent = "legal_query" 时，同时判断问题模式，输出 mode 字段：
+        - "case"：用户陈述了具体的事实情况（时间、地点、人物、发生了什么），需要分析其权利义务、胜诉可能或维权策略
+        - "advisory"：用户询问某类情景下的权利义务，有假设场景但无具体案情事实
+        - "statute"：用户询问法律概念定义、某罪/某权利的构成要件，或要求查找/列举某主题相关法条原文
+
+        输出格式（严格JSON，不要其他内容）：
+        {"intent": "legal_query", "mode": "case"}
+        {"intent": "off_topic"}
+        {"intent": "follow_up"}
 
         注意：
-        - "follow_up" 必须以历史对话中存在明确的具体案情为前提；若历史对话中没有案情，只有 off_topic/general 回复，则当前消息不能判定为 follow_up
-        - "law_lookup" 优先于 "general"：如果用户明确在查某条规定或某部法律的具体内容，判定为 law_lookup，不是 general
-        - 询问"如何输入问题"、"需要什么格式"、"你是谁"等使用引导性问题属于 off_topic
-        - 有历史对话时，如果用户引入了与之前完全不同的新案情，判定为 "case"
-        - 无历史对话时，纯法律知识问题判定为 "general" 或 "law_lookup"，不要判定为 "case"
-        - **对不确定的情况，宁可判定为 "case" 或 "general"，不要轻易判定为 "off_topic"**
+        - 对不确定的情况，宁可判定为 "legal_query"，不要轻易判定为 "off_topic"
+        - "follow_up" 必须以历史对话中存在明确具体案情为前提；若历史无案情，判定为 "legal_query"
+        - 有历史对话时，如果用户引入了与之前完全不同的新问题，判定为 "legal_query"
         """
         let user = "历史对话：\n\(historySection)\n\n当前消息：\(message)"
 
@@ -77,187 +98,205 @@ final class LegalExpertService {
               let intentStr = obj["intent"] as? String,
               let intent = MessageIntent(rawValue: intentStr)
         else {
-            // fallback: if history exists assume follow_up, otherwise case
-            return history.isEmpty ? .caseNarration : .followUp
+            return (history.isEmpty ? .legalQuery : .followUp, nil)
         }
 
-        // If LLM still says off_topic, try to rescue by extracting legal elements
+        if intent == .followUp {
+            return (.followUp, nil)
+        }
         if intent == .offTopic {
-            return await rescueOffTopicIfPossible(message: message) ?? .offTopic
+            return (.offTopic, nil)
         }
-
-        return intent
+        // legal_query: extract mode
+        let modeStr = obj["mode"] as? String
+        let mode = modeStr.flatMap { QueryMode(rawValue: $0) }
+        return (.legalQuery, mode)
     }
 
-    /// When intent is classified as off_topic, attempt to extract legal elements.
-    /// If the message contains any actionable legal angle, treat it as caseNarration.
-    private func rescueOffTopicIfPossible(message: String) async -> MessageIntent? {
-        let system = """
-        你是中国法律顾问。判断以下用户描述是否包含可分析的法律要素（如：侵权、扰民、权益受损、纠纷、违规行为等）。
+    /// Unified entry point for all legal queries.
+    /// If preClassifiedMode is provided (always the case from the hot path), uses it directly.
+    func askLegalQuery(question: String,
+                       conversationHistory: [(user: String, assistant: String)],
+                       knownFacts: [String: String],
+                       followUpRound: Int,
+                       maxFollowUpRounds: Int,
+                       preClassifiedMode: QueryMode? = nil,
+                       onEvent: @escaping (RAGEvent) -> Void) async throws -> ([RAGCitation], QueryMode) {
+        let mode = preClassifiedMode ?? .legalAdvisory
+        onEvent(.thinkStep(name: "问题模式", content: mode.label))
 
-        输出JSON：{"has_legal_element": true/false, "legal_angle": "简短说明（如：噪音扰民涉及相邻权纠纷）或空字符串"}
-
-        判断标准：
-        - 如果用户描述了某种困扰、纠纷、他人行为侵害自己权益的情况，即使措辞非常口语化，也判定为 true
-        - 只有纯粹的闲聊、问候、与任何权益无关的内容才判定为 false
-        - 宁可判 true 也不要漏判
-        """
-        guard let raw  = try? await chat(system: system, user: message),
-              let data = extractJSON(raw, open: "{", close: "}").data(using: .utf8),
-              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let hasElement = obj["has_legal_element"] as? Bool,
-              hasElement
-        else { return nil }
-        return .caseNarration
-    }
-
-    /// Handle a general legal knowledge question.
-    /// Uses LLM to decide if simple (FTS + direct answer) or complex (full pipeline, no clarifying).
-    func askGeneral(question: String,
-                    onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-        // Ask LLM whether the question is simple or complex
-        let complexityPrompt = """
-        判断以下法律知识问题的复杂度，输出JSON：{"complexity": "simple" | "complex"}
-        - simple：涉及单一法条查询或基础概念解释（如诉讼时效、管辖权等）
-        - complex：涉及多个法律领域或需要综合分析（如多种责任竞合、程序+实体结合等）
-        问题：\(question)
-        """
-        let complexityRaw = (try? await chat(system: "只输出JSON，不要其他内容。", user: complexityPrompt)) ?? ""
-        let isComplex: Bool
-        if let data = extractJSON(complexityRaw, open: "{", close: "}").data(using: .utf8),
-           let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let val  = obj["complexity"] as? String {
-            isComplex = (val == "complex")
-        } else {
-            isComplex = false
-        }
-
-        onEvent(.thinkStep(name: "问题类型", content: isComplex ? "综合法律问题 → 专家分析" : "知识查询 → 直接检索"))
-
-        if isComplex {
-            // Full pipeline but skip clarifying questions (maxFollowUpRounds = 0)
-            return try await runPipeline(question: question, factContext: "", subQs: [],
-                                         conversationHistory: [], knownFacts: [:],
-                                         followUpRound: 0, maxFollowUpRounds: 0,
-                                         onEvent: onEvent)
-        } else {
-            // Simple: broad FTS across all domains + single LLM call
-            let keywords = simpleKeywords(from: question)
-            let db = DatabaseManager.shared
-            var seenIds = Set<Int>()
-            var articles: [DatabaseManager.RAGArticle] = []
-            let allDomains = ["民法典", "民法商法", "刑法", "行政法", "经济法", "社会法", "诉讼与非诉讼程序法"]
-            let cats = ["法律", "宪法", "修正案", "法律解释", "司法解释"]
-            for kw in keywords.prefix(4) {
-                for a in db.ftsSearch(keyword: kw, domains: allDomains, categories: cats, limit: 5) {
-                    if seenIds.insert(a.nodeId).inserted { articles.append(a) }
-                }
+        switch mode {
+        case .caseAnalysis:
+            // Decompose multi-issue questions before routing (regex fast-path + LLM fallback)
+            let decomposed = await decomposeQuestion(question)
+            let subQs = decomposed.questions   // empty = single question, no split needed
+            if !subQs.isEmpty {
+                onEvent(.thinkStep(name: "拆分问题",
+                                   content: subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")))
+                onEvent(.subQuestions(subQs))
             }
-            let topArticles = Array(articles.prefix(10))
-            onEvent(.thinkStep(name: "法条检索", content: "检索到 \(topArticles.count) 条相关条文"))
+            let citations = try await runPipeline(
+                question: question, factContext: decomposed.preamble, subQs: subQs,
+                conversationHistory: conversationHistory, knownFacts: knownFacts,
+                followUpRound: followUpRound, maxFollowUpRounds: maxFollowUpRounds,
+                onEvent: onEvent)
+            return (citations, mode)
 
-            let citations = topArticles.map {
-                RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
-                            articleNumber: $0.articleNumber, articleNum: $0.articleNum,
-                            category: $0.category, content: $0.content)
-            }
-            let artText = topArticles.map {
-                "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(300)))"
-            }.joined(separator: "\n")
+        case .legalAdvisory:
+            let citations = try await runPipelineWithMode(
+                question: question, mode: .legalAdvisory,
+                conversationHistory: conversationHistory, onEvent: onEvent)
+            return (citations, mode)
 
-            let systemPrompt = """
-            你是中国法律顾问。根据提供的法条，简明扼要地回答用户的法律知识问题。
-            直接给出答案，引用条文编号。严禁使用Markdown格式。总长度不超过300字。
-            """
-            let userMsg = "法条：\n\(artText)\n\n问题：\(question)"
-            try await LLMProviderRegistry.current.streamChat(
-                messages: [["role": "system", "content": systemPrompt],
-                           ["role": "user",   "content": userMsg]],
-                temperature: 0.1,
-                onToken: { onEvent(.token($0)) }
-            )
-            return citations
+        case .conceptAndStatute:
+            let citations = try await runPipelineWithMode(
+                question: question, mode: .conceptAndStatute,
+                conversationHistory: conversationHistory, onEvent: onEvent)
+            return (citations, mode)
         }
     }
 
-    /// Handle a law/regulation lookup — user wants to find specific provisions.
-    /// Extracts law name + topic keywords, does precise FTS, returns full articles + explanation.
-    func askLawLookup(question: String,
-                      onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-
-        // Step 1: 路由专家（与 case 流程相同）
-        let analysis = await characterizeAndRoute(question: question, knownFacts: [:])
-        let experts  = analysis.experts
+    /// Run expert pipeline for advisory or statute mode (no clarifying questions).
+    private func runPipelineWithMode(question: String,
+                                     mode: QueryMode,
+                                     conversationHistory: [(user: String, assistant: String)] = [],
+                                     onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+        let analysis = await characterizeAndRoute(question: question, knownFacts: [:], conversationHistory: conversationHistory)
         onEvent(.thinkStep(name: "法律定性", content: analysis.characterization))
-        onEvent(.thinkStep(name: "细分专家", content: experts.isEmpty ? "未匹配到专家" : experts.map { $0.name }.joined(separator: "、")))
-        onEvent(.expertsSelected(experts))
+        onEvent(.thinkStep(name: "细分专家", content: analysis.experts.isEmpty ? "综合顾问" : analysis.experts.map { $0.name }.joined(separator: "、")))
+        onEvent(.expertsSelected(analysis.experts))
 
-        // Step 2: 每位专家用 LLM 知识定位法条 → 精确 DB 查询
         let db = DatabaseManager.shared
-        var seenIds = Set<Int>()
-        var allArticles: [DatabaseManager.RAGArticle] = []
-        var expertSummaries: [String] = []
+        var expertArticles: [String: [DatabaseManager.RAGArticle]] = [:]
+        var expertAnswers:  [String: String] = [:]
 
-        let effectiveExperts = experts.isEmpty
-            ? [SubExpert(name: "综合法律顾问",
-                         domain: "综合",
-                         requiredInfo: [],
-                         lawTitles: [],
-                         chapterIdHints: [],
+        let effectiveExperts = analysis.experts.isEmpty
+            ? [SubExpert(name: "综合法律顾问", domain: "综合", requiredInfo: [],
+                         lawTitles: [], chapterIdHints: [],
                          ftsDomains: ["宪法相关法","民法典","民法商法","刑法","行政法","经济法","社会法","诉讼与非诉讼程序法"],
                          ftsCategories: ["法律","宪法","修正案","法律解释","司法解释","行政法规","监察法规"],
-                         ftsKeywordsExtra: [],
-                         answerTemplate: "你是中国法律专家。")]
-            : experts
+                         ftsKeywordsExtra: [], answerTemplate: "你是中国法律专家。")]
+            : analysis.experts
 
-        for expert in effectiveExperts {
-            let expertArticles = try await lookupArticlesWithExpert(expert: expert, question: question, db: db, seenIds: &seenIds)
-            allArticles += expertArticles
-            let summary = expertArticles.isEmpty
-                ? "\(expert.name)：未找到相关条文"
-                : "\(expert.name)：找到 \(expertArticles.count) 条（\(expertArticles.map { $0.articleNumber }.joined(separator: "、"))）"
-            expertSummaries.append(summary)
+        // Mod 3: concurrent expert retrieval + analysis
+        let isStatute = (mode == .conceptAndStatute)
+        try await withThrowingTaskGroup(of: (String, [DatabaseManager.RAGArticle], String).self) { group in
+            for expert in effectiveExperts {
+                group.addTask { [self] in
+                    var articles: [DatabaseManager.RAGArticle]
+                    if isStatute {
+                        // Mod 3: each expert has its own seenIds (no shared state)
+                        articles = try await self.lookupArticlesWithExpert(expert: expert, question: question, db: db)
+                    } else {
+                        // Mod 4: filterArticles removed; expert self-filters via prompt
+                        articles = self.retrieveForExpert(expert: expert, question: question, facts: [:])
+                        articles = self.expandReferences(articles: articles)
+                    }
+                    let answer = try await self.analyzeWithExpertMode(expert: expert, question: question, articles: articles, mode: mode)
+                    return (expert.name, articles, answer)
+                }
+            }
+            for try await (name, arts, ans) in group {
+                expertArticles[name] = arts
+                expertAnswers[name] = ans
+            }
         }
 
-        onEvent(.thinkStep(name: "法条检索",
-                           content: expertSummaries.joined(separator: "\n") + "\n共 \(allArticles.count) 条"))
+        let totalCount = expertArticles.values.map { $0.count }.reduce(0, +)
+        let allForDisplay = deduplicateArticles(expertArticles).map {
+            RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
+                        articleNum: $0.articleNum, category: $0.category, content: $0.content)
+        }
+        onEvent(.thinkStepWithArticles(name: "专家检索", content: "共 \(totalCount) 条", articles: allForDisplay))
 
-        if allArticles.isEmpty {
-            onEvent(.token("各专家均未在数据库中找到相关条文。请尝试换用具体法律名称或条文关键词重新查询。"))
-            return []
+        // Coordinator 最终回答 + 引用提取（共用函数）
+        let allArticlesFlat = deduplicateArticles(expertArticles)
+        return try await runCoordinatorStage(
+            question: question, subQs: [],
+            groupAnswers: expertAnswers, allArticlesFlat: allArticlesFlat,
+            systemPrompt: coordinatorSystemPromptForMode(mode), onEvent: onEvent)
+    }
+
+    /// Expert analysis prompt tailored to query mode.
+    private func analyzeWithExpertMode(expert: SubExpert, question: String,
+                                       articles: [DatabaseManager.RAGArticle],
+                                       mode: QueryMode) async throws -> String {
+        let artText = articles.prefix(maxContextArticles > 0 ? maxContextArticles : articles.count)
+            .map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(400)))" }
+            .joined(separator: "\n")
+
+        let modeInstruction: String
+        switch mode {
+        case .legalAdvisory:
+            modeInstruction = """
+            用户询问的是一类情景下的权利义务，无具体案情。请：
+            1. 给出该情景下的一般性法律结论（法律怎么规定）
+            2. 说明主要例外或特殊情形
+            3. 引用相关法条编号作为依据
+            4. 语气客观，不预设用户立场
+            不要追问，不要要求用户提供具体案情。
+            """
+        case .conceptAndStatute:
+            modeInstruction = """
+            用户询问的是法律概念或具体法条。请：
+            - 若是概念：给出准确定义、构成要件、与相近概念的区别，引用相关条文
+            - 若是法条查询：直接引用原文，按条文顺序呈现，加简要说明
+            只陈述法律规定，不发表主观评价，不推测案情。
+            """
+        case .caseAnalysis:
+            modeInstruction = ""  // handled by existing analyzeWithExpert
         }
 
-        let citations = allArticles.map {
-            RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
-                        articleNumber: $0.articleNumber, articleNum: $0.articleNum,
-                        category: $0.category, content: $0.content)
-        }
-
-        // Step 3: 汇总输出原文
-        let artText = allArticles.map { "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)" }.joined(separator: "\n\n")
+        // Mod 4: add self-filter instruction
         let systemPrompt = """
-        你是中国法律条文检索助手。根据检索到的法条，直接引用原文回答用户的查询。
-        - 先点名具体是哪部法律第几条
-        - 引用条文原文（可适当截取关键句）
-        - 如有多条相关条文，逐条列出
-        - 不要发表评论，不要推测案情，只陈述法条规定
-        - 严禁使用Markdown格式
-        【严格限制】只能引用上方提供的法条，不得引用任何未在列表中出现的条文。
+        你是【\(expert.name)】，专精领域：\(expert.domain)。
+        \(modeInstruction)
+        【严格限制】只能引用以下提供的法条，不得引用未在列表中的条文。
+        【重要】如果提供的法条与问题不直接相关，明确说明"现有法条不足以回答此问题"，不得凭记忆编造条文编号或内容。
+        如果提供的法条中只有部分与问题直接相关，只引用相关的，忽略无关条文，不要为了引用而引用。
+        严禁使用Markdown格式。
         """
-        try await LLMProviderRegistry.current.streamChat(
-            messages: [["role": "system", "content": systemPrompt],
-                       ["role": "user",   "content": "相关法条：\n\(artText)\n\n用户查询：\(question)"]],
-            temperature: 0.05,
-            onToken: { onEvent(.token($0)) }
-        )
-        return citations
+        return (try? await chat(system: systemPrompt,
+                                user: "相关法条：\n\(artText)\n\n问题：\(question)")) ?? ""
+    }
+
+    /// Coordinator system prompt tailored to query mode.
+    private func coordinatorSystemPromptForMode(_ mode: QueryMode) -> String {
+        switch mode {
+        case .legalAdvisory:
+            return """
+            你是中国法律综合顾问。将专家分析整合为最终回答。
+            原则：
+            - 给出该类情景下的一般性法律结论，说明主要例外情形
+            - 客观中立，不预设用户是哪方当事人
+            - 引用条文编号（如"依据第X条"），不在末尾单独列清单
+            - 若有多个专家组，用中文序号（一、二、三）分段，每段开头说明针对哪个法律问题
+            - 总长度300-600字
+            严禁Markdown格式。不要说"综上所述"等空话。
+            """
+        case .conceptAndStatute:
+            return """
+            你是中国法律条文与概念解释专家。将专家检索结果整合为最终回答。
+            原则：
+            - 若是概念：给出准确定义和构成要件，引用相关条文原文
+            - 若是法条查询：按条文顺序直接呈现原文，加简要说明
+            - 只陈述法律规定，不发表评价，不推测案情
+            - 【严格限制】只能引用检索到的法条，不得引用未检索到的条文
+            - 总长度200-500字
+            严禁Markdown格式。
+            """
+        case .caseAnalysis:
+            return coordinatorSystemPrompt
+        }
     }
 
     /// 单个专家用 LLM 知识识别法条编号，再精确查询 DB，FTS 兜底。
+    /// Mod 3: uses its own local seenIds (no inout parameter) for concurrent safety.
     private func lookupArticlesWithExpert(expert: SubExpert,
                                           question: String,
-                                          db: DatabaseManager,
-                                          seenIds: inout Set<Int>) async throws -> [DatabaseManager.RAGArticle] {
+                                          db: DatabaseManager) async throws -> [DatabaseManager.RAGArticle] {
+        var seenIds = Set<Int>()
+
         let identifyPrompt = """
         你是【\(expert.name)】，专精领域：\(expert.domain)。
         根据用户的查询，列出在你的专业领域内**直接相关**的法律条文。
@@ -326,6 +365,13 @@ final class LegalExpertService {
                 }
             }
         }
+
+        // DB 双向引用扩展
+        let dbRefs = db.referencedArticles(nodeIds: result.map { $0.nodeId }, excludingIds: seenIds)
+        for ref in dbRefs {
+            if seenIds.insert(ref.nodeId).inserted { result.append(ref) }
+        }
+
         return result
     }
 
@@ -386,71 +432,7 @@ final class LegalExpertService {
         return (citations, mergedExperts)
     }
 
-    /// Legacy shim — returns only question strings (preamble absorbed into each).
-    func decompose(question: String) async -> [String] {
-        let d = await decomposeQuestion(question)
-        if d.questions.isEmpty { return [] }
-        return d.questions.map { q in
-            d.preamble.isEmpty ? q : "\(d.preamble)\n\n\(q)"
-        }
-    }
-
-    /// Analyze a single (already-decomposed) question — no further decomposition.
-    func askSingle(question: String,
-                   factContext: String = "",
-                   conversationHistory: [(user: String, assistant: String)] = [],
-                   knownFacts: [String: String] = [:],
-                   followUpRound: Int = 0,
-                   maxFollowUpRounds: Int = 3,
-                   onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-        try await runPipeline(question: question, factContext: factContext, subQs: [],
-                              conversationHistory: conversationHistory,
-                              knownFacts: knownFacts,
-                              followUpRound: followUpRound,
-                              maxFollowUpRounds: maxFollowUpRounds,
-                              onEvent: onEvent)
-    }
-
-    /// Main entry — also called by LegalChatViewModel.send() as the RAGService-compatible overload.
-    func ask(question: String,
-             onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-        try await ask(question: question, conversationHistory: [],
-                      knownFacts: [:], followUpRound: 0, maxFollowUpRounds: 3,
-                      onEvent: onEvent)
-    }
-
-    func ask(question: String,
-             conversationHistory: [(user: String, assistant: String)],
-             knownFacts: [String: String],
-             followUpRound: Int,
-             maxFollowUpRounds: Int,
-             onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-
-        // Step 0: 问题法律化改写（口语 → 规范法律描述）
-        let rewritten = await rewriteToLegalForm(question: question,
-                                                  conversationHistory: conversationHistory)
-        if rewritten != question {
-            onEvent(.thinkStep(name: "问题改写",
-                               content: "原始：\(question)\n\n改写：\(rewritten)"))
-        }
-        let workingQuestion = rewritten
-
-        let decomposed = await decomposeQuestion(workingQuestion)
-        let subQs = decomposed.questions
-        let displayLines = subQs.isEmpty
-            ? "问题无需拆分，直接分析。"
-            : subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")
-        onEvent(.thinkStep(name: "拆分问题", content: displayLines))
-        if !subQs.isEmpty { onEvent(.subQuestions(subQs)) }
-        return try await runPipeline(question: workingQuestion, factContext: decomposed.preamble, subQs: subQs,
-                                     conversationHistory: conversationHistory,
-                                     knownFacts: knownFacts,
-                                     followUpRound: followUpRound,
-                                     maxFollowUpRounds: maxFollowUpRounds,
-                                     onEvent: onEvent)
-    }
-
-    // MARK: - Core pipeline (shared by ask and askSingle)
+    // MARK: - Core pipeline
 
     private func runPipeline(question: String,
                               factContext: String,
@@ -470,7 +452,8 @@ final class LegalExpertService {
         var seenNames = Set<String>()
 
         for q in questionsToAnalyze {
-            let analysis = await characterizeAndRoute(question: q, knownFacts: [:])
+            // Mod 5: pass conversationHistory to characterizeAndRoute
+            let analysis = await characterizeAndRoute(question: q, knownFacts: [:], conversationHistory: conversationHistory)
             questionAnalyses.append(analysis)
             for e in analysis.experts {
                 expertToQuestions[e.name, default: []].append(q)
@@ -567,24 +550,29 @@ final class LegalExpertService {
 
         let knownFacts = mergedFacts
 
-        // Step 3: 每个专家检索并分析其负责的子问题
+        // Step 3: 每个专家检索并分析其负责的子问题（Mod 3: 并发执行）
         var expertArticles: [String: [DatabaseManager.RAGArticle]] = [:]
         var expertAnswers:  [String: String] = [:]
 
-        for expert in allSelectedExperts {
-            let assignedQs   = expertToQuestions[expert.name] ?? [question]
-            let questionText = assignedQs.count == 1 ? assignedQs[0] : assignedQs.joined(separator: "\n")
-            // Expert gets: shared factual preamble (if any) + question text
-            let expertContext = factContext.isEmpty ? questionText : "\(factContext)\n\n\(questionText)"
-
-            var articles = retrieveForExpert(expert: expert, question: expertContext, facts: knownFacts)
-            articles = expandReferences(articles: articles)
-            articles = await filterArticles(question: expertContext, articles: articles)
-            expertArticles[expert.name] = articles
-
-            let answer = try await analyzeWithExpert(expert: expert, question: expertContext,
-                                                     facts: knownFacts, articles: articles)
-            expertAnswers[expert.name] = answer
+        try await withThrowingTaskGroup(of: (String, [DatabaseManager.RAGArticle], String).self) { group in
+            for expert in allSelectedExperts {
+                let assignedQs   = expertToQuestions[expert.name] ?? [question]
+                let questionText = assignedQs.count == 1 ? assignedQs[0] : assignedQs.joined(separator: "\n")
+                let expertContext = factContext.isEmpty ? questionText : "\(factContext)\n\n\(questionText)"
+                let kf = knownFacts
+                group.addTask { [self] in
+                    // Mod 4: filterArticles removed; expert self-filters via prompt instruction
+                    var articles = self.retrieveForExpert(expert: expert, question: expertContext, facts: kf)
+                    articles = self.expandReferences(articles: articles)
+                    let answer = try await self.analyzeWithExpert(expert: expert, question: expertContext,
+                                                                  facts: kf, articles: articles)
+                    return (expert.name, articles, answer)
+                }
+            }
+            for try await (name, arts, ans) in group {
+                expertArticles[name] = arts
+                expertAnswers[name] = ans
+            }
         }
 
         let totalArticleCount = expertArticles.values.map { $0.count }.reduce(0, +)
@@ -594,7 +582,7 @@ final class LegalExpertService {
         }
         onEvent(.thinkStepWithArticles(
             name: "专家检索",
-            content: "相关度过滤后共 \(totalArticleCount) 条（\(allSelectedExperts.count) 位专家）",
+            content: "共 \(totalArticleCount) 条（\(allSelectedExperts.count) 位专家）",
             articles: allArticlesForDisplay))
 
         // Step 4: 按专家组合并同组专家的分析
@@ -610,33 +598,57 @@ final class LegalExpertService {
         }
 
         var groupAnswers: [String: String] = [:]
-        for (groupName, expertNames) in groupToExpertNames {
-            guard let group = allExpertGroups[groupName] else { continue }
-            let subAns = expertNames.compactMap { name -> (String, String)? in
-                guard let ans = expertAnswers[name] else { return nil }
-                return (name, ans)
+        // Parallelize synthesis across groups (single-expert groups skip synthesize instantly)
+        try await withThrowingTaskGroup(of: (String, String).self) { taskGroup in
+            for (groupName, expertNames) in groupToExpertNames {
+                guard let group = allExpertGroups[groupName] else { continue }
+                let subAns = expertNames.compactMap { name -> (String, String)? in
+                    guard let ans = expertAnswers[name] else { return nil }
+                    return (name, ans)
+                }
+                guard !subAns.isEmpty else { continue }
+                if subAns.count == 1 {
+                    // Single expert — no LLM call needed; collect immediately
+                    groupAnswers[groupName] = subAns[0].1
+                } else {
+                    taskGroup.addTask { [self] in
+                        let synthesis = try await self.synthesizeGroup(
+                            group: group,
+                            subAnswers: Dictionary(uniqueKeysWithValues: subAns),
+                            question: question)
+                        return (groupName, synthesis)
+                    }
+                }
             }
-            guard !subAns.isEmpty else { continue }
-            if subAns.count == 1 {
-                groupAnswers[groupName] = subAns[0].1
-            } else {
-                let synthesis = try await synthesizeGroup(
-                    group: group,
-                    subAnswers: Dictionary(uniqueKeysWithValues: subAns),
-                    question: question)
+            for try await (groupName, synthesis) in taskGroup {
                 groupAnswers[groupName] = synthesis
             }
         }
         onEvent(.thinkStep(name: "专家组综合",
                            content: groupAnswers.keys.joined(separator: "、") + " 已完成分析"))
 
-        // Step 5: Coordinator 最终回答（流式，同时收集全文用于法条匹配）
+        // Step 5+6: Coordinator 最终回答 + 引用提取（共用函数）
         let allArticlesFlat = deduplicateArticles(expertArticles)
+        return try await runCoordinatorStage(
+            question: question, subQs: subQs,
+            groupAnswers: groupAnswers, allArticlesFlat: allArticlesFlat,
+            systemPrompt: coordinatorSystemPrompt, onEvent: onEvent)
+    }
+
+    // MARK: - Shared coordinator + citation stage
+
+    /// Streams the final Coordinator answer and extracts citations from the response text.
+    /// Used by both runExpertStages (caseAnalysis) and runPipelineWithMode (advisory/statute).
+    private func runCoordinatorStage(question: String,
+                                      subQs: [String],
+                                      groupAnswers: [String: String],
+                                      allArticlesFlat: [DatabaseManager.RAGArticle],
+                                      systemPrompt: String,
+                                      onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
         let context = buildGroupContext(groupAnswers: groupAnswers, articles: allArticlesFlat)
-        let systemPrompt = coordinatorSystemPrompt
         var userMsg = "用户问题：\(question)\n\n"
         if !subQs.isEmpty {
-            userMsg += "问题已拆分为以下子问题，请逐一回答：\n"
+            userMsg += "问题已拆分为以下独立子问题，请逐一分标题回答，每个子问题回答前先用一句话复述该子问题：\n"
             userMsg += subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")
             userMsg += "\n\n"
         }
@@ -647,21 +659,15 @@ final class LegalExpertService {
             messages: [["role": "system", "content": systemPrompt],
                        ["role": "user",   "content": userMsg]],
             temperature: 0.2,
-            onToken: { token in
-                answerText += token
-                onEvent(.token(token))
-            }
+            onToken: { token in answerText += token; onEvent(.token(token)) }
         )
 
-        // Step 6: 参考法条 — 从答案正文中提取引用的条文编号，匹配已检索到的条文
         let cited = citationsFromAnswer(answerText: answerText, candidates: allArticlesFlat)
         onEvent(.thinkStep(name: "参考法条筛选",
                            content: "从答案正文引用中提取 \(cited.count) 条直接引用的法条"))
-
         return cited.map {
             RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
-                        articleNumber: $0.articleNumber,
-                        articleNum: $0.articleNum,
+                        articleNumber: $0.articleNumber, articleNum: $0.articleNum,
                         category: $0.category, content: $0.content)
         }
     }
@@ -674,8 +680,10 @@ final class LegalExpertService {
         let experts: [SubExpert]
     }
 
+    /// Mod 5: characterizeAndRoute now accepts conversationHistory for context.
     private func characterizeAndRoute(question: String,
-                                       knownFacts: [String: String]) async -> QuestionAnalysis {
+                                       knownFacts: [String: String],
+                                       conversationHistory: [(user: String, assistant: String)] = []) async -> QuestionAnalysis {
         var nameToExpert: [String: SubExpert] = [:]
         for group in allExpertGroups.values {
             for e in group.subExperts { nameToExpert[e.name] = e }
@@ -712,6 +720,13 @@ final class LegalExpertService {
         var ctx = "问题：\(question)"
         if !knownFacts.isEmpty {
             ctx += "\n已知事实：" + knownFacts.map { "\($0.key)=\($0.value)" }.joined(separator: "；")
+        }
+        // Mod 5: attach recent conversation history for context
+        if !conversationHistory.isEmpty {
+            let hist = conversationHistory.suffix(2)
+                .map { "用户：\($0.user.prefix(100))\n助手：\($0.assistant.prefix(80))" }
+                .joined(separator: "\n---\n")
+            ctx += "\n\n对话历史（供参考）：\n\(hist)"
         }
 
         guard let raw  = try? await chat(system: system, user: ctx),
@@ -845,11 +860,16 @@ final class LegalExpertService {
         pattern: "《([^》]{4,30})》第([一二三四五六七八九十百千零\\d]+)条")
     private let selfRefPattern  = try! NSRegularExpression(
         pattern: "(?:本法|依照|适用|参照)第([一二三四五六七八九十百千零\\d]+)条")
+    private let numberedQRE     = try! NSRegularExpression(
+        pattern: #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
+    private let cjkKeywordRE   = try! NSRegularExpression(pattern: "[\\u4E00-\\u9FFF]{3,6}")
 
     private func expandReferences(articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
         var seenIds = Set(articles.map { $0.nodeId })
         var extra: [DatabaseManager.RAGArticle] = []
+
+        // Pass 1: 正则解析条文正文中的显式引用（《XX法》第Y条 / 本法第Y条）
         for art in articles {
             let content = art.content as NSString
             let range = NSRange(location: 0, length: content.length)
@@ -869,51 +889,21 @@ final class LegalExpertService {
                 }
             }
         }
+
+        // Pass 2: article_references 表双向查找（出向 + 入向）
+        let nodeIds = articles.map { $0.nodeId }
+        let dbRefs = db.referencedArticles(nodeIds: nodeIds, excludingIds: seenIds)
+        for ref in dbRefs {
+            if seenIds.insert(ref.nodeId).inserted {
+                extra.append(ref)
+            }
+        }
+
         return articles + extra
     }
 
-    // MARK: - Article filter (light, non-streaming)
-
-    private func filterArticles(question: String,
-                                articles: [DatabaseManager.RAGArticle]) async -> [DatabaseManager.RAGArticle] {
-        let cap = UserDefaults.standard.integer(forKey: "maxContextArticles")
-        let maxCtx = cap > 0 ? cap : 40
-        guard articles.count > 5 else { return articles }
-
-        // Batch relevance scoring via LLM
-        let articleList = articles.enumerated().map { i, a in
-            "[\(i)] 《\(a.lawTitle)》\(a.articleNumber)：\(String(a.content.prefix(120)))"
-        }.joined(separator: "\n")
-
-        let prompt = """
-        对以下法条与问题的相关度打分（0-10），0=完全无关，10=直接回答问题。
-        只输出JSON数组，格式：[{"i":0,"s":7},{"i":1,"s":2},...]，不要其他内容。
-
-        问题：\(question)
-
-        法条列表：
-        \(articleList)
-        """
-        let raw = (try? await chat(system: "只输出JSON数组，不要任何其他内容。", user: prompt)) ?? ""
-        let jsonStr = extractJSON(raw, open: "[", close: "]")
-
-        if let data = jsonStr.data(using: .utf8),
-           let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-            let scores = arr.reduce(into: [Int: Int]()) { dict, obj in
-                if let i = obj["i"] as? Int, let s = obj["s"] as? Int { dict[i] = s }
-            }
-            let threshold = 4
-            // Sort by score descending, cap to maxCtx
-            let sorted = articles.enumerated()
-                .filter { i, _ in (scores[i] ?? 0) >= threshold }
-                .sorted { (scores[$0.offset] ?? 0) > (scores[$1.offset] ?? 0) }
-                .map { $0.element }
-            return Array((sorted.isEmpty ? articles : sorted).prefix(maxCtx))
-        }
-
-        // Fallback: plain prefix if LLM scoring fails
-        return Array(articles.prefix(maxCtx))
-    }
+    // Mod 4: filterArticles function removed entirely.
+    // Expert prompts now include self-filter instruction instead.
 
     // MARK: - Step 4b: Expert analysis
 
@@ -923,7 +913,7 @@ final class LegalExpertService {
         if articles.isEmpty {
             return "（\(expert.name)：未检索到相关条文，无法分析。）"
         }
-        let cap      = UserDefaults.standard.integer(forKey: "maxContextArticles")
+        let cap      = maxContextArticles
         let ctxMax   = cap > 0 ? cap : 40
         let lawArts    = Array(articles.filter { $0.category != "司法解释" }.prefix(ctxMax * 2 / 3 + 1))
         let interpArts = Array(articles.filter { $0.category == "司法解释" }.prefix(ctxMax / 3 + 1))
@@ -942,7 +932,13 @@ final class LegalExpertService {
             factsText = "\n\n【已知情况】\n" + facts.map { "- \($0.key)：\($0.value)" }.joined(separator: "\n")
         }
         let userMsg = "法条：\n\(parts.joined(separator: "\n"))\(factsText)\n\n用户问题：\(question)"
-        let systemWithConstraint = expert.answerTemplate + "\n【严格限制】只能引用上方提供的法条，不得引用任何未在法条列表中出现的法律法规。"
+        // Mod 4: added self-filter instruction
+        let systemWithConstraint = expert.answerTemplate + """
+
+【严格限制】只能引用上方提供的法条，不得引用任何未在法条列表中出现的法律法规。
+【重要】如果提供的法条与用户问题不直接相关，请明确说明"现有检索到的法条不足以回答此问题"，并说明需要什么信息或应查阅哪类法规，不得凭记忆编造法条内容或条文编号。
+如果提供的法条中只有部分与问题直接相关，只引用相关的，忽略无关条文，不要为了引用而引用。
+"""
         return try await chat(system: systemWithConstraint, user: userMsg)
     }
 
@@ -971,12 +967,13 @@ final class LegalExpertService {
     - 使用第三方客观视角，不预设提问者是哪方当事人（可能是当事人本人、家属、律师或第三方）
     - 法律判断（谁违约、谁承担责任、行为是否合法）由你独立作出，不要推给提问者判断
     - 【严格限制】只能引用"检索到的法条"中出现的条文。不得引用任何未在检索结果中列出的法律法规，即使你知道相关规定存在。
+    - 【重要】如果检索到的法条不足以完整回答问题，明确说明哪部分无法回答及原因，不得编造条文编号或内容。
     格式要求：
-    1. 开头直接给出核心结论
-    2. 按问题或专家组分段陈述详细法律分析，在分析中直接引用条文编号（如"依据第X条"）
-    3. 不要在末尾单独列出"引用法条"清单，引用已在分析中体现
-    4. 如涉及诉讼，注明应去哪个法院
-    5. 总长度400-800字
+    1. 若只有一个问题：开头用一句话复述用户问题（如"关于XXX的问题："），再给出核心结论。
+    2. 若有多个子问题：用中文序号（一、二、三）分段，每段开头复述该子问题（如"一、关于彩礼返还："），再给出该问题的结论和分析。
+    3. 在分析中直接引用条文编号（如"依据第X条"），不要在末尾单独列出"引用法条"清单。
+    4. 如涉及诉讼，注明应去哪个法院。
+    5. 总长度400-800字。
     严禁使用任何Markdown格式：不得使用**加粗**、#标题、-列表符号、---分隔线等。用中文序号（一、二、三）、顿号、书名号代替。
     不要说"根据以上"、"综上所述"等空话。直接给结论。
     """ }
@@ -984,7 +981,7 @@ final class LegalExpertService {
     private func buildGroupContext(groupAnswers: [String: String],
                                    articles: [DatabaseManager.RAGArticle]) -> String {
         let groupText = groupAnswers.map { "【\($0.key)】\n\($0.value)" }.joined(separator: "\n\n")
-        let citeCap = UserDefaults.standard.integer(forKey: "maxCitations")
+        let citeCap = maxCitationsLimit
         var seenCites = Set<String>()
         var citeLines = articles.compactMap { a -> String? in
             let key = "\(a.lawTitle)_\(a.articleNumber)"
@@ -1029,7 +1026,9 @@ final class LegalExpertService {
             result.append(a)
         }
 
-        // Named citations — highest confidence
+        // Named citations — only match against candidates actually shown to the LLM.
+        // Do NOT fall back to DB lookup: if a named article isn't in candidates, the LLM
+        // is drawing on training memory and the citation may be hallucinated or mismatched.
         if let re = namedPattern {
             for m in re.matches(in: answerText, range: range) {
                 let lawFrag = ns.substring(with: m.range(at: 1))
@@ -1037,15 +1036,11 @@ final class LegalExpertService {
                 guard let num = chineseOrArabicToInt(numStr) else { continue }
                 if let a = candidateByNum[num], a.lawTitle.contains(lawFrag) {
                     add(a)
-                } else {
-                    // DB lookup by law name fragment + article number
-                    let artNum = "第\(numStr)条"
-                    db.articlesByNumber(articleNumber: artNum, lawTitleFragment: lawFrag).forEach { add($0) }
                 }
             }
         }
 
-        // Bare citations — use candidates first, then DB with law_ids scope
+        // Bare citations — candidates first, then restrict to same law_ids (no cross-law guessing)
         if let re = barePattern {
             for m in re.matches(in: answerText, range: range) {
                 let numStr = ns.substring(with: m.range(at: 1))
@@ -1081,42 +1076,11 @@ final class LegalExpertService {
 
     // MARK: - Helpers
 
-    // MARK: - 问题法律化改写
-
-    /// 将口语化问题改写为规范的法律表述，补充法律性质、当事人关系、可能适用的法律领域。
-    /// 若问题已足够规范，或为追问/知识查询，则原文返回。
-    private func rewriteToLegalForm(question: String,
-                                     conversationHistory: [(user: String, assistant: String)]) async -> String {
-        // 追问场景不改写（已有上下文，改写反而会失真）
-        if !conversationHistory.isEmpty && question.count < 60 { return question }
-        // 极短问题（纯问候等）不改写
-        if question.count < 4 { return question }
-
-        let system = """
-        你是中国法律助手，负责将用户的口语化问题改写为规范的法律描述，以便后续精确检索法律条文。
-
-        改写规则：
-        1. 补充法律性质（如：侵权行为、合同违约、相邻权纠纷、行政违规等）
-        2. 明确当事人关系（如：租户与房东、相邻业主、雇主与雇员等）
-        3. 补充可能适用的法律领域关键词（如：《民法典》相邻关系、《治安管理处罚法》噪音扰民等）
-        4. 保留原始事实，不要捏造细节，不要改变用户原意
-        5. 改写后长度不超过原问题的3倍，语言简洁
-        6. 如果原问题已是规范法律表述，或是纯粹的法律知识查询（不涉及具体纠纷），直接输出原文
-
-        只输出改写后的问题，不要解释，不要前缀，不要引号。
-        """
-        let result = try? await chat(system: system, user: question)
-        guard let r = result?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !r.isEmpty, r != question else { return question }
-        return r
-    }
-
     private func decomposeQuestion(_ question: String) async -> DecomposedQuestion {
         let none = DecomposedQuestion(preamble: "", questions: [])
         // Fast path: regex-split numbered questions (1. / 1、/ （1）/ 问题一 etc.)
         // Preamble = everything before the first numbered item; questions = each item alone.
-        let numberedRE = try! NSRegularExpression(
-            pattern: #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
+        let numberedRE = numberedQRE
         let ns = question as NSString
         let fullRange = NSRange(location: 0, length: ns.length)
         let matches = numberedRE.matches(in: question, range: fullRange)
@@ -1144,27 +1108,31 @@ final class LegalExpertService {
         你是中国法律分析助手。阅读以下法律问题，判断是否包含多个需要独立分析的子问题。
 
         拆分规则：
-        - 如果涉及多个完全不同的法律关系（如合同纠纷 + 侵权 + 继承），必须拆分。
-        - 同一法律关系的多个追问 → 不拆，输出 []。
-        - 每个子问题必须包含完整案情背景，使其可以独立被理解和分析。
+        - 如果涉及多个完全不同的法律关系（如彩礼返还 + 抚养权 + 费用分担），必须拆分。
+        - 同一法律关系的多个追问 → 不拆，输出 {"preamble":"","questions":[]}。
         - 最多拆分为4个子问题。
 
-        输出要求：
-        - 需要拆分：输出JSON数组，每个元素是一个包含案情背景+该问题的完整字符串。
-        - 无需拆分：输出空数组 []。
-        - 只输出JSON数组，不要任何其他内容。
+        输出要求（严格JSON，不要其他内容）：
+        {
+          "preamble": "所有子问题共用的案情事实摘要（如无共用事实则为空字符串）",
+          "questions": ["纯粹的法律问题1，不含重复事实", "纯粹的法律问题2", ...]
+        }
+        - questions 中每条只写法律问题本身，事实已在 preamble 中，不要重复。
+        - 无需拆分时 questions 为空数组 []。
 
         问题：
         \(question)
         """
 
-        guard let raw  = try? await chat(system: "严格按指令输出JSON数组，不要其他内容。", user: prompt),
-              let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
-              let arr  = try? JSONSerialization.jsonObject(with: data) as? [String]
+        guard let raw  = try? await chat(system: "严格按指令输出JSON对象，不要其他内容。", user: prompt),
+              let data = extractJSON(raw, open: "{", close: "}").data(using: .utf8),
+              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr  = obj["questions"] as? [String]
         else { return none }
 
-        let items = arr.filter { $0.count > 10 }
-        return items.count >= 2 ? DecomposedQuestion(preamble: "", questions: items) : none
+        let preamble = (obj["preamble"] as? String) ?? ""
+        let items = arr.filter { $0.count > 5 }
+        return items.count >= 2 ? DecomposedQuestion(preamble: preamble, questions: items) : none
     }
 
 
@@ -1184,7 +1152,7 @@ final class LegalExpertService {
                       "合同诈骗","行政处罚","侵权责任","财产保全",
                       "婚姻家庭","遗产继承","股东权利","产品责任"]
         var found = common.filter { text.contains($0) }
-        let pattern = try! NSRegularExpression(pattern: "[\\u4E00-\\u9FFF]{3,6}")
+        let pattern = cjkKeywordRE
         let ns = text as NSString
         let range = NSRange(location: 0, length: ns.length)
         for match in pattern.matches(in: text, range: range) {

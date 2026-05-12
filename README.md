@@ -35,69 +35,49 @@
 └─────────────┬───────────────┘
               │
               ▼
-┌─────────────────────────────┐
-│        意图分类器            │  LLM 4-way 分类（含关键词 fast-path）
-└──────┬──────┬──────┬────────┘
-       │      │      │      │
-  off_topic  general  law_lookup  case / follow_up
-       │      │      │      │
-       ▼      ▼      ▼      ▼
-   硬编码  General  LawLookup  Expert
-   引导语  Pipeline  Pipeline   Pipeline
+┌──────────────────────────────────────┐
+│    意图 + 模式联合分类                │  单次 LLM 调用，同时输出 intent + mode
+│  classifyIntentAndMode               │  含关键词 fast-path（< 15 字无历史）
+└──────┬───────────────┬───────────────┘
+       │               │
+  off_topic       legalQuery / followUp
+       │               │
+       ▼               ▼
+   硬编码引导语     按 QueryMode 路由
+                   │
+          ┌────────┼──────────┐
+          ▼        ▼          ▼
+    caseAnalysis  legalAdvisory  conceptAndStatute
+    （案情分析）  （法律咨询）    （法条检索）
+          │        │          │
+          ▼        ▼          ▼
+      Expert    Expert    Expert Pipeline
+      Pipeline  Pipeline  （引用原文，
+      + 问题    （多专家    不加评论）
+        拆分）   并发分析）
 ```
 
 ---
 
-### 意图分类（`classifyIntent`）
+### 意图与模式（`classifyIntentAndMode`）
 
-| 意图 | 触发条件 | 路由目标 |
-|------|---------|---------|
-| `off_topic` | 问候、闲聊、App 使用说明类 | 硬编码引导语，零 LLM 调用 |
-| `general` | 法律知识查询，不依赖具体案情 | General Pipeline |
-| `law_lookup` | 查询某条具体法律规定或某部法律内容 | LawLookup Pipeline |
-| `case` | 陈述具体纠纷事实（含日常纠纷：噪音、欠款、伤害等） | Expert Pipeline |
-| `follow_up` | 基于已有案情的追问 | Expert Pipeline（复用上次专家） |
+单次 LLM 调用同时输出 `intent` 和 `mode`，消除两次分类的不一致。
 
-**Fast-path**：无历史对话 + 消息 < 15 字 + 不含法律关键词 → 直接判 `off_topic`，跳过 LLM。
+| intent | 触发条件 |
+|--------|---------|
+| `offTopic` | 问候、闲聊、App 使用说明 → 硬编码引导语，零后续 LLM 调用 |
+| `legalQuery` | 含法律性质的问题（含口语化纠纷描述） |
+| `followUp` | 基于已有案情的追问 |
 
----
+**Fast-path**：无历史对话 + 消息 < 15 字 + 不含法律关键词 → 直接判 `offTopic`，跳过 LLM。
 
-### General Pipeline
+| QueryMode | 含义 | 路由特点 |
+|-----------|------|---------|
+| `caseAnalysis` | 陈述具体纠纷、要求维权建议 | 先 `decomposeQuestion` 拆分子问题，再多专家并发分析 |
+| `legalAdvisory` | 法律知识问答（不依赖具体案情） | 多专家并发分析，不拆分 |
+| `conceptAndStatute` | 查询特定法条原文或法律概念 | Coordinator 定性路由 → 专家精确检索 → 引用原文作答 |
 
-```
-general 问题
-    │
-    ▼
-┌──────────────────┐
-│   复杂度判断      │
-└────────┬─────────┘
-         │
-    ┌────┴────┐
-    │         │
-  simple    complex
-    │         │
-    ▼         ▼
- 宽域 FTS   Expert Pipeline
- + 单次     （跳过追问，
-  LLM 回答    maxFollowUpRounds=0）
-```
-
----
-
-### LawLookup Pipeline
-
-```
-law_lookup 问题
-    │
-    ▼
-Coordinator 定性 + 专家路由
-    │
-    ▼
-每位专家用 LLM 知识定位法条 → 精确 DB 查询
-    │
-    ▼
-汇总原文 → LLM 引用原文作答（不发表评论）
-```
+模式在追问轮次间通过 `lastQueryMode` 持久化，避免下一轮被错误覆盖。
 
 ---
 
@@ -134,7 +114,8 @@ case / follow_up 问题
                           │                                                   │
                           ▼                                                   │
              ┌────────────────────────┐                                       │
-             │      专家组综合         │  同组专家合并，消除重复               │
+             │  专家组并发综合         │  同组多专家并发合并（withThrowingTaskGroup），│
+             │                        │  单专家组跳过合并调用                 │
              └───────────┬────────────┘                                       │
                          │                                                    │
                          ▼                                                    │
@@ -322,6 +303,23 @@ ChineseLawsSearch/
 
 ---
 
+## 集成测试
+
+`ChineseLawsSearchTests/AgentIntegrationTests.swift` 包含 25 个端到端集成测试，覆盖三种查询模式：
+
+| 类别 | 数量 | 说明 |
+|------|------|------|
+| 案情分析（caseAnalysis） | 8 | 租房纠纷、劳动争议、交通事故、网购假货等具体案情 |
+| 法律咨询（legalAdvisory） | 8 | 合同到期、试用期、离婚财产、加班费计算等知识问答 |
+| 法条检索（conceptAndStatute） | 6 | 交通肇事罪、善意取得、违约金、故意伤害罪量刑等 |
+| 意图分类 | 3 | offTopic / legalQuery / 模式分类正确性验证 |
+
+**评分机制**：每个测试调用真实 LLM pipeline 生成回答，再用 LLM-as-Judge 以 0–10 分评分，≥ 8 分为通过。结果写入 `~/Desktop/agent_test_results.json`。
+
+最新一次运行结果：**24/25 通过（96%）**，平均分约 9.2/10。
+
+---
+
 ## 技术栈
 
 | 项目 | 说明 |
@@ -330,6 +328,6 @@ ChineseLawsSearch/
 | UI | SwiftUI（iOS 17+） |
 | 数据库 | SQLite（C API 直接调用） |
 | 全文检索 | FTS5 trigram + unicode61 + LIKE 兜底 |
-| LLM | Gemini Flash 2.0 / DeepSeek V3 / Groq Llama 3.3 70B |
+| LLM | DeepSeek V3（主力）；架构支持 Gemini Flash / Groq |
 | 同步 | iCloud KV Store + iCloud Documents + iCloud Keychain |
 | 最低系统 | iOS 17 / iPadOS 17 |

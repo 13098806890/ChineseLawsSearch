@@ -47,3 +47,10 @@ struct AppColors {
         )
     }
 }
+
+// MARK: - Formatting utilities
+
+/// Format a token count for display: numbers ≥ 1000 are shown as "x.xk".
+func formatTokens(_ n: Int) -> String {
+    n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
+}

@@ -10,7 +10,7 @@ private let chJiuMinCivilProc: [Int] = [1498, 1508]
 
 let civilProcedureExpert = SubExpert(
     name: "民事诉讼专家",
-    domain: "管辖、起诉、证据、审判、执行、保全、案外人救济、民刑交叉",
+    domain: "管辖、起诉、诉讼代理、证据、审判、执行、保全、案外人救济、民刑交叉",
     requiredInfo: [
         RequiredInfo(field: "纠纷类型",       question: "属于哪类民事纠纷（合同/侵权/婚姻/劳动/房屋/执行异议）？",
                      regexHint: "合同|侵权|婚姻|劳动|房屋|租赁|借款|离婚|继承|执行异议|案外人"),
@@ -22,6 +22,7 @@ let civilProcedureExpert = SubExpert(
     ftsDomains: ["诉讼与非诉讼程序法"],
     ftsCategories: ["法律", "司法解释"],
     ftsKeywordsExtra: ["管辖权", "起诉条件", "证据规则", "财产保全", "强制执行",
+                       "诉讼代理人", "代理人资格", "委托代理", "法定代理人",
                        "案外人异议", "执行异议之诉", "第三人撤销之诉", "民刑交叉",
                        "商品房消费者", "优先购买权排除执行"],
     answerTemplate: """
