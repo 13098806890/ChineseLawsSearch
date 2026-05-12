@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 import Combine
 
 // MARK: - Mode (kept for history compatibility, only expert used)
@@ -32,17 +33,23 @@ struct LegalChatView: View {
     @State private var showHistory = false
     @State private var showNoKeyAlert = false
     @State private var showPaywall = false
+    @State private var exportItem: ExportItem? = nil
     @FocusState private var inputFocused: Bool
     @EnvironmentObject private var userStore: UserStore
 
     private var hasAPIKey: Bool { userStore.apiKeyConfigured }
 
-    /// 用户有自己的 Key，或者还有免费次数/已购买
+    /// 是否允许使用 Agent：
+    /// - .free  → 内置 Key，直接可用
+    /// - .basic → 需自备 Key
+    /// - .pro   → 内置 Key，有每周额度，额度为 0 时不可用
+    /// - .noAccess → 不可用
     private var canUseAgent: Bool {
-        if hasAPIKey { return true }
         switch pm.access {
-        case .paid, .free: return true
-        case .noAccess: return false
+        case .free:                       return true
+        case .basic:                      return hasAPIKey
+        case .pro(let remaining):         return remaining > 0
+        case .noAccess:                   return false
         }
     }
 
@@ -108,8 +115,17 @@ struct LegalChatView: View {
                         .background(Color.orange.opacity(0.08))
                     }
                     // Input bar
-                    HStack(alignment: .bottom, spacing: 8) {
-                        TextField(vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…",
+                    HStack(alignment: .center, spacing: 8) {
+                        TextField({
+                            if !canUseAgent {
+                                switch pm.access {
+                                case .basic:                  return "请在设置中配置 API Key…"
+                                case .pro(let r) where r == 0: return "本周额度已用完，下周一恢复…"
+                                default:                       return "购买后即可使用法律顾问…"
+                                }
+                            }
+                            return vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…"
+                        }(),
                                   text: $vm.inputText, axis: .vertical)
                             .lineLimit(1...5)
                             .padding(.horizontal, 12)
@@ -119,7 +135,12 @@ struct LegalChatView: View {
                             .disabled(vm.isThinking || !canUseAgent)
                             .focused($inputFocused)
                             .onTapGesture {
-                                if !canUseAgent { showPaywall = true }
+                                if !canUseAgent {
+                                    switch pm.access {
+                                    case .basic:  onOpenSettings?()
+                                    default:      showPaywall = true
+                                    }
+                                }
                             }
                         Button {
                             Task { await vm.send(historyStore: historyStore) }
@@ -134,58 +155,93 @@ struct LegalChatView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 10)
 
-                    // Free uses hint
-                    if !hasAPIKey {
-                        switch pm.access {
-                        case .free(let remaining):
-                            HStack(spacing: 4) {
-                                Text("免费剩余 \(remaining) 次")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                Text("·")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                Button { showPaywall = true } label: {
-                                    Text("解锁无限使用")
-                                        .font(.caption2)
-                                        .foregroundStyle(AppColors.shared.searchHighlight)
-                                }
+                    // Free uses hint / status bar
+                    switch pm.access {
+                    case .free(let remaining):
+                        HStack(spacing: 4) {
+                            Text("免费剩余 \(remaining) 次")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Text("·")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Button { showPaywall = true } label: {
+                                Text("解锁无限使用")
+                                    .font(.caption2)
+                                    .foregroundStyle(AppColors.shared.searchHighlight)
                             }
-                            .padding(.horizontal, 16)
-                        case .noAccess:
-                            HStack(spacing: 4) {
-                                Text("免费次数已用完")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                Text("·")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                Button { showPaywall = true } label: {
-                                    Text("购买解锁")
-                                        .font(.caption2)
-                                        .foregroundStyle(AppColors.shared.searchHighlight)
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                        case .paid:
-                            EmptyView()
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                    case .basic:
+                        if !hasAPIKey {
+                            HStack(spacing: 4) {
+                                Image(systemName: "key.slash").font(.caption2).foregroundStyle(.orange)
+                                Text("请在设置中配置 API Key 以继续使用")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Button { onOpenSettings?() } label: {
+                                    Text("前往设置")
+                                        .font(.caption2)
+                                        .foregroundStyle(AppColors.shared.searchHighlight)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                        } else {
+                            let isPro = pm.hasPRO
+                            HStack(spacing: 4) {
+                                Image(systemName: "key.fill").font(.caption2).foregroundStyle(.secondary)
+                                Text(isPro ? "畅用版 · 自备 Key 优先，无次数限制" : "基础版 · 自备 Key，无次数限制")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                        }
+                    case .pro(let remaining):
+                        HStack(spacing: 4) {
+                            Text("畅用版 · 本周剩余 \(remaining) 次")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                    case .noAccess:
+                        HStack(spacing: 4) {
+                            Text("免费次数已用完")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Text("·")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Button { showPaywall = true } label: {
+                                Text("购买解锁")
+                                    .font(.caption2)
+                                    .foregroundStyle(AppColors.shared.searchHighlight)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
                     }
 
-                    // Token counter — show base (from loaded history) + current session
+                    // Token counter — 仅基础版（自备 Key）显示，其余用内置 Key 无需展示成本
                     let totalPrompt     = vm.tokenBasePrompt     + tokenCounter.session.promptTokens
                     let totalCompletion = vm.tokenBaseCompletion + tokenCounter.session.completionTokens
                     let totalTokens     = totalPrompt + totalCompletion
-                    if totalTokens > 0 {
-                        HStack(spacing: 12) {
-                            Spacer()
-                            Label("\(formatTokens(totalPrompt))", systemImage: "arrow.up")
-                            Label("\(formatTokens(totalCompletion))", systemImage: "arrow.down")
-                            Text("共 \(formatTokens(totalTokens)) tokens")
-                            let cost = Double(totalPrompt)     / 1_000_000 * 1.0
-                                     + Double(totalCompletion) / 1_000_000 * 2.0
-                            Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
+                    if case .basic = pm.access {
+                        if totalTokens > 0 {
+                            HStack(spacing: 12) {
+                                Spacer()
+                                Label("\(formatTokens(totalPrompt))", systemImage: "arrow.up")
+                                Label("\(formatTokens(totalCompletion))", systemImage: "arrow.down")
+                                Text("共 \(formatTokens(totalTokens)) tokens")
+                                let cost = Double(totalPrompt)     / 1_000_000 * 0.27
+                                         + Double(totalCompletion) / 1_000_000 * 1.10
+                                Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 4)
+                        } else {
+                            Spacer().frame(height: 8)
                         }
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 4)
+                    } else {
+                        Spacer().frame(height: 8)
                     }
                 }
                 .background(.bar)
@@ -194,25 +250,23 @@ struct LegalChatView: View {
         .navigationTitle("法律咨询")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if showHistoryButton {
-                ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if showHistoryButton || showNewSessionButton {
                     HStack(spacing: 16) {
-                        Button { showHistory = true } label: {
-                            Image(systemName: "clock")
+                        if !vm.messages.isEmpty {
+                            Button { exportItem = ExportItem(text: vm.exportMarkdown()) } label: {
+                                Image(systemName: "paperplane")
+                            }
+                        }
+                        if showHistoryButton {
+                            Button { showHistory = true } label: {
+                                Image(systemName: "clock")
+                            }
                         }
                         Button { vm.newSession() } label: {
                             Image(systemName: "plus.circle")
                         }
-                        .disabled(vm.isThinking)
                     }
-                }
-            }
-            if !showHistoryButton && showNewSessionButton {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { vm.newSession() } label: {
-                        Image(systemName: "plus.circle")
-                    }
-                    .disabled(vm.isThinking)
                 }
             }
         }
@@ -222,16 +276,32 @@ struct LegalChatView: View {
                 showHistory = false
             }, onNewSession: {
                 vm.newSession()
-            })
+            }, isThinking: vm.isThinking)
         }
-        .sheet(isPresented: $showPaywall) {
+        .sheet(isPresented: Binding(
+            get: { showPaywall || vm.needsPaywall },
+            set: { isPresented in
+                if !isPresented {
+                    showPaywall = false
+                    vm.needsPaywall = false  // reset so paywall can trigger again next time
+                }
+            }
+        )) {
             PaywallView(pm: pm)
+        }
+        .sheet(item: $exportItem) { item in
+            ShareSheet(activityItems: [item.text])
         }
         .alert("需要配置 API Key", isPresented: $showNoKeyAlert) {
             Button("前往设置") { onOpenSettings?() }
             Button("取消", role: .cancel) {}
         } message: {
             Text("法律顾问功能需要 DeepSeek API Key 才能使用，请在设置中填入您的 Key。")
+        }
+        .alert("时间异常", isPresented: $vm.showTimeManipulationAlert) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text("检测到设备时间异常，请恢复正确时间后再使用。")
         }
     }
 
@@ -248,7 +318,7 @@ struct LegalChatView: View {
                         .foregroundStyle(AppColors.shared.searchHighlight.opacity(0.7))
                     Text("律疏 · 法律顾问")
                         .font(.title2.bold())
-                    Text("由多位细分领域专家协作，自动检索相关法条，给出有依据的法律意见")
+                    Text("多位细分领域专家协作，精准引用法条，给出有依据的法律意见")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -266,21 +336,21 @@ struct LegalChatView: View {
                     modeCard(
                         icon: "person.crop.circle.badge.questionmark",
                         title: "案情分析",
-                        desc: "描述您亲历的具体纠纷，专家会追问缺失事实，分析责任归属并给出维权建议。",
-                        example: "我和房东签了一年租约，还有四个月到期，房东突然要求我两周内搬走，并拒绝退押金，我该怎么办？"
+                        desc: "描述您亲历的具体纠纷——当事人关系、事件经过、时间节点。专家会追问缺失事实，分析责任归属，给出维权建议。",
+                        example: "我和房东签了一年租约，还有四个月到期，房东突然要求我两周内搬走并拒绝退押金，我该怎么办？"
                     )
 
                     modeCard(
                         icon: "lightbulb",
                         title: "法律咨询",
-                        desc: "询问某类情景下的权利义务，无需有具体案情，适合提前了解法律规则。",
+                        desc: "询问某类场景下的权利义务或法律规则，无需有具体纠纷，适合提前了解或评估风险。",
                         example: "劳动合同到期公司不续签，员工能拿到经济补偿吗？"
                     )
 
                     modeCard(
                         icon: "doc.text.magnifyingglass",
                         title: "法条检索",
-                        desc: "查询某个法律概念的定义、某罪的构成要件，或某主题的相关条文原文。",
+                        desc: "查询某概念的法律定义、某罪的构成要件，或某主题下的相关条文原文。",
                         example: "交通肇事罪的构成要件是什么？"
                     )
                 }
@@ -303,6 +373,10 @@ struct LegalChatView: View {
                     tipRow(icon: "plus.circle",
                            title: "新案情开新会话",
                            body: "遇到完全不同的纠纷，点击右上角「+」新建对话，避免不同案情互相干扰。")
+
+                    tipRow(icon: "bookmark",
+                           title: "收藏重要条文",
+                           body: "在「法律浏览」中长按任意条文可收藏，底部「收藏」栏随时查阅，iCloud 多设备同步。")
                 }
 
             }
@@ -406,6 +480,13 @@ private struct MessageBubble: View {
                         .background(AppColors.shared.searchHighlight)
                         .foregroundStyle(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = message.text
+                            } label: {
+                                Label("复制", systemImage: "doc.on.doc")
+                            }
+                        }
                 }
             } else {
                 if message.isClarifying {
@@ -467,6 +548,13 @@ private struct MessageBubble: View {
                                 .background(Color.appTertiaryBackground)
                                 .foregroundStyle(.primary)
                                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                                .contextMenu {
+                                    Button {
+                                        UIPasteboard.general.string = message.text
+                                    } label: {
+                                        Label("复制", systemImage: "doc.on.doc")
+                                    }
+                                }
                             Spacer(minLength: 48)
                         }
                     }
@@ -740,6 +828,18 @@ private struct CitationList: View {
                         .stroke(Color.appSeparator, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = c.content
+                    } label: {
+                        Label("复制条文", systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        UIPasteboard.general.string = "《\(c.lawTitle)》\(c.articleNumber)\n\(c.content)"
+                    } label: {
+                        Label("复制含标题", systemImage: "doc.on.clipboard")
+                    }
+                }
             }
         }
         .padding(.horizontal, 4)
@@ -782,11 +882,15 @@ struct ChatHistorySidebar: View {
                     }
                 )) {
                     ForEach(historyStore.sessions) { session in
-                        historyRow(session)
+                        SessionRowView(session: session)
                             .tag(session.id)
-                    }
-                    .onDelete { offsets in
-                        offsets.forEach { historyStore.delete(id: historyStore.sessions[$0].id) }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    historyStore.delete(id: session.id)
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
+                            }
                     }
                 }
                 .listStyle(.sidebar)
@@ -797,34 +901,7 @@ struct ChatHistorySidebar: View {
     }
 
     private func historyRow(_ session: ChatSession) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Label("专家", systemImage: "person.3")
-                    .font(.caption2)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(AppColors.shared.searchHighlight)
-                    .clipShape(Capsule())
-                Spacer()
-                Text(session.updatedAt, style: .relative)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Text(session.title)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-            HStack(spacing: 8) {
-                Text("\(session.messages.count / 2) 轮对话")
-                if session.totalPromptTokens + session.totalCompletionTokens > 0 {
-                    Text("·")
-                    Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
+        SessionRowView(session: session)
     }
 }
 
@@ -835,6 +912,7 @@ struct ChatHistorySheet: View {
     @ObservedObject var historyStore: ChatHistoryStore
     let onSelect: (ChatSession) -> Void
     let onNewSession: () -> Void
+    var isThinking: Bool = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -861,43 +939,16 @@ struct ChatHistorySheet: View {
                 } else {
                     List {
                         ForEach(historyStore.sessions) { session in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Label(session.mode == "专家" ? "专家" : "快速",
-                                          systemImage: session.mode == "专家" ? "person.3" : "bolt")
-                                        .font(.caption2)
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 7).padding(.vertical, 3)
-                                        .background(AppColors.shared.searchHighlight)
-                                        .clipShape(Capsule())
-                                    Spacer()
-                                    Text(session.updatedAt, style: .relative)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(session.title)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                                HStack(spacing: 8) {
-                                    Text("\(session.messages.count / 2) 轮对话")
-                                    if session.totalPromptTokens + session.totalCompletionTokens > 0 {
-                                        Text("·")
-                                        Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
+                            SessionRowView(session: session)
+                                .contentShape(Rectangle())
+                                .onTapGesture { onSelect(session) }
+                                .swipeActions(edge: .trailing) {
+                                    Button(role: .destructive) {
+                                        historyStore.delete(id: session.id)
+                                    } label: {
+                                        Label("删除", systemImage: "trash")
                                     }
                                 }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                            .onTapGesture { onSelect(session) }
-                        }
-                        .onDelete { offsets in
-                            offsets.forEach { idx in
-                                historyStore.delete(id: historyStore.sessions[idx].id)
-                            }
                         }
                     }
                 }
@@ -924,11 +975,19 @@ struct ChatHistorySheet: View {
 final class LegalChatViewModel: ObservableObject {
     @Published var messages:  [ChatMessage] = []
     @Published var inputText  = ""
-    @Published var isThinking = false
+    /// 正在思考中的 session ID 集合；用 sessionId 查询当前 session 是否在思考
+    @Published private var thinkingSessions: Set<UUID> = []
+    /// 当前 session 是否正在思考
+    var isThinking: Bool { thinkingSessions.contains(sessionId) }
     @Published var dotScale   = [1.0, 1.0, 1.0]
     @Published var scrollToken = 0
     @Published var mode: ChatMode = .expert
     @Published var lastFailedQuestion: String? = nil  // set on network error, cleared on retry
+    @Published var showTimeManipulationAlert = false
+    @Published var needsPaywall = false  // consumeIfAllowed 拦截时触发，View 层弹 Paywall
+
+    private let kv = NSUbiquitousKeyValueStore.default
+    private let lastSendTimeKey = "lastChatSendTime"
 
     // Follow-up state (expert mode)
     var isAwaitingClarification = false
@@ -974,7 +1033,7 @@ final class LegalChatViewModel: ObservableObject {
     func newSession() {
         messages = []
         inputText = ""
-        isThinking = false
+        // sessionId 切换后 isThinking 计算属性自动变 false，旧 session 的 thinkingSessions 条目保留直到任务完成
         isAwaitingClarification = false
         followUpRound = 0
         pendingFacts = [:]
@@ -1021,6 +1080,7 @@ final class LegalChatViewModel: ObservableObject {
         followUpRound           = session.followUpRound
         pendingFacts            = session.pendingFacts
         lastSelectedExperts     = resolveExperts(names: session.selectedExpertNames)
+        lastQueryMode           = session.lastQueryMode.flatMap { QueryMode(rawValue: $0) }
         conversationHistory     = buildConversationHistory()
         tokenBasePrompt         = session.totalPromptTokens
         tokenBaseCompletion     = session.totalCompletionTokens
@@ -1032,20 +1092,34 @@ final class LegalChatViewModel: ObservableObject {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !isThinking else { return }
 
-        // Access control: consume a free use (no-op if user has own key or is paid)
-        let userKey = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
-        let needsQuota = userKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if needsQuota && !PurchaseManager.shared.consumeIfAllowed() { return }
+        // 准入检查：
+        // - 免费次数 > 0 → 消耗一次，用内置 key
+        // - 免费用完 + 已购买 + 有 key → 直接放行
+        // - 其他 → 拦截（canUseAgent 已 disabled，此处兜底）
+        if !PurchaseManager.shared.consumeIfAllowed() {
+            needsPaywall = true
+            return
+        }
+
+        // 时间篡改检测：当前时间不得早于上次发送时间
+        let now = Date().timeIntervalSince1970
+        let lastSend = kv.double(forKey: lastSendTimeKey)
+        if lastSend > 0 && now < lastSend - 1 {
+            showTimeManipulationAlert = true
+            return
+        }
+        kv.set(now, forKey: lastSendTimeKey)
+        kv.synchronize()
 
         let currentSessionId = sessionId  // capture before any await
         lastFailedQuestion = nil
         inputText = ""
         messages.append(ChatMessage(role: .user, text: q))
 
-        isThinking = true
+        thinkingSessions.insert(currentSessionId)
         defer {
-            // Guarantee isThinking is always cleared regardless of exit path
-            if self.sessionId == currentSessionId { self.isThinking = false }
+            // 无论哪条路径退出，都清除该 session 的 thinking 状态
+            thinkingSessions.remove(currentSessionId)
         }
 
         do {
@@ -1101,6 +1175,8 @@ final class LegalChatViewModel: ObservableObject {
             autoSave(historyStore: historyStore)
 
         } catch {
+            // Refund the quota consumed at the top of send() — the request never completed
+            PurchaseManager.shared.refundIfNeeded()
             // Remove the empty assistant bubble if present
             if let last = messages.last, last.role == .assistant, last.text.isEmpty {
                 messages.removeLast()
@@ -1111,6 +1187,10 @@ final class LegalChatViewModel: ObservableObject {
             }
             inputText = q
             lastFailedQuestion = q
+            // 保存已有内容（如有部分回复已展示，保留历史）
+            if !messages.isEmpty {
+                autoSave(historyStore: historyStore)
+            }
         }
     }
 
@@ -1141,7 +1221,7 @@ final class LegalChatViewModel: ObservableObject {
                     maxFollowUpRounds: 0,
                     preClassifiedMode: preMode ?? .legalAdvisory
                 ) { [weak self] event in
-                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
+                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId) }
                 }
                 if mode == .caseAnalysis { isAwaitingClarification = false }
                 citations = c
@@ -1152,9 +1232,10 @@ final class LegalChatViewModel: ObservableObject {
                     conversationHistory: conversationHistory,
                     knownFacts: pendingFacts
                 ) { [weak self] event in
-                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
+                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId) }
                 }
                 lastSelectedExperts = updatedExperts
+                isAwaitingClarification = false
                 citations = c
             }
 
@@ -1165,7 +1246,7 @@ final class LegalChatViewModel: ObservableObject {
                 pendingFacts = [:]
                 followUpRound = 0
             }
-            let maxRounds = isAwaitingClarification ? 0 : UserDefaults.standard.integer(forKey: "maxFollowUpRounds")
+            let maxRounds = isAwaitingClarification ? 0 : maxFollowUpRounds
             // Mod 6: pass preMode to skip redundant classifyQueryMode call
             let (c, mode) = try await LegalExpertService.shared.askLegalQuery(
                 question: q,
@@ -1175,7 +1256,7 @@ final class LegalChatViewModel: ObservableObject {
                 maxFollowUpRounds: maxRounds,
                 preClassifiedMode: preMode
             ) { [weak self] event in
-                Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx) }
+                Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId) }
             }
             // Only case analysis supports multi-turn clarification
             if mode != .caseAnalysis { isAwaitingClarification = false }
@@ -1193,7 +1274,9 @@ final class LegalChatViewModel: ObservableObject {
     }
 
     @MainActor
-    private func handleEvent(_ event: RAGEvent, replyIdx: Int) {
+    private func handleEvent(_ event: RAGEvent, replyIdx: Int, sessionId: UUID) {
+        // 如果用户已新建会话，丢弃旧任务的事件，防止写入新会话
+        guard sessionId == self.sessionId else { return }
         guard replyIdx < messages.count else { return }
         switch event {
         case .thinkStep(let name, let content):
@@ -1204,12 +1287,12 @@ final class LegalChatViewModel: ObservableObject {
             messages[replyIdx].subQuestions = qs
         case .token(let t):
             messages[replyIdx].text += t
-            isThinking = false
+            thinkingSessions.remove(sessionId)  // 收到第一个 token，停止 spinner
             scrollToken += 1
         case .clarifyingQuestion(let text):
             messages[replyIdx].text = text
             messages[replyIdx].isClarifying = true
-            isThinking = false
+            thinkingSessions.remove(sessionId)  // 收到追问，停止 spinner
             isAwaitingClarification = true
             scrollToken += 1
         case .expertsSelected(let experts):
@@ -1256,6 +1339,7 @@ final class LegalChatViewModel: ObservableObject {
             pendingFacts: pendingFacts,
             isAwaitingClarification: isAwaitingClarification,
             followUpRound: followUpRound,
+            lastQueryMode: lastQueryMode?.rawValue,
             totalPromptTokens: tokenBasePrompt + TokenCounter.shared.session.promptTokens,
             totalCompletionTokens: tokenBaseCompletion + TokenCounter.shared.session.completionTokens
         )
@@ -1298,5 +1382,83 @@ final class LegalChatViewModel: ObservableObject {
     func stopDotAnimation() {
         dotTask?.cancel()
         dotTask = nil
+    }
+
+    /// 将当前对话导出为纯文本格式字符串
+    func exportMarkdown() -> String {
+        var lines: [String] = ["法律咨询记录\n"]
+        for msg in messages {
+            switch msg.role {
+            case .user:
+                lines.append("您：\(msg.text)\n")
+            case .assistant:
+                if !msg.text.isEmpty {
+                    lines.append("律疏：\(msg.text)\n")
+                }
+                if !msg.citations.isEmpty {
+                    lines.append("参考法条：\n")
+                    for c in msg.citations {
+                        lines.append("《\(c.lawTitle)》\(c.articleNumber)：\(c.content)\n")
+                    }
+                }
+            }
+        }
+        lines.append("\n---\n免责声明：以上内容由 AI 自动生成，仅供参考，不构成正式法律意见。具体案件建议咨询执业律师。")
+        return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - Export helpers
+
+struct ExportItem: Identifiable {
+    let id = UUID()
+    let text: String
+}
+
+private struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uvc: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - SessionRowView (shared by Sidebar + Sheet)
+
+struct SessionRowView: View {
+    let session: ChatSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("专家", systemImage: "person.3")
+                    .font(.caption2)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(AppColors.shared.searchHighlight)
+                    .clipShape(Capsule())
+                Spacer()
+                Text(session.updatedAt, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(session.title)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+            HStack(spacing: 8) {
+                Text("\(session.messages.count / 2) 轮对话")
+                if session.totalPromptTokens + session.totalCompletionTokens > 0 {
+                    Text("·")
+                    Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

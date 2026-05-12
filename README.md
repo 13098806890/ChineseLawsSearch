@@ -12,13 +12,14 @@
 - 短词（1–2 字）走 `LIKE` 模糊匹配；3 字以上走 FTS5 trigram 精确检索
 - 法律详情页：编 / 章 / 节 / 条层级展示，右侧比例索引条，条内关键词过滤
 - 条文交叉引用：彩色超链接跳转，记录返回栈，重启后可沿链路原路返回
+- 收藏条文：长按任意条文收藏，iCloud 多设备同步
 
 ### 法律顾问（AI 问答）
 - 统一走专家 Agent 系统，根据问题类型自动路由（法条查询 / 知识问答 / 案情分析），无需手动选择模式
-- 口语化问题自动规范化（"楼上噪音扰民" → 补充相邻关系、侵权责任等法律术语）
 - 思考过程逐步展示，参考法条点击跳转
 - 对话历史自动保存，重启后完整恢复（含专家上下文）
-- 支持 Gemini Flash、DeepSeek、Groq
+- 多轮追问：案情分析时自动识别缺失事实，追问用户补充（轮次上限可在设置中调整）
+- 每位用户免费体验 5 次；基础版买断（需自备 DeepSeek API Key）；畅用版订阅（内置 Key，每周 80 次额度）
 
 ---
 
@@ -30,14 +31,9 @@
 用户输入
     │
     ▼
-┌─────────────────────────────┐
-│       问题法律化改写         │  口语 → 补充法律性质、当事人关系、适用领域
-└─────────────┬───────────────┘
-              │
-              ▼
 ┌──────────────────────────────────────┐
 │    意图 + 模式联合分类                │  单次 LLM 调用，同时输出 intent + mode
-│  classifyIntentAndMode               │  含关键词 fast-path（< 15 字无历史）
+│  classifyIntentAndMode               │  含关键词 fast-path（< 8 字无历史）
 └──────┬───────────────┬───────────────┘
        │               │
   off_topic       legalQuery / followUp
@@ -69,7 +65,7 @@
 | `legalQuery` | 含法律性质的问题（含口语化纠纷描述） |
 | `followUp` | 基于已有案情的追问 |
 
-**Fast-path**：无历史对话 + 消息 < 15 字 + 不含法律关键词 → 直接判 `offTopic`，跳过 LLM。
+**Fast-path**：无历史对话 + 消息 < 8 字 + 命中明显问候词 → 直接判 `offTopic`，跳过 LLM。
 
 | QueryMode | 含义 | 路由特点 |
 |-----------|------|---------|
@@ -175,28 +171,6 @@ case / follow_up 问题
 
 ---
 
-### 问题改写流程
-
-```
-用户原始输入
-    │
-    ├─ 追问 / 极短问题（< 8 字）→ 跳过，原文传入
-    │
-    ▼
-┌─────────────────────────────────────────────┐
-│             rewriteToLegalForm              │
-│  • 补充法律性质（侵权 / 违约 / 相邻关系等）  │
-│  • 明确当事人关系（租户与房东 / 相邻业主等） │
-│  • 补充适用法律领域关键词                   │
-│  • 保留原始事实，不捏造细节                 │
-│  • 已规范的问题 → 原文返回                  │
-└─────────────────────────────────────────────┘
-    │
-    ▼
-改写后的问题（用于后续所有检索步骤）
-思考步骤展示「原始 → 改写」对比
-```
-
 ---
 
 ## 项目结构
@@ -205,18 +179,18 @@ case / follow_up 问题
 ChineseLawsSearch/
 ├── App/
 │   ├── ChineseLawsSearchApp.swift   # @main 入口
-│   ├── ContentView.swift            # 根视图，Tab 路由，导航状态，启动恢复
+│   ├── ContentView.swift            # 根视图，Tab 路由，导航状态，启动恢复，设置面板
 │   └── UserStore.swift              # 用户偏好 + 阅读记录（iCloud KV 同步）
 │
 ├── Services/
 │   ├── DatabaseManager.swift        # SQLite 封装（只读 bundle DB）
 │   ├── LegalTypes.swift             # 共享数据类型（RAGEvent / RAGCitation / MessageIntent 等）
-│   ├── LLMProvider.swift            # LLM 多后端抽象（Gemini / DeepSeek / Groq）
-│   └── ChatHistory.swift            # 对话历史持久化（iCloud Documents 同步）
+│   ├── LLMProvider.swift            # LLM 多后端抽象（DeepSeek / Groq / Gemini）+ Token 计数
+│   ├── PurchaseManager.swift        # StoreKit 2 内购管理（免费次数 / 基础版买断 / 畅用版订阅）
+│   └── ChatHistory.swift            # 对话历史持久化（iCloud Documents 同步，PersistActor 串行写入）
 │
 ├── Agents/
-│   ├── LegalExpertService.swift     # Expert pipeline 入口
-│   │                                  （意图分类 / 问题改写 / 追问 / general / law_lookup）
+│   ├── LegalExpertService.swift     # Expert pipeline 入口（意图分类 / 追问 / 三种查询模式）
 │   ├── ExpertGroups.swift           # 6 个专家组注册表
 │   ├── Core/
 │   │   └── ExpertModels.swift       # SubExpert / ExpertGroup / RequiredInfo 模型
@@ -230,7 +204,10 @@ ChineseLawsSearch/
 ├── Views/
 │   ├── TOCView.swift                # 目录浏览 + 内联搜索（常驻搜索栏）
 │   ├── LawDetailView.swift          # 条文详情 + 交叉引用 + 索引条
+│   ├── SearchView.swift             # 全局搜索面板（标题 + 条文双通道）
+│   ├── FavoritesView.swift          # 收藏条文列表（iCloud 同步）
 │   ├── LegalChatView.swift          # 法律顾问 UI + ViewModel + 历史侧栏
+│   ├── PaywallView.swift            # 内购 Paywall（基础版 / 畅用版）
 │   └── WelcomeView.swift            # 使用说明页（首次启动自动展示）
 │
 └── Utilities/
