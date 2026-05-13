@@ -53,6 +53,9 @@ struct GongbaoDoc: Identifiable {
     let url: String
     let rulingGist: String
     let keywords: String
+    /// 结构化关键词，key = 维度名，value = 该维度的词列表
+    /// 例：["法律类型": ["民事"], "审级": ["二审"], "地区": ["浙江省"], ...]
+    let keywordsMeta: [String: [String]]
     let fullText: String
 }
 
@@ -1007,7 +1010,7 @@ final class DatabaseManager {
                        COALESCE(d.issue,''), COALESCE(d.year,0),
                        COALESCE(d.pub_date,''), COALESCE(d.url,''),
                        COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
-                       COALESCE(d.full_text,'')
+                       d.keywords_meta, COALESCE(d.full_text,'')
                 FROM gongbao_docs_fts f
                 JOIN gongbao_docs d ON f.rowid = d.id
                 WHERE gongbao_docs_fts MATCH ?
@@ -1031,7 +1034,7 @@ final class DatabaseManager {
                        COALESCE(issue,''), COALESCE(year,0),
                        COALESCE(pub_date,''), COALESCE(url,''),
                        COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       COALESCE(full_text,'')
+                       keywords_meta, COALESCE(full_text,'')
                 FROM gongbao_docs
                 WHERE (title LIKE ? OR keywords LIKE ? OR case_number LIKE ?)
                 \(sourceFilterPlain)
@@ -1056,7 +1059,7 @@ final class DatabaseManager {
                        COALESCE(issue,''), COALESCE(year,0),
                        COALESCE(pub_date,''), COALESCE(url,''),
                        COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       COALESCE(full_text,'')
+                       keywords_meta, COALESCE(full_text,'')
                 FROM gongbao_docs
                 WHERE 1=1 \(sourceFilterPlain)
                 ORDER BY year DESC, issue_num DESC
@@ -1073,7 +1076,25 @@ final class DatabaseManager {
     }
 
     private func _rowToDoc(_ stmt: OpaquePointer?) -> GongbaoDoc {
-        GongbaoDoc(
+        // 解析 keywords_meta JSON（列11），失败时返回空字典
+        let metaJson = str(stmt, 11)
+        let keywordsMeta: [String: [String]]
+        if !metaJson.isEmpty,
+           let data = metaJson.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            var result: [String: [String]] = [:]
+            for (k, v) in parsed {
+                if let arr = v as? [String] {
+                    result[k] = arr
+                } else if let s = v as? String, !s.isEmpty {
+                    result[k] = [s]
+                }
+            }
+            keywordsMeta = result
+        } else {
+            keywordsMeta = [:]
+        }
+        return GongbaoDoc(
             id: Int(sqlite3_column_int(stmt, 0)),
             source: str(stmt, 1),
             caseNumber: str(stmt, 2),
@@ -1084,7 +1105,8 @@ final class DatabaseManager {
             url: str(stmt, 7),
             rulingGist: str(stmt, 8),
             keywords: str(stmt, 9),
-            fullText: str(stmt, 10)
+            keywordsMeta: keywordsMeta,
+            fullText: str(stmt, 12)
         )
     }
 
