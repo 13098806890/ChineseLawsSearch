@@ -65,9 +65,9 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 tabButton(title: "法律浏览", icon: "doc.text", tab: .browse)
+                tabButton(title: "人民法院公报", icon: "newspaper", tab: .gongbao)
                 tabButton(title: "法律咨询", icon: "message", tab: .chat)
                 tabButton(title: "收藏", icon: "star", tab: .favorites)
-                tabButton(title: "人民法院公报", icon: "newspaper", tab: .gongbao)
                 Button {
                     showSettings = true
                 } label: {

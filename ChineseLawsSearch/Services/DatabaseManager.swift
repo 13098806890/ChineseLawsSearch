@@ -994,14 +994,12 @@ final class DatabaseManager {
     private func _gongbaoDocs(source: String?, query: String, limit: Int) -> [GongbaoDoc] {
         guard let db = db else { return [] }
         var docs: [GongbaoDoc] = []
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let sourceFilter = source.map { "AND d.source = '\($0)'" } ?? ""
+        let sourceFilterPlain = source.map { "AND source = '\($0)'" } ?? ""
 
-        if query.trimmingCharacters(in: .whitespaces).count >= 2 {
-            // FTS 搜索
-            let ftsQuery = query.trimmingCharacters(in: .whitespaces)
-            var sourceClause = ""
-            if let source = source {
-                sourceClause = "AND d.source = '\(source)'"
-            }
+        if trimmed.count >= 3 {
+            // ≥3字：FTS trigram 精确搜索（title / ruling_gist / keywords / full_text）
             let sql = """
                 SELECT d.id, d.source, COALESCE(d.case_number,''), d.title,
                        COALESCE(d.issue,''), COALESCE(d.year,0),
@@ -1011,34 +1009,21 @@ final class DatabaseManager {
                 FROM gongbao_docs_fts f
                 JOIN gongbao_docs d ON f.rowid = d.id
                 WHERE gongbao_docs_fts MATCH ?
-                \(sourceClause)
+                \(sourceFilter)
                 ORDER BY d.year DESC, d.issue_num DESC
                 LIMIT \(limit)
                 """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_text(stmt, 1, (ftsQuery as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 1, (trimmed as NSString).utf8String, -1, nil)
             while sqlite3_step(stmt) == SQLITE_ROW {
-                docs.append(GongbaoDoc(
-                    id: Int(sqlite3_column_int(stmt, 0)),
-                    source: str(stmt, 1),
-                    caseNumber: str(stmt, 2),
-                    title: str(stmt, 3),
-                    issue: str(stmt, 4),
-                    year: Int(sqlite3_column_int(stmt, 5)),
-                    pubDate: str(stmt, 6),
-                    url: str(stmt, 7),
-                    rulingGist: str(stmt, 8),
-                    keywords: str(stmt, 9),
-                    fullText: str(stmt, 10)
-                ))
+                docs.append(_rowToDoc(stmt))
             }
-        } else {
-            // 无关键词，按 source 过滤浏览
-            var whereParts: [String] = []
-            if let source = source { whereParts.append("source = '\(source)'") }
-            let whereClause = whereParts.isEmpty ? "" : "WHERE \(whereParts.joined(separator: " AND "))"
+
+        } else if trimmed.count >= 1 {
+            // 1-2字：LIKE 搜索标题、关键词、案例号
+            let pattern = "%\(trimmed)%"
             let sql = """
                 SELECT id, source, COALESCE(case_number,''), title,
                        COALESCE(issue,''), COALESCE(year,0),
@@ -1046,7 +1031,32 @@ final class DatabaseManager {
                        COALESCE(ruling_gist,''), COALESCE(keywords,''),
                        COALESCE(full_text,'')
                 FROM gongbao_docs
-                \(whereClause)
+                WHERE (title LIKE ? OR keywords LIKE ? OR case_number LIKE ?)
+                \(sourceFilterPlain)
+                ORDER BY year DESC, issue_num DESC
+                LIMIT \(limit)
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            let p = (pattern as NSString).utf8String
+            sqlite3_bind_text(stmt, 1, p, -1, nil)
+            sqlite3_bind_text(stmt, 2, p, -1, nil)
+            sqlite3_bind_text(stmt, 3, p, -1, nil)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                docs.append(_rowToDoc(stmt))
+            }
+
+        } else {
+            // 无关键词：按来源浏览，按年份+期号降序（最新在前）
+            let sql = """
+                SELECT id, source, COALESCE(case_number,''), title,
+                       COALESCE(issue,''), COALESCE(year,0),
+                       COALESCE(pub_date,''), COALESCE(url,''),
+                       COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                       COALESCE(full_text,'')
+                FROM gongbao_docs
+                WHERE 1=1 \(sourceFilterPlain)
                 ORDER BY year DESC, issue_num DESC
                 LIMIT \(limit)
                 """
@@ -1054,22 +1064,26 @@ final class DatabaseManager {
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
             while sqlite3_step(stmt) == SQLITE_ROW {
-                docs.append(GongbaoDoc(
-                    id: Int(sqlite3_column_int(stmt, 0)),
-                    source: str(stmt, 1),
-                    caseNumber: str(stmt, 2),
-                    title: str(stmt, 3),
-                    issue: str(stmt, 4),
-                    year: Int(sqlite3_column_int(stmt, 5)),
-                    pubDate: str(stmt, 6),
-                    url: str(stmt, 7),
-                    rulingGist: str(stmt, 8),
-                    keywords: str(stmt, 9),
-                    fullText: str(stmt, 10)
-                ))
+                docs.append(_rowToDoc(stmt))
             }
         }
         return docs
+    }
+
+    private func _rowToDoc(_ stmt: OpaquePointer?) -> GongbaoDoc {
+        GongbaoDoc(
+            id: Int(sqlite3_column_int(stmt, 0)),
+            source: str(stmt, 1),
+            caseNumber: str(stmt, 2),
+            title: str(stmt, 3),
+            issue: str(stmt, 4),
+            year: Int(sqlite3_column_int(stmt, 5)),
+            pubDate: str(stmt, 6),
+            url: str(stmt, 7),
+            rulingGist: str(stmt, 8),
+            keywords: str(stmt, 9),
+            fullText: str(stmt, 10)
+        )
     }
 
     // MARK: 工具

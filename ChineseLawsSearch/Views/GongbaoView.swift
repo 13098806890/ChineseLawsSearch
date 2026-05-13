@@ -30,6 +30,15 @@ enum GongbaoSource: String, CaseIterable, Identifiable {
         case .cpwsxd: return "doc.text.magnifyingglass"
         }
     }
+
+    /// 搜索框占位文字，按来源差异化提示
+    var searchPlaceholder: String {
+        switch self {
+        case .al:     return "案件名称、案例编号、关键词…"
+        case .sfwj:   return "文件标题、关键词…"
+        case .cpwsxd: return "案件名称、摘要关键词…"
+        }
+    }
 }
 
 // MARK: - 主视图
@@ -57,19 +66,16 @@ struct GongbaoView: View {
     private var compactLayout: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // 来源选择栏
                 sourcePickerBar
                     .padding(.horizontal)
                     .padding(.top, 8)
 
-                // 搜索框
                 searchBar
                     .padding(.horizontal)
                     .padding(.vertical, 8)
 
                 Divider()
 
-                // 列表
                 if isLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -83,7 +89,7 @@ struct GongbaoView: View {
             }
         }
         .onAppear { reload() }
-        .onChange(of: selectedSource) { reload() }
+        .onChange(of: selectedSource) { searchText = ""; reload() }
         .onChange(of: searchText) { reload() }
     }
 
@@ -123,7 +129,7 @@ struct GongbaoView: View {
             }
         }
         .onAppear { reload() }
-        .onChange(of: selectedSource) { reload() }
+        .onChange(of: selectedSource) { searchText = ""; reload() }
         .onChange(of: searchText) { reload() }
     }
 
@@ -157,13 +163,13 @@ struct GongbaoView: View {
         }
     }
 
-    // MARK: 搜索框
+    // MARK: 搜索框（占位文字按来源变化）
 
     private var searchBar: some View {
         HStack {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("搜索标题、摘要、关键词…", text: $searchText)
+            TextField(selectedSource.searchPlaceholder, text: $searchText)
                 .submitLabel(.search)
             if !searchText.isEmpty {
                 Button { searchText = "" } label: {
@@ -238,12 +244,10 @@ struct GongbaoDocRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // 标题
             Text(doc.title)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(2)
 
-            // 案例号 + 期刊
             HStack(spacing: 8) {
                 if !doc.caseNumber.isEmpty {
                     Label(doc.caseNumber, systemImage: "bookmark.fill")
@@ -258,7 +262,6 @@ struct GongbaoDocRow: View {
                 Spacer()
             }
 
-            // 裁判摘要
             if !doc.rulingGist.isEmpty {
                 Text(doc.rulingGist)
                     .font(.caption)
@@ -266,7 +269,6 @@ struct GongbaoDocRow: View {
                     .lineLimit(2)
             }
 
-            // 关键词
             if !doc.keywords.isEmpty {
                 Text(doc.keywords)
                     .font(.caption2)
@@ -282,21 +284,17 @@ struct GongbaoDocRow: View {
 
 struct GongbaoDetailView: View {
     let doc: GongbaoDoc
-    @State private var showShareSheet = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // 标题
                 Text(doc.title)
                     .font(.title3.weight(.semibold))
 
-                // 元数据行
                 metaRow
 
                 Divider()
 
-                // 裁判摘要 / 裁判要点
                 if !doc.rulingGist.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("裁判要点", systemImage: "text.quote")
@@ -310,7 +308,6 @@ struct GongbaoDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
 
-                // 关键词
                 if !doc.keywords.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("关键词").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
@@ -320,7 +317,6 @@ struct GongbaoDetailView: View {
 
                 Divider()
 
-                // 全文
                 Text(doc.fullText)
                     .font(.callout)
                     .textSelection(.enabled)
@@ -366,7 +362,7 @@ struct GongbaoDetailView: View {
     }
 }
 
-// MARK: - GongbaoDoc: Identifiable, Hashable, Equatable for NavigationLink/selection
+// MARK: - GongbaoDoc: Hashable, Equatable
 
 extension GongbaoDoc: Hashable, Equatable {
     static func == (lhs: GongbaoDoc, rhs: GongbaoDoc) -> Bool { lhs.id == rhs.id }
