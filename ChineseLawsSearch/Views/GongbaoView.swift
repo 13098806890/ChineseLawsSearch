@@ -50,6 +50,7 @@ struct GongbaoView: View {
     @State private var docs: [GongbaoDoc] = []
     @State private var isLoading = false
     @State private var searchTask: Task<Void, Never>? = nil
+    @State private var hasLoaded = false
 
     @Environment(\.horizontalSizeClass) private var hSizeClass
     private var isCompact: Bool { hSizeClass == .compact }
@@ -74,7 +75,11 @@ struct GongbaoView: View {
         }
         .navigationTitle("人民法院公报")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { scheduleReload() }
+        .onAppear {
+            guard !hasLoaded else { return }
+            hasLoaded = true
+            scheduleReload(immediate: true)
+        }
         .onChange(of: selectedSource) {
             // 切换来源时清空搜索词，然后统一触发一次 reload
             searchText = ""
