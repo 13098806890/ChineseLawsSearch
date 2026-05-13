@@ -42,6 +42,20 @@ struct SearchResult: Identifiable {
     let nodeArticleNum: Int?
 }
 
+struct GongbaoDoc: Identifiable {
+    let id: Int
+    let source: String      // "cpwsxd" | "al" | "sfwj"
+    let caseNumber: String  // 仅 al 有
+    let title: String
+    let issue: String
+    let year: Int
+    let pubDate: String
+    let url: String
+    let rulingGist: String
+    let keywords: String
+    let fullText: String
+}
+
 // 某条文引用的其他法条（出向）
 struct OutgoingRef: Identifiable {
     let id: Int
@@ -247,17 +261,19 @@ final class DatabaseManager {
 
     // MARK: 某部法律的全部出向引用（按条文分组用）
 
-    func outgoingRefsForLaw(lawId: Int) -> [OutgoingRef] {
-        queue.sync { _outgoingRefsForLaw(lawId: lawId) }
+    func outgoingRefsForLaw(lawId: Int, flkOnly: Bool = false) -> [OutgoingRef] {
+        queue.sync { _outgoingRefsForLaw(lawId: lawId, flkOnly: flkOnly) }
     }
 
-    private func _outgoingRefsForLaw(lawId: Int) -> [OutgoingRef] {
+    private func _outgoingRefsForLaw(lawId: Int, flkOnly: Bool) -> [OutgoingRef] {
+        let flkFilter = flkOnly ? "AND l.is_flk = 1" : ""
         let sql = """
             SELECT ar.id, ar.from_article_num, ar.raw_text, ar.to_law_id, l.title, ar.to_article_num
             FROM article_references ar
             JOIN laws l ON ar.to_law_id = l.id
             WHERE ar.from_law_id = ?
               AND ar.resolved = 1 AND ar.to_article_num IS NOT NULL
+              \(flkFilter)
             """
         var stmt: OpaquePointer?
         var result: [OutgoingRef] = []
@@ -279,11 +295,12 @@ final class DatabaseManager {
 
     // MARK: 某部法律的全部入向引用（按条文分组用）
 
-    func incomingRefsForLaw(lawId: Int) -> [IncomingRef] {
-        queue.sync { _incomingRefsForLaw(lawId: lawId) }
+    func incomingRefsForLaw(lawId: Int, flkOnly: Bool = false) -> [IncomingRef] {
+        queue.sync { _incomingRefsForLaw(lawId: lawId, flkOnly: flkOnly) }
     }
 
-    private func _incomingRefsForLaw(lawId: Int) -> [IncomingRef] {
+    private func _incomingRefsForLaw(lawId: Int, flkOnly: Bool) -> [IncomingRef] {
+        let flkFilter = flkOnly ? "AND l.is_flk = 1" : ""
         let sql = """
             SELECT ar.id, ar.to_article_num, ar.from_law_id, l.title, ar.from_article_num, n.article_number
             FROM article_references ar
@@ -291,6 +308,7 @@ final class DatabaseManager {
             JOIN nodes n ON ar.from_node_id = n.id
             WHERE ar.to_law_id = ?
               AND ar.resolved = 1 AND ar.ref_type = 'cross_law'
+              \(flkFilter)
             """
         var stmt: OpaquePointer?
         var result: [IncomingRef] = []
@@ -965,6 +983,93 @@ final class DatabaseManager {
             ))
         }
         return result
+    }
+
+    // MARK: - 公报查询
+
+    func gongbaoDocs(source: String?, query: String, limit: Int = 100) -> [GongbaoDoc] {
+        queue.sync { _gongbaoDocs(source: source, query: query, limit: limit) }
+    }
+
+    private func _gongbaoDocs(source: String?, query: String, limit: Int) -> [GongbaoDoc] {
+        guard let db = db else { return [] }
+        var docs: [GongbaoDoc] = []
+
+        if query.trimmingCharacters(in: .whitespaces).count >= 2 {
+            // FTS 搜索
+            let ftsQuery = query.trimmingCharacters(in: .whitespaces)
+            var sourceClause = ""
+            if let source = source {
+                sourceClause = "AND d.source = '\(source)'"
+            }
+            let sql = """
+                SELECT d.id, d.source, COALESCE(d.case_number,''), d.title,
+                       COALESCE(d.issue,''), COALESCE(d.year,0),
+                       COALESCE(d.pub_date,''), COALESCE(d.url,''),
+                       COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
+                       COALESCE(d.full_text,'')
+                FROM gongbao_docs_fts f
+                JOIN gongbao_docs d ON f.rowid = d.id
+                WHERE gongbao_docs_fts MATCH ?
+                \(sourceClause)
+                ORDER BY d.year DESC, d.issue_num DESC
+                LIMIT \(limit)
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, (ftsQuery as NSString).utf8String, -1, nil)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                docs.append(GongbaoDoc(
+                    id: Int(sqlite3_column_int(stmt, 0)),
+                    source: str(stmt, 1),
+                    caseNumber: str(stmt, 2),
+                    title: str(stmt, 3),
+                    issue: str(stmt, 4),
+                    year: Int(sqlite3_column_int(stmt, 5)),
+                    pubDate: str(stmt, 6),
+                    url: str(stmt, 7),
+                    rulingGist: str(stmt, 8),
+                    keywords: str(stmt, 9),
+                    fullText: str(stmt, 10)
+                ))
+            }
+        } else {
+            // 无关键词，按 source 过滤浏览
+            var whereParts: [String] = []
+            if let source = source { whereParts.append("source = '\(source)'") }
+            let whereClause = whereParts.isEmpty ? "" : "WHERE \(whereParts.joined(separator: " AND "))"
+            let sql = """
+                SELECT id, source, COALESCE(case_number,''), title,
+                       COALESCE(issue,''), COALESCE(year,0),
+                       COALESCE(pub_date,''), COALESCE(url,''),
+                       COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                       COALESCE(full_text,'')
+                FROM gongbao_docs
+                \(whereClause)
+                ORDER BY year DESC, issue_num DESC
+                LIMIT \(limit)
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                docs.append(GongbaoDoc(
+                    id: Int(sqlite3_column_int(stmt, 0)),
+                    source: str(stmt, 1),
+                    caseNumber: str(stmt, 2),
+                    title: str(stmt, 3),
+                    issue: str(stmt, 4),
+                    year: Int(sqlite3_column_int(stmt, 5)),
+                    pubDate: str(stmt, 6),
+                    url: str(stmt, 7),
+                    rulingGist: str(stmt, 8),
+                    keywords: str(stmt, 9),
+                    fullText: str(stmt, 10)
+                ))
+            }
+        }
+        return docs
     }
 
     // MARK: 工具

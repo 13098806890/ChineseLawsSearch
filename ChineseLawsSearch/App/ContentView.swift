@@ -33,7 +33,7 @@ struct ContentView: View {
     @StateObject private var chatVM       = LegalChatViewModel()
     @StateObject private var historyStore = ChatHistoryStore()
 
-    enum Tab { case browse, chat, favorites }
+    enum Tab { case browse, chat, favorites, gongbao }
 
     struct BackItem {
         let tab: Tab
@@ -56,6 +56,9 @@ struct ContentView: View {
                 favoritesView
                     .opacity(tab == .favorites ? 1 : 0)
                     .allowsHitTesting(tab == .favorites)
+                gongbaoView
+                    .opacity(tab == .gongbao ? 1 : 0)
+                    .allowsHitTesting(tab == .gongbao)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -64,6 +67,7 @@ struct ContentView: View {
                 tabButton(title: "法律浏览", icon: "doc.text", tab: .browse)
                 tabButton(title: "法律咨询", icon: "message", tab: .chat)
                 tabButton(title: "收藏", icon: "star", tab: .favorites)
+                tabButton(title: "人民法院公报", icon: "newspaper", tab: .gongbao)
                 Button {
                     showSettings = true
                 } label: {
@@ -184,6 +188,12 @@ struct ContentView: View {
             .environmentObject(userStore)
     }
 
+    // MARK: Gongbao
+
+    private var gongbaoView: some View {
+        GongbaoView()
+    }
+
     // MARK: Tab button
 
     private func tabButton(title: String, icon: String, tab t: Tab) -> some View {
@@ -214,7 +224,7 @@ struct ContentView: View {
     private func persistBackStack() {
         let items = backStack.map { item in
             PersistedBackItem(
-                tab: item.tab == .browse ? "browse" : item.tab == .chat ? "chat" : "favorites",
+                tab: item.tab == .browse ? "browse" : item.tab == .chat ? "chat" : item.tab == .gongbao ? "gongbao" : "favorites",
                 lawId: item.target?.law.id,
                 articleNum: item.target?.scrollToArticle
             )
@@ -231,7 +241,7 @@ struct ContentView: View {
 
         let persistedItems = userStore.loadBackStack()
         backStack = persistedItems.compactMap { item -> BackItem? in
-            let t: Tab = item.tab == "browse" ? .browse : item.tab == "chat" ? .chat : .favorites
+            let t: Tab = item.tab == "browse" ? .browse : item.tab == "chat" ? .chat : item.tab == "gongbao" ? .gongbao : .favorites
             if let lid = item.lawId, let meta = DatabaseManager.shared.lawMeta(id: lid) {
                 return BackItem(tab: t, target: LawTarget(law: meta, scrollToArticle: item.articleNum))
             } else {
