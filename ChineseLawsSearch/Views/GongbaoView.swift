@@ -310,13 +310,18 @@ struct GongbaoDetailView: View {
 
                 Divider()
 
-                // 用段落分割避免一次性渲染超大 Text
+                // 用段落分割避免一次性渲染超大 Text；过滤孤立标点行，区分标题行与正文
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(doc.fullText.components(separatedBy: "\n").enumerated()), id: \.offset) { _, para in
                         let line = para.trimmingCharacters(in: .whitespaces)
-                        if !line.isEmpty {
+                        // 跳过空行和孤立括号行（如单独的 "】" "】" "]"）
+                        let isJunk = line.isEmpty || line.allSatisfy { "】】[]【【「」『』".contains($0) }
+                        if !isJunk {
+                            // 【标题】行用加粗样式
+                            let isHeading = line.hasPrefix("【") || line.hasPrefix("【")
                             Text(line)
-                                .font(.callout)
+                                .font(isHeading ? .callout.weight(.semibold) : .callout)
+                                .foregroundStyle(isHeading ? AppColors.shared.searchHighlight : .primary)
                                 .textSelection(.enabled)
                         }
                     }
