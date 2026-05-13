@@ -1551,6 +1551,21 @@ final class LegalChatViewModel: ObservableObject {
                         lines.append("《\(c.lawTitle)》\(c.articleNumber)：\(c.content)\n")
                     }
                 }
+                if !msg.gongbaoCitations.isEmpty {
+                    lines.append("相关公报案例：\n")
+                    for (i, c) in msg.gongbaoCitations.enumerated() {
+                        let sourceLabel: String
+                        switch c.source {
+                        case "al":     sourceLabel = "指导案例"
+                        case "sfwj":   sourceLabel = "司法文件"
+                        case "cpwsxd": sourceLabel = "裁判文书"
+                        default:       sourceLabel = c.source
+                        }
+                        var entry = "\(i + 1). 《\(c.title)》（\(sourceLabel)）"
+                        if !c.rulingGist.isEmpty { entry += "\n   裁判要点：\(c.rulingGist)" }
+                        lines.append(entry + "\n")
+                    }
+                }
             }
         }
         lines.append("\n---\n免责声明：以上内容由 AI 自动生成，仅供参考，不构成正式法律意见。具体案件建议咨询执业律师。")
