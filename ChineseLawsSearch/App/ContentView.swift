@@ -25,6 +25,7 @@ struct LawTarget: Identifiable, Hashable {
 struct ContentView: View {
     @State private var tab: Tab = .browse
     @State private var target: LawTarget?
+    @State private var selectedGongbaoDoc: GongbaoDoc?
     @State private var showSettings = false
     @State private var showWelcome = false
     @State private var backStack: [BackItem] = []
@@ -191,7 +192,34 @@ struct ContentView: View {
     // MARK: Gongbao
 
     private var gongbaoView: some View {
-        GongbaoView()
+        Group {
+            if isCompact {
+                NavigationStack {
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc)
+                        .navigationDestination(item: $selectedGongbaoDoc) { doc in
+                            GongbaoDetailView(doc: doc)
+                        }
+                }
+            } else {
+                NavigationSplitView {
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc)
+                } detail: {
+                    if let doc = selectedGongbaoDoc {
+                        GongbaoDetailView(doc: doc)
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "newspaper")
+                                .font(.system(size: 32, weight: .light))
+                                .foregroundStyle(.secondary)
+                            Text("选择条目")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Tab button

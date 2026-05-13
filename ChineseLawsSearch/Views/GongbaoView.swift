@@ -31,7 +31,6 @@ enum GongbaoSource: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 搜索框占位文字，按来源差异化提示
     var searchPlaceholder: String {
         switch self {
         case .al:     return "案件名称、案例编号、关键词…"
@@ -41,96 +40,47 @@ enum GongbaoSource: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - 主视图
+// MARK: - 主视图（sidebar list，供 ContentView 包装进 SplitView / NavigationStack）
 
 struct GongbaoView: View {
+    @Binding var selectedDoc: GongbaoDoc?
+
     @State private var selectedSource: GongbaoSource = .al
     @State private var searchText: String = ""
-    @State private var selectedDoc: GongbaoDoc? = nil
     @State private var docs: [GongbaoDoc] = []
     @State private var isLoading = false
+    @State private var searchTask: Task<Void, Never>? = nil
 
     @Environment(\.horizontalSizeClass) private var hSizeClass
     private var isCompact: Bool { hSizeClass == .compact }
 
     var body: some View {
-        if isCompact {
-            compactLayout
-        } else {
-            wideLayout
-        }
-    }
+        VStack(spacing: 0) {
+            sourcePickerBar
+                .padding(.horizontal)
+                .padding(.top, 8)
 
-    // MARK: Compact（iPhone）
+            searchBar
+                .padding(.horizontal)
+                .padding(.vertical, 8)
 
-    private var compactLayout: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                sourcePickerBar
-                    .padding(.horizontal)
-                    .padding(.top, 8)
+            Divider()
 
-                searchBar
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-
-                Divider()
-
-                if isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    docList(docs: docs)
-                }
-            }
-            .navigationTitle("人民法院公报")
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(item: $selectedDoc) { doc in
-                GongbaoDetailView(doc: doc)
-            }
-        }
-        .onAppear { reload() }
-        .onChange(of: selectedSource) { searchText = ""; reload() }
-        .onChange(of: searchText) { reload() }
-    }
-
-    // MARK: Wide（iPad / Mac）
-
-    private var wideLayout: some View {
-        NavigationSplitView {
-            VStack(spacing: 0) {
-                sourcePickerBar
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                searchBar
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                Divider()
-                if isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    docList(docs: docs)
-                }
-            }
-            .navigationTitle("人民法院公报")
-            .navigationBarTitleDisplayMode(.inline)
-        } detail: {
-            if let doc = selectedDoc {
-                GongbaoDetailView(doc: doc)
+            if isLoading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "doc.text")
-                        .font(.system(size: 32, weight: .light))
-                        .foregroundStyle(.secondary)
-                    Text("选择条目")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                docList(docs: docs)
             }
         }
-        .onAppear { reload() }
-        .onChange(of: selectedSource) { searchText = ""; reload() }
-        .onChange(of: searchText) { reload() }
+        .navigationTitle("人民法院公报")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { scheduleReload() }
+        .onChange(of: selectedSource) {
+            // 切换来源时清空搜索词，然后统一触发一次 reload
+            searchText = ""
+            scheduleReload(immediate: true)
+        }
+        .onChange(of: searchText) { scheduleReload() }
     }
 
     // MARK: 来源选择栏
@@ -163,7 +113,7 @@ struct GongbaoView: View {
         }
     }
 
-    // MARK: 搜索框（占位文字按来源变化）
+    // MARK: 搜索框
 
     private var searchBar: some View {
         HStack {
@@ -210,6 +160,7 @@ struct GongbaoView: View {
                         selectedDoc = doc
                     } label: {
                         GongbaoDocRow(doc: doc)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -221,15 +172,23 @@ struct GongbaoView: View {
         }
     }
 
-    // MARK: 数据加载
+    // MARK: 防抖加载（300 ms）
 
-    private func reload() {
-        isLoading = true
+    private func scheduleReload(immediate: Bool = false) {
+        searchTask?.cancel()
+        let delay: UInt64 = immediate ? 0 : 300_000_000 // 300ms
         let src = selectedSource.rawValue
         let q = searchText
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = DatabaseManager.shared.gongbaoDocs(source: src, query: q)
-            DispatchQueue.main.async {
+        searchTask = Task {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { isLoading = true }
+            let result = await Task.detached(priority: .userInitiated) {
+                DatabaseManager.shared.gongbaoDocs(source: src, query: q)
+            }.value
+            await MainActor.run {
                 docs = result
                 isLoading = false
             }
@@ -242,9 +201,31 @@ struct GongbaoView: View {
 struct GongbaoDocRow: View {
     let doc: GongbaoDoc
 
+    /// 去掉标题中与 case_number 重复的前缀（al 来源标题常以案号开头）
+    private var cleanTitle: String {
+        let cn = doc.caseNumber
+        guard !cn.isEmpty, doc.title.hasPrefix(cn) else { return doc.title }
+        return doc.title.drop(while: { _ in false })  // 保留原，下面处理
+            .replacingOccurrences(of: cn, with: "", range: doc.title.range(of: cn))
+            .trimmingCharacters(in: .init(charactersIn: "　 ——-：:"))
+            .isEmpty ? doc.title :
+            doc.title
+                .replacingOccurrences(of: cn, with: "", range: doc.title.range(of: cn))
+                .trimmingCharacters(in: .init(charactersIn: "　 ——-：:"))
+    }
+
+    /// sfwj 通常 ruling_gist 为空，用全文前 80 字作为预览
+    private var preview: String {
+        if !doc.rulingGist.isEmpty { return doc.rulingGist }
+        let text = doc.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        let limit = text.index(text.startIndex, offsetBy: min(80, text.count))
+        return String(text[..<limit]) + (text.count > 80 ? "…" : "")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(doc.title)
+            Text(cleanTitle)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(2)
 
@@ -262,8 +243,8 @@ struct GongbaoDocRow: View {
                 Spacer()
             }
 
-            if !doc.rulingGist.isEmpty {
-                Text(doc.rulingGist)
+            if !preview.isEmpty {
+                Text(preview)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -285,10 +266,18 @@ struct GongbaoDocRow: View {
 struct GongbaoDetailView: View {
     let doc: GongbaoDoc
 
+    private var cleanTitle: String {
+        let cn = doc.caseNumber
+        guard !cn.isEmpty, let r = doc.title.range(of: cn) else { return doc.title }
+        let trimmed = doc.title.replacingCharacters(in: r, with: "")
+            .trimmingCharacters(in: .init(charactersIn: "　 ——-：:"))
+        return trimmed.isEmpty ? doc.title : trimmed
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(doc.title)
+                Text(cleanTitle)
                     .font(.title3.weight(.semibold))
 
                 metaRow
@@ -297,9 +286,13 @@ struct GongbaoDetailView: View {
 
                 if !doc.rulingGist.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("裁判要点", systemImage: "text.quote")
-                            .font(.headline)
-                            .foregroundStyle(AppColors.shared.searchHighlight)
+                        HStack(spacing: 4) {
+                            Image(systemName: "quote.bubble")
+                                .foregroundStyle(AppColors.shared.searchHighlight)
+                            Text("裁判要点")
+                                .font(.headline)
+                                .foregroundStyle(AppColors.shared.searchHighlight)
+                        }
                         Text(doc.rulingGist)
                             .font(.callout)
                     }
@@ -317,9 +310,17 @@ struct GongbaoDetailView: View {
 
                 Divider()
 
-                Text(doc.fullText)
-                    .font(.callout)
-                    .textSelection(.enabled)
+                // 用段落分割避免一次性渲染超大 Text
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(doc.fullText.components(separatedBy: "\n").enumerated()), id: \.offset) { _, para in
+                        let line = para.trimmingCharacters(in: .whitespaces)
+                        if !line.isEmpty {
+                            Text(line)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
             }
             .padding()
         }
@@ -370,5 +371,7 @@ extension GongbaoDoc: Hashable, Equatable {
 }
 
 #Preview {
-    GongbaoView()
+    NavigationStack {
+        GongbaoView(selectedDoc: .constant(nil))
+    }
 }

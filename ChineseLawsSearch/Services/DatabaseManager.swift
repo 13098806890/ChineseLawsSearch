@@ -987,7 +987,7 @@ final class DatabaseManager {
 
     // MARK: - 公报查询
 
-    func gongbaoDocs(source: String?, query: String, limit: Int = 100) -> [GongbaoDoc] {
+    func gongbaoDocs(source: String?, query: String, limit: Int = 500) -> [GongbaoDoc] {
         queue.sync { _gongbaoDocs(source: source, query: query, limit: limit) }
     }
 
@@ -1000,6 +1000,8 @@ final class DatabaseManager {
 
         if trimmed.count >= 3 {
             // ≥3字：FTS trigram 精确搜索（title / ruling_gist / keywords / full_text）
+            // 转义 FTS5 特殊字符：双引号翻倍后用引号包裹，避免 MATCH 语法错误
+            let escaped = "\"" + trimmed.replacingOccurrences(of: "\"", with: "\"\"") + "\""
             let sql = """
                 SELECT d.id, d.source, COALESCE(d.case_number,''), d.title,
                        COALESCE(d.issue,''), COALESCE(d.year,0),
@@ -1016,7 +1018,7 @@ final class DatabaseManager {
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_text(stmt, 1, (trimmed as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 1, (escaped as NSString).utf8String, -1, nil)
             while sqlite3_step(stmt) == SQLITE_ROW {
                 docs.append(_rowToDoc(stmt))
             }

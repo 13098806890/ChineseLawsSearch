@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct LawDetailView: View {
     let target: LawTarget
@@ -14,6 +15,7 @@ struct LawDetailView: View {
     @EnvironmentObject private var userStore: UserStore
 
     @State private var nodes: [LawNode] = []
+    @State private var isLoadingNodes = true
     @State private var outgoingMap: [Int: [OutgoingRef]] = [:]
     @State private var incomingMap: [Int: [IncomingRef]] = [:]
     @State private var highlightedArticle: Int? = nil
@@ -67,6 +69,9 @@ struct LawDetailView: View {
                         outgoing: node.articleNum.flatMap { outgoingMap[$0] } ?? [],
                         incoming: node.articleNum.flatMap { incomingMap[$0] } ?? [],
                         highlighted: node.articleNum != nil && node.articleNum == highlightedArticle,
+                        highlightQuery: searchQuery.trimmingCharacters(in: .whitespaces),
+                        lawId: law.id,
+                        lawTitle: law.title,
                         navigate: navigate
                     )
                     .id(node.id)
@@ -129,29 +134,62 @@ struct LawDetailView: View {
                 }
             }
         }
-        .task(id: target) {
+        .overlay {
+            if isLoadingNodes {
+                ZStack {
+                    Color(.systemBackground).opacity(0.85)
+                    ProgressView()
+                        .scaleEffect(1.2)
+                }
+                .ignoresSafeArea()
+            }
+        }
+        .task(id: "\(target.law.id)-\(userStore.flkMode)") {
+            // 仅在切换法律或法考模式变化时重新加载，同法律内跳条文走 onChange
             let lawId = law.id
+            let flk   = userStore.flkMode
             highlightedArticle = nil
-            scrollPosition = -1
+            isLoadingNodes = true
 
-            async let nodesTask = DatabaseManager.shared.nodes(lawId: lawId)
-            async let ogTask    = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId)
-            async let icTask    = DatabaseManager.shared.incomingRefsForLaw(lawId: lawId)
-            let (loadedNodes, ogList, icList) = await (nodesTask, ogTask, icTask)
+            // 先加载节点，与目标滚动位置一起提交（单次渲染，不产生跳动）
+            let loadedNodes = await DatabaseManager.shared.nodes(lawId: lawId)
+
+            // 确定初始滚动位置：有目标条文则定位，否则回顶
+            let targetNodeId: Int?
+            if let artNum = target.scrollToArticle {
+                targetNodeId = loadedNodes.first(where: { $0.articleNum == artNum })?.id
+            } else {
+                targetNodeId = nil
+            }
+
+            // 节点 + 初始位置一次性写入，SwiftUI 批量处理为单帧，无需 sleep
             nodes = loadedNodes
+            isLoadingNodes = false
+            scrollPosition = targetNodeId ?? -1
+
+            // 引用关系并行加载（不阻塞渲染，加载完后静默更新）
+            async let ogTask = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId, flkOnly: flk)
+            async let icTask = DatabaseManager.shared.incomingRefsForLaw(lawId: lawId, flkOnly: flk)
+            let (ogList, icList) = await (ogTask, icTask)
             outgoingMap = Dictionary(grouping: ogList, by: \.fromArticleNum)
             incomingMap = Dictionary(grouping: icList, by: \.toArticleNum)
 
-            if let artNum = target.scrollToArticle,
-               let targetNode = loadedNodes.first(where: { $0.articleNum == artNum }) {
-                try? await Task.sleep(for: .milliseconds(50))
-                scrollPosition = targetNode.id
-                withAnimation(.easeIn(duration: 0.2)) {
-                    highlightedArticle = artNum
-                }
+            // 高亮动画（引用加载完后再做，不影响滚动）
+            if let artNum = target.scrollToArticle {
+                withAnimation(.easeIn(duration: 0.2)) { highlightedArticle = artNum }
                 try? await Task.sleep(for: .seconds(1.5))
-                withAnimation(.easeOut(duration: 0.6)) {
-                    highlightedArticle = nil
+                withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
+            }
+        }
+        .onChange(of: target.scrollToArticle) { _, artNum in
+            // 同一部法律内跳转：节点已加载，直接定位，不重触 task
+            guard let artNum else { return }
+            if let targetNode = nodes.first(where: { $0.articleNum == artNum }) {
+                scrollPosition = targetNode.id
+                withAnimation(.easeIn(duration: 0.2)) { highlightedArticle = artNum }
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
                 }
             }
         }
@@ -224,7 +262,21 @@ struct NodeRowView: View {
     let outgoing: [OutgoingRef]
     let incoming: [IncomingRef]
     let highlighted: Bool
+    var highlightQuery: String = ""
+    let lawId: Int
+    let lawTitle: String
     let navigate: (Int, Int?) -> Void
+
+    @EnvironmentObject private var userStore: UserStore
+
+    private var articleFont: Font {
+        switch userStore.articleFontSize {
+        case "small":  return .footnote
+        case "large":  return .title3
+        case "xlarge": return .title2
+        default:       return .body
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -250,10 +302,38 @@ struct NodeRowView: View {
             default: // article
                 ArticleView(
                     content: node.content,
+                    font: articleFont,
+                    highlightQuery: highlightQuery,
                     outgoing: outgoing,
                     incoming: incoming,
                     navigate: navigate
                 )
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = node.content
+                    } label: {
+                        Label("复制条文", systemImage: "doc.on.doc")
+                    }
+                    if let artNum = node.articleNum {
+                        let isFav = userStore.isFavorited(lawId: lawId, articleNum: artNum)
+                        Button {
+                            if isFav {
+                                userStore.removeFavorite(lawId: lawId, articleNum: artNum)
+                            } else {
+                                userStore.addFavorite(FavoriteArticle(
+                                    lawId: lawId,
+                                    lawTitle: lawTitle,
+                                    articleNum: artNum,
+                                    articleNumber: node.title,
+                                    content: node.content
+                                ))
+                            }
+                        } label: {
+                            Label(isFav ? "取消收藏" : "收藏条文",
+                                  systemImage: isFav ? "star.slash" : "star")
+                        }
+                    }
+                }
                 Divider().padding(.leading).opacity(0.4)
             }
         }
@@ -266,18 +346,29 @@ struct NodeRowView: View {
 
 struct ArticleView: View {
     let content: String
+    var font: Font = .body
+    var highlightQuery: String = ""
     let outgoing: [OutgoingRef]
     let incoming: [IncomingRef]
     let navigate: (Int, Int?) -> Void
 
-    // 把单段文字里的 rawText 替换成超链接
+    // 把单段文字里的 rawText 替换成超链接，并高亮搜索关键词
     func attributed(_ text: String) -> AttributedString {
         var result = AttributedString(text)
+        // 法条引用超链接
         for ref in outgoing {
             var searchFrom = result.startIndex
             while let range = result[searchFrom...].range(of: ref.rawText) {
                 result[range].link = URL(string: "lawlink://\(ref.toLawId)/\(ref.toArticleNum)")
                 result[range].foregroundColor = AppColors.shared.outgoingRef
+                searchFrom = range.upperBound
+            }
+        }
+        // 搜索关键词高亮
+        if !highlightQuery.isEmpty {
+            var searchFrom = result.startIndex
+            while let range = result[searchFrom...].range(of: highlightQuery, options: .caseInsensitive) {
+                result[range].backgroundColor = UIColor.systemYellow.withAlphaComponent(0.4)
                 searchFrom = range.upperBound
             }
         }
@@ -292,7 +383,7 @@ struct ArticleView: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(paragraphs.enumerated()), id: \.offset) { i, para in
                 Text(attributed(para))
-                    .font(.body)
+                    .font(font)
                     .padding(.top, i == 0 ? 0 : 2)
                     .environment(\.openURL, OpenURLAction { url in
                         guard url.scheme == "lawlink",
@@ -393,6 +484,7 @@ struct SideIndexBar: View {
             let yB = firstCenter + CGFloat(b.offset) * rowH * 2
             return abs(yA - locationY) < abs(yB - locationY)
         })!
+        guard nearest.element.idx < articles.count else { return }
         let node = articles[nearest.element.idx]
         onSelect(node.id, node.articleNum)
     }
@@ -453,8 +545,3 @@ struct SideIndexBar: View {
     }
 }
 
-extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        min(max(self, range.lowerBound), range.upperBound)
-    }
-}
