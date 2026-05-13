@@ -164,19 +164,6 @@ struct TOCView: View {
         .listStyle(.sidebar)
         .navigationTitle(flkMode ? "法考法规" : "法律法规")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    flkMode.toggle()
-                    expandedGroups.removeAll()
-                    expandedSubgroups.removeAll()
-                } label: {
-                    Label("法考模式", systemImage: flkMode ? "graduationcap.fill" : "graduationcap")
-                        .foregroundStyle(flkMode ? AppColors.shared.folderIcon : .secondary)
-                }
-                .accessibilityLabel(flkMode ? "切换到全部法律" : "切换到法考模式")
-            }
-        }
         .searchable(text: $searchQuery,
                     placement: .navigationBarDrawer(displayMode: .always),
                     prompt: titleOnly ? "搜索法律名称" : "搜索法律名称或条文内容")
@@ -188,6 +175,8 @@ struct TOCView: View {
         .onChange(of: includeInterp)  { _, _ in runSearch(searchQuery) }
         .onChange(of: flkMode)        { _, _ in
             menu = flkMode ? DatabaseManager.shared.loadFlkMenu() : DatabaseManager.shared.loadMenu()
+            expandedGroups.removeAll()
+            expandedSubgroups.removeAll()
             runSearch(searchQuery)
         }
         .task {
