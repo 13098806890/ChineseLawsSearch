@@ -554,6 +554,15 @@ private struct SettingsSheet: View {
                              : "Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
                             .font(.caption)
                     }
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+                let build   = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+                Section {
+                    Text("律疏 \(version).\(build)")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .listRowBackground(Color.clear)
+                }
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
@@ -561,15 +570,6 @@ private struct SettingsSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
-            }
-            .safeAreaInset(edge: .bottom) {
-                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-                let build   = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
-                Text("律疏 \(version).\(build)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
             }
             .sheet(isPresented: $showWelcome) {
                 NavigationStack {

@@ -369,21 +369,29 @@ struct LegalChatView: View {
                         icon: "person.crop.circle.badge.questionmark",
                         title: "案情分析",
                         desc: "描述您遇到的具体纠纷：当事人关系、事件经过、时间节点。专家会追问关键细节，分析责任归属，给出维权建议。",
-                        example: "我和房东签了一年租约，还有四个月到期，房东突然要求我两周内搬走并拒绝退押金，我该怎么办？"
+                        examples: [
+                            "我和房东签了一年租约，还有四个月到期，房东突然要求我两周内搬走并拒绝退押金，我该怎么办？",
+                        ]
                     )
 
                     modeCard(
                         icon: "lightbulb",
                         title: "法律咨询",
                         desc: "询问某类场景下的权利义务或法律规则。无需有具体纠纷，适合提前了解法律边界或评估潜在风险。",
-                        example: "劳动合同到期公司不续签，员工能拿到经济补偿吗？"
+                        examples: [
+                            "劳动合同到期公司不续签，员工能拿到经济补偿吗？",
+                        ]
                     )
 
                     modeCard(
                         icon: "doc.text.magnifyingglass",
-                        title: "法条与案例检索",
-                        desc: "查找特定主题的法律条文原文，或检索人民法院公报中的指导案例与裁判文书，了解司法实践口径。",
-                        example: "合同欺诈的认定标准是什么？有没有相关指导案例？"
+                        title: "法条与公报案例检索",
+                        desc: "查找特定主题的法律条文原文，或直接检索人民法院公报中的指导案例与裁判文书。问句中含「案例」「判决」「指导案例」「法院怎么判」等词时，系统会自动进入公报检索模式。",
+                        examples: [
+                            "合同欺诈的认定标准是什么？有没有相关指导案例？",
+                            "有没有关于劳动者拒绝加班被解雇的公报案例？",
+                            "房屋买卖合同无效的情形有哪些，司法实践中法院怎么判？",
+                        ]
                     )
                 }
 
@@ -421,7 +429,7 @@ struct LegalChatView: View {
         }
     }
 
-    private func modeCard(icon: String, title: String, desc: String, example: String) -> some View {
+    private func modeCard(icon: String, title: String, desc: String, examples: [String]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
@@ -433,14 +441,19 @@ struct LegalChatView: View {
             Text(desc)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Text("示例：\(example)")
-                .font(.footnote)
-                .foregroundStyle(.secondary.opacity(0.85))
-                .italic()
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.appSecondaryBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(examples, id: \.self) { ex in
+                    Text(ex)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary.opacity(0.85))
+                        .italic()
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.appSecondaryBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
         }
         .padding(12)
         .background(Color.appSecondaryBackground.opacity(0.5))

@@ -4,8 +4,16 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>律疏</string>
-	<key>BuiltinAPIKey</key>
-	<string>sk-d012fe36d55f43d2b1c37c9443f54303</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>BKP1</key>
+	<string>$(BUILTIN_API_KEY_P1)</string>
+	<key>BKP2</key>
+	<string>$(BUILTIN_API_KEY_P2)</string>
+	<key>BKP3</key>
+	<string>$(BUILTIN_API_KEY_P3)</string>
+	<key>BKP4</key>
+	<string>$(BUILTIN_API_KEY_P4)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

@@ -188,10 +188,20 @@ struct BuiltinDeepSeekProvider: LLMProvider {
 
     private var apiURL: URL { URL(string: "https://api.deepseek.com/chat/completions")! }
 
-    // 内置 key — 仅供 app 内 agent 功能使用，不在 UI 展示
+    // 内置 key — 分段从 Info.plist 读取后拼接，对抗字符串扫描；懒加载缓存避免重复拼装
+    private static let cachedKey: String? = {
+        let info = Bundle.main.infoDictionary
+        guard
+            let p1 = info?["BKP1"] as? String, !p1.isEmpty,
+            let p2 = info?["BKP2"] as? String,
+            let p3 = info?["BKP3"] as? String,
+            let p4 = info?["BKP4"] as? String
+        else { return nil }
+        return [p1, p2, p3, p4].joined()
+    }()
+
     private func key() throws -> String {
-        guard let k = Bundle.main.object(forInfoDictionaryKey: "BuiltinAPIKey") as? String,
-              !k.isEmpty else {
+        guard let k = Self.cachedKey else {
             throw LLMError.apiKeyMissing(displayName)
         }
         return k
@@ -309,12 +319,18 @@ enum LLMProviderRegistry {
     }
 
     /// Agent 功能专用 provider：
-    /// 优先使用用户自己配置的 DeepSeek key；若未配置则使用内置 key（免费/付费配额管控）。
+    ///
+    /// 选 key 优先级：
+    ///   1. 用户自备 Key（任何套餐均可用）
+    ///   2. 内置 Key（仅 .free / .pro 可用，.basic 不可回退到内置 Key）
+    ///
+    /// 调用方须先通过 `PurchaseManager.shared.consumeIfAllowed()` 确认有权限，
+    /// 再调用本属性；此处不做二次权限校验。
     static var agentProvider: any LLMProvider {
-        let userKey = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
-        if !userKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if PurchaseManager.shared.hasUserKey {
             return DeepSeekProvider()
         }
+        // 无用户 Key → 只有 free / pro 可以使用内置 Key
         return BuiltinDeepSeekProvider()
     }
 }

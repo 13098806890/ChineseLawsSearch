@@ -25,3 +25,6 @@ Products/
 # SQLite WAL/SHM files
 *.db-wal
 *.db-shm
+
+# Secrets — never commit
+Secrets.xcconfig
