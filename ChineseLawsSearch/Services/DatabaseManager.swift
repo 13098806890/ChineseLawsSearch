@@ -1076,8 +1076,8 @@ final class DatabaseManager {
     }
 
     private func _rowToDoc(_ stmt: OpaquePointer?) -> GongbaoDoc {
-        // 解析 keywords_meta JSON（列11），失败时返回空字典
-        let metaJson = str(stmt, 11)
+        // col 10 = keywords_meta (JSON), col 11 = full_text
+        let metaJson = str(stmt, 10)
         let keywordsMeta: [String: [String]]
         if !metaJson.isEmpty,
            let data = metaJson.data(using: .utf8),
@@ -1106,7 +1106,7 @@ final class DatabaseManager {
             rulingGist: str(stmt, 8),
             keywords: str(stmt, 9),
             keywordsMeta: keywordsMeta,
-            fullText: str(stmt, 12)
+            fullText: str(stmt, 11)
         )
     }
 
