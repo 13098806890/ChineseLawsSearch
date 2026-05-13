@@ -10,7 +10,7 @@ struct SplashView: View {
     @State private var scale: Double = 0.92
     var onFinish: () -> Void
 
-    private let sealRed   = Color(red: 0.78, green: 0.12, blue: 0.10)
+    private let sealRed    = Color(red: 0.78, green: 0.12, blue: 0.10)
     private let paperColor = Color(red: 0.949, green: 0.929, blue: 0.878)
 
     var body: some View {
@@ -34,28 +34,23 @@ struct SplashView: View {
 
     private var sealStamp: some View {
         ZStack {
-            // 印章红底
-            RoundedRectangle(cornerRadius: 12)
-                .fill(sealRed)
-                .frame(width: 200, height: 200)
-            // 双边框
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.35), lineWidth: 3)
-                .frame(width: 200, height: 200)
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.25), lineWidth: 1.5)
-                .frame(width: 184, height: 184)
-            // 从图标抠出的篆刻字形
+            // 纸色印面
+            RoundedRectangle(cornerRadius: 10)
+                .fill(paperColor)
+                .frame(width: 210, height: 210)
+            // 外边框
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(sealRed, lineWidth: 4)
+                .frame(width: 210, height: 210)
+            // 内边框
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(sealRed, lineWidth: 2)
+                .frame(width: 194, height: 194)
+            // 阳刻字形
             Image("SealGlyph")
                 .resizable()
-                .renderingMode(.template)
-                .foregroundStyle(.white)
-                .frame(width: 148, height: 148)
+                .frame(width: 152, height: 152)
         }
-        // 轻微旋转，印章感
-        .rotationEffect(.degrees(-3))
-        // 印章压纸阴影
-        .shadow(color: sealRed.opacity(0.4), radius: 18, x: 4, y: 6)
     }
 }
 
