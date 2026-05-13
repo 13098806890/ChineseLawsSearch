@@ -35,8 +35,10 @@ struct TOCView: View {
     @AppStorage("searchResultLimit")   private var resultLimit: Int = 100
     @AppStorage("searchIncludeLaws")   private var includeLaws: Bool = true
     @AppStorage("searchIncludeInterp") private var includeInterp: Bool = true
+    @AppStorage("flkMode")             private var flkMode: Bool = false
 
     private var searchCategories: [String] {
+        if flkMode { return [] }   // 法考模式下不按 category 过滤，靠 flkOnly=true
         var cats: [String] = []
         if includeLaws  { cats += ["法律", "宪法", "行政法规", "修正案", "法律解释", "监察法规"] }
         if includeInterp { cats += ["司法解释"] }
@@ -160,8 +162,21 @@ struct TOCView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("法律法规")
+        .navigationTitle(flkMode ? "法考法规" : "法律法规")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    flkMode.toggle()
+                    expandedGroups.removeAll()
+                    expandedSubgroups.removeAll()
+                } label: {
+                    Label("法考模式", systemImage: flkMode ? "graduationcap.fill" : "graduationcap")
+                        .foregroundStyle(flkMode ? AppColors.shared.folderIcon : .secondary)
+                }
+                .accessibilityLabel(flkMode ? "切换到全部法律" : "切换到法考模式")
+            }
+        }
         .searchable(text: $searchQuery,
                     placement: .navigationBarDrawer(displayMode: .always),
                     prompt: titleOnly ? "搜索法律名称" : "搜索法律名称或条文内容")
@@ -171,8 +186,12 @@ struct TOCView: View {
         .onChange(of: resultLimit)    { _, _ in runSearch(searchQuery) }
         .onChange(of: includeLaws)    { _, _ in runSearch(searchQuery) }
         .onChange(of: includeInterp)  { _, _ in runSearch(searchQuery) }
+        .onChange(of: flkMode)        { _, _ in
+            menu = flkMode ? DatabaseManager.shared.loadFlkMenu() : DatabaseManager.shared.loadMenu()
+            runSearch(searchQuery)
+        }
         .task {
-            menu = DatabaseManager.shared.loadMenu()
+            menu = flkMode ? DatabaseManager.shared.loadFlkMenu() : DatabaseManager.shared.loadMenu()
         }
     }
 
@@ -188,20 +207,21 @@ struct TOCView: View {
         let limit     = resultLimit
         let onlyTitle = titleOnly
         let cats      = searchCategories
+        let flk       = flkMode
         let variant   = DatabaseManager.numberVariant(of: q)
         let db = DatabaseManager.shared
         searchTask = Task.detached(priority: .userInitiated) {
-            var titles = db.searchByTitle(query: q, categories: cats)
+            var titles = db.searchByTitle(query: q, categories: cats, flkOnly: flk)
             if let v = variant {
-                let extra = db.searchByTitle(query: v, categories: cats)
+                let extra = db.searchByTitle(query: v, categories: cats, flkOnly: flk)
                 let seen  = Set(titles.map(\.id))
                 titles += extra.filter { !seen.contains($0.id) }
             }
             var articles: [SearchResult] = []
             if !onlyTitle {
-                articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl, categories: cats)
+                articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl, categories: cats, flkOnly: flk)
                 if let v = variant {
-                    let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl, categories: cats)
+                    let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl, categories: cats, flkOnly: flk)
                     let seen  = Set(articles.map(\.id))
                     articles += extra.filter { !seen.contains($0.id) }
                 }

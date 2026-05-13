@@ -137,8 +137,12 @@ final class DatabaseManager {
         let groups: [MenuGroup]
     }
 
-    func loadMenu() -> LawMenu? {
-        guard let url = Bundle.main.url(forResource: "law_menu", withExtension: "json"),
+    func loadFlkMenu() -> LawMenu? { loadMenuResource("flk_menu") }
+
+    func loadMenu() -> LawMenu? { loadMenuResource("law_menu") }
+
+    private func loadMenuResource(_ name: String) -> LawMenu? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let name = obj["name"] as? String,
@@ -308,19 +312,20 @@ final class DatabaseManager {
 
     // MARK: 按标题搜索法律
 
-    nonisolated func searchByTitle(query: String, limit: Int = 50, categories: [String] = []) -> [LawMeta] {
-        queue.sync { _searchByTitle(query: query, limit: limit, categories: categories) }
+    nonisolated func searchByTitle(query: String, limit: Int = 50, categories: [String] = [], flkOnly: Bool = false) -> [LawMeta] {
+        queue.sync { _searchByTitle(query: query, limit: limit, categories: categories, flkOnly: flkOnly) }
     }
 
-    private func _searchByTitle(query: String, limit: Int = 50, categories: [String] = []) -> [LawMeta] {
+    private func _searchByTitle(query: String, limit: Int = 50, categories: [String] = [], flkOnly: Bool = false) -> [LawMeta] {
         let catFilter = categories.isEmpty ? "" : "AND category IN (\(categories.map { _ in "?" }.joined(separator: ",")))"
+        let flkFilter = flkOnly ? "AND is_flk = 1" : ""
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
                    COALESCE(subject_area, '') AS subject_area,
                    COALESCE(aliases, '') AS aliases
             FROM laws
-            WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?) \(catFilter)
+            WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?) \(catFilter) \(flkFilter)
             ORDER BY title
             LIMIT ?
             """
@@ -360,15 +365,18 @@ final class DatabaseManager {
 
     nonisolated func searchContent(query: String, limit: Int = 100,
                        excludeArticleNumber: Bool = false,
-                       categories: [String] = []) -> [SearchResult] {
+                       categories: [String] = [],
+                       flkOnly: Bool = false) -> [SearchResult] {
         queue.sync { _searchContent(query: query, limit: limit,
                                     excludeArticleNumber: excludeArticleNumber,
-                                    categories: categories) }
+                                    categories: categories,
+                                    flkOnly: flkOnly) }
     }
 
     private func _searchContent(query: String, limit: Int = 100,
                        excludeArticleNumber: Bool = false,
-                       categories: [String] = []) -> [SearchResult] {
+                       categories: [String] = [],
+                       flkOnly: Bool = false) -> [SearchResult] {
         guard !query.isEmpty else { return [] }
 
         let cjkChars = query.unicodeScalars.filter {
@@ -377,6 +385,7 @@ final class DatabaseManager {
         let useLike = cjkChars.count < 3   // 短词用 LIKE，避免 bigram 单字拆开无结果
 
         let catFilter = categories.isEmpty ? "" : "AND l.category IN (\(categories.map { _ in "?" }.joined(separator: ",")))"
+        let flkFilter = flkOnly ? "AND l.is_flk = 1" : ""
         let sql: String
         let ftsQuery: String
 
@@ -387,7 +396,7 @@ final class DatabaseManager {
                 SELECT n.id, n.law_id, l.title, n.article_number, n.content, n.article_num
                 FROM nodes n
                 JOIN laws l ON n.law_id = l.id
-                WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1 \(catFilter)
+                WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1 \(catFilter) \(flkFilter)
                 LIMIT ?
                 """
             ftsQuery = "%\(query)%"
@@ -400,7 +409,7 @@ final class DatabaseManager {
                 FROM nodes_fts f
                 JOIN nodes n ON f.rowid = n.id
                 JOIN laws  l ON n.law_id = l.id
-                WHERE \(col) MATCH ? AND n.type = 'article' AND l.is_current = 1 \(catFilter)
+                WHERE \(col) MATCH ? AND n.type = 'article' AND l.is_current = 1 \(catFilter) \(flkFilter)
                 LIMIT ?
                 """
         }

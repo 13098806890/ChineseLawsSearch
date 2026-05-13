@@ -95,6 +95,9 @@ final class UserStore: ObservableObject {
     @AppStorage("searchExcludeArtNum")   var searchExcludeArtNum: Bool = true
     @AppStorage("searchTitleOnly")       var searchTitleOnly: Bool = false
     @AppStorage("searchResultLimit")     var searchResultLimit: Int = 100
+    /// 法考模式：只检索法考法律
+    @AppStorage("flkMode") var flkMode: Bool = false
+
     /// 搜索范围过滤：是否包含法律法规（法律/宪法/行政法规/修正案/法律解释/监察法规）
     @AppStorage("searchIncludeLaws")     var searchIncludeLaws: Bool = true
     /// 搜索范围过滤：是否包含司法解释
