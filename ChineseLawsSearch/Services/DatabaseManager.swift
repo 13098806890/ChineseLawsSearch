@@ -308,18 +308,19 @@ final class DatabaseManager {
 
     // MARK: 按标题搜索法律
 
-    nonisolated func searchByTitle(query: String, limit: Int = 50) -> [LawMeta] {
-        queue.sync { _searchByTitle(query: query, limit: limit) }
+    nonisolated func searchByTitle(query: String, limit: Int = 50, categories: [String] = []) -> [LawMeta] {
+        queue.sync { _searchByTitle(query: query, limit: limit, categories: categories) }
     }
 
-    private func _searchByTitle(query: String, limit: Int = 50) -> [LawMeta] {
+    private func _searchByTitle(query: String, limit: Int = 50, categories: [String] = []) -> [LawMeta] {
+        let catFilter = categories.isEmpty ? "" : "AND category IN (\(categories.map { _ in "?" }.joined(separator: ",")))"
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
                    COALESCE(subject_area, '') AS subject_area,
                    COALESCE(aliases, '') AS aliases
             FROM laws
-            WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?)
+            WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?) \(catFilter)
             ORDER BY title
             LIMIT ?
             """
@@ -328,9 +329,11 @@ final class DatabaseManager {
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return result }
         defer { sqlite3_finalize(stmt) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(stmt, 1, "%\(query)%", -1, transient)
-        sqlite3_bind_text(stmt, 2, "%\(query)%", -1, transient)
-        sqlite3_bind_int(stmt, 3, Int32(limit))
+        var col: Int32 = 1
+        sqlite3_bind_text(stmt, col, "%\(query)%", -1, transient); col += 1
+        sqlite3_bind_text(stmt, col, "%\(query)%", -1, transient); col += 1
+        for cat in categories { sqlite3_bind_text(stmt, col, cat, -1, transient); col += 1 }
+        sqlite3_bind_int(stmt, col, Int32(limit))
 
         while sqlite3_step(stmt) == SQLITE_ROW {
             let aliasStr = str(stmt, 10)
@@ -356,12 +359,16 @@ final class DatabaseManager {
     // excludeArticleNumber: 屏蔽条号前缀匹配（3字以上走 content_body 列，短词在 Swift 过滤）
 
     nonisolated func searchContent(query: String, limit: Int = 100,
-                       excludeArticleNumber: Bool = false) -> [SearchResult] {
-        queue.sync { _searchContent(query: query, limit: limit, excludeArticleNumber: excludeArticleNumber) }
+                       excludeArticleNumber: Bool = false,
+                       categories: [String] = []) -> [SearchResult] {
+        queue.sync { _searchContent(query: query, limit: limit,
+                                    excludeArticleNumber: excludeArticleNumber,
+                                    categories: categories) }
     }
 
     private func _searchContent(query: String, limit: Int = 100,
-                       excludeArticleNumber: Bool = false) -> [SearchResult] {
+                       excludeArticleNumber: Bool = false,
+                       categories: [String] = []) -> [SearchResult] {
         guard !query.isEmpty else { return [] }
 
         let cjkChars = query.unicodeScalars.filter {
@@ -369,6 +376,7 @@ final class DatabaseManager {
         }
         let useLike = cjkChars.count < 3   // 短词用 LIKE，避免 bigram 单字拆开无结果
 
+        let catFilter = categories.isEmpty ? "" : "AND l.category IN (\(categories.map { _ in "?" }.joined(separator: ",")))"
         let sql: String
         let ftsQuery: String
 
@@ -379,7 +387,7 @@ final class DatabaseManager {
                 SELECT n.id, n.law_id, l.title, n.article_number, n.content, n.article_num
                 FROM nodes n
                 JOIN laws l ON n.law_id = l.id
-                WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1
+                WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1 \(catFilter)
                 LIMIT ?
                 """
             ftsQuery = "%\(query)%"
@@ -392,7 +400,7 @@ final class DatabaseManager {
                 FROM nodes_fts f
                 JOIN nodes n ON f.rowid = n.id
                 JOIN laws  l ON n.law_id = l.id
-                WHERE \(col) MATCH ? AND n.type = 'article' AND l.is_current = 1
+                WHERE \(col) MATCH ? AND n.type = 'article' AND l.is_current = 1 \(catFilter)
                 LIMIT ?
                 """
         }
@@ -403,8 +411,10 @@ final class DatabaseManager {
         defer { sqlite3_finalize(stmt) }
 
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(stmt, 1, ftsQuery, -1, transient)
-        sqlite3_bind_int(stmt,  2, Int32(limit))
+        var bindCol: Int32 = 1
+        sqlite3_bind_text(stmt, bindCol, ftsQuery, -1, transient); bindCol += 1
+        for cat in categories { sqlite3_bind_text(stmt, bindCol, cat, -1, transient); bindCol += 1 }
+        sqlite3_bind_int(stmt, bindCol, Int32(limit))
 
         while sqlite3_step(stmt) == SQLITE_ROW {
             let content = str(stmt, 4)
@@ -794,10 +804,11 @@ final class DatabaseManager {
     }
 
     func articlesInNode(_ nodeId: Int) -> [RAGArticle] {
-        queue.sync { _articlesInNode(nodeId) }
+        queue.sync { _articlesInNode(nodeId, depth: 0) }
     }
 
-    private func _articlesInNode(_ nodeId: Int) -> [RAGArticle] {
+    private func _articlesInNode(_ nodeId: Int, depth: Int) -> [RAGArticle] {
+        guard depth < 4 else { return [] }  // guard against malformed data cycles
         guard let db = db else { return [] }
         // direct articles
         var stmt: OpaquePointer?
@@ -825,7 +836,7 @@ final class DatabaseManager {
         sqlite3_bind_int(sectionStmt, 1, Int32(nodeId))
         var subIds: [Int] = []
         while sqlite3_step(sectionStmt) == SQLITE_ROW { subIds.append(Int(sqlite3_column_int(sectionStmt, 0))) }
-        for subId in subIds { result += _articlesInNode(subId) }
+        for subId in subIds { result += _articlesInNode(subId, depth: depth + 1) }
         return result
     }
 

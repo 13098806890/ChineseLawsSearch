@@ -33,7 +33,7 @@ struct ContentView: View {
     @StateObject private var chatVM       = LegalChatViewModel()
     @StateObject private var historyStore = ChatHistoryStore()
 
-    enum Tab { case browse, chat }
+    enum Tab { case browse, chat, favorites }
 
     struct BackItem {
         let tab: Tab
@@ -53,6 +53,9 @@ struct ContentView: View {
                 chatView
                     .opacity(tab == .chat ? 1 : 0)
                     .allowsHitTesting(tab == .chat)
+                favoritesView
+                    .opacity(tab == .favorites ? 1 : 0)
+                    .allowsHitTesting(tab == .favorites)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -60,6 +63,7 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 tabButton(title: "法律浏览", icon: "doc.text", tab: .browse)
                 tabButton(title: "法律咨询", icon: "message", tab: .chat)
+                tabButton(title: "收藏", icon: "star", tab: .favorites)
                 Button {
                     showSettings = true
                 } label: {
@@ -173,6 +177,13 @@ struct ContentView: View {
         }
     }
 
+    // MARK: Favorites
+
+    private var favoritesView: some View {
+        FavoritesView(navigate: navigate)
+            .environmentObject(userStore)
+    }
+
     // MARK: Tab button
 
     private func tabButton(title: String, icon: String, tab t: Tab) -> some View {
@@ -193,6 +204,7 @@ struct ContentView: View {
     func navigate(to lawId: Int, articleNum: Int?) {
         if let law = DatabaseManager.shared.lawMeta(id: lawId) {
             backStack.append(BackItem(tab: tab, target: target))
+            if backStack.count > 20 { backStack.removeFirst() }
             tab = .browse
             target = LawTarget(law: law, scrollToArticle: articleNum)
         }
@@ -202,7 +214,7 @@ struct ContentView: View {
     private func persistBackStack() {
         let items = backStack.map { item in
             PersistedBackItem(
-                tab: item.tab == .browse ? "browse" : "chat",
+                tab: item.tab == .browse ? "browse" : item.tab == .chat ? "chat" : "favorites",
                 lawId: item.target?.law.id,
                 articleNum: item.target?.scrollToArticle
             )
@@ -219,7 +231,7 @@ struct ContentView: View {
 
         let persistedItems = userStore.loadBackStack()
         backStack = persistedItems.compactMap { item -> BackItem? in
-            let t: Tab = item.tab == "browse" ? .browse : .chat
+            let t: Tab = item.tab == "browse" ? .browse : item.tab == "chat" ? .chat : .favorites
             if let lid = item.lawId, let meta = DatabaseManager.shared.lawMeta(id: lid) {
                 return BackItem(tab: t, target: LawTarget(law: meta, scrollToArticle: item.articleNum))
             } else {
@@ -234,9 +246,8 @@ struct ContentView: View {
         guard let prev = backStack.popLast() else { return }
         tab = prev.tab
         target = prev.target
-        // If returning to chat tab, restore the most recent saved session so the
-        // conversation is not blank (especially after a kill-relaunch cycle).
-        if prev.tab == .chat, let latest = historyStore.sessions.first {
+        // Only restore latest session if chat is blank — don't clobber an active conversation
+        if prev.tab == .chat, chatVM.messages.isEmpty, let latest = historyStore.sessions.first {
             chatVM.loadSession(latest)
         }
         persistBackStack()
@@ -273,9 +284,23 @@ private struct SettingsSheet: View {
                 // MARK: Agent 解锁状态
                 Section {
                     switch pm.access {
-                    case .paid:
-                        Label("法律顾问已解锁", systemImage: "checkmark.seal.fill")
-                            .foregroundStyle(.green)
+                    case .pro(let remaining):
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("畅用版已激活", systemImage: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                            Text("本周剩余 \(remaining) 次 · 每周一自动重置")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    case .basic:
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(pm.hasPRO ? "畅用版已激活 · 自备 Key 优先" : "基础版已激活",
+                                  systemImage: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                            if pm.hasPRO {
+                                Text("您的 API Key 优先使用，不消耗每周额度")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     case .free(let remaining):
                         HStack {
                             Label("免费剩余 \(remaining) 次", systemImage: "gift")
@@ -298,17 +323,32 @@ private struct SettingsSheet: View {
                     Text("法律顾问")
                 } footer: {
                     switch pm.access {
-                    case .paid:
-                        Text("感谢支持，您可无限使用法律顾问功能。")
+                    case .pro:
+                        Text("畅用版：内置 Key 已为您配置，每周 \(PurchaseManager.proWeeklyTotal) 次额度，每周一重置。")
+                    case .basic:
+                        Text(userStore.apiKeyConfigured
+                             ? "基础版：使用您自己的 API Key，无次数限制。"
+                             : "基础版已激活。请在下方配置 DeepSeek API Key 以开始使用。")
                     case .free(let remaining):
-                        Text("每位用户免费赠送 20 次体验，剩余 \(remaining) 次。购买后无限使用。")
+                        Text("每位用户免费赠送 5 次体验，剩余 \(remaining) 次。\n畅用版包含内置 Key 每周 \(PurchaseManager.proWeeklyTotal) 次；基础版需自备 Key 但无次数限制。")
                     case .noAccess:
-                        Text("免费体验已用完。购买后即可无限使用，也可在下方填入自己的 API Key 使用。")
+                        Text("免费体验已用完。\n· 畅用版：内置 Key，每周 \(PurchaseManager.proWeeklyTotal) 次，无需配置\n· 基础版：需自备 DeepSeek API Key，无次数限制")
                     }
                 }
 
                 Section("法律浏览") {
                     Toggle("显示右侧条文索引", isOn: $userStore.showSideIndex)
+                    Toggle("每次启动显示使用说明", isOn: $userStore.showWelcomeOnLaunch)
+                    Button("查看使用说明") { showWelcome = true }
+                    Picker("条文字号", selection: $userStore.articleFontSize) {
+                        Text("小").tag("small")
+                        Text("中").tag("medium")
+                        Text("大").tag("large")
+                        Text("超大").tag("xlarge")
+                    }
+                }
+
+                Section {
                     Toggle("仅搜索法律标题", isOn: $userStore.searchTitleOnly)
                     Toggle("搜索时忽略条号匹配", isOn: $userStore.searchExcludeArtNum)
                     Picker("搜索结果上限", selection: $userStore.searchResultLimit) {
@@ -316,124 +356,137 @@ private struct SettingsSheet: View {
                         Text("100 条").tag(100)
                         Text("200 条").tag(200)
                     }
-                    Toggle("每次启动显示使用说明", isOn: $userStore.showWelcomeOnLaunch)
-                    Button("查看使用说明") { showWelcome = true }
+                    Toggle("法律法规", isOn: $userStore.searchIncludeLaws)
+                    Toggle("司法解释", isOn: $userStore.searchIncludeInterp)
+                } header: {
+                    Text("搜索")
+                } footer: {
+                    if !userStore.searchIncludeLaws && !userStore.searchIncludeInterp {
+                        Text("两项均关闭时，搜索将覆盖全部类型。")
+                    }
                 }
 
                 Section {
                     Toggle("显示思考过程", isOn: $userStore.showThinking)
 
-                    Picker("分析模式", selection: $userStore.chatQualityMode) {
-                        Text("节省").tag("economy")
-                        Text("标准").tag("standard")
-                        Text("详细").tag("detailed")
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: userStore.chatQualityMode) {
-                        userStore.applyQualityMode(userStore.chatQualityMode)
+                    if case .basic = pm.access {
+                        Picker("分析模式", selection: $userStore.chatQualityMode) {
+                            Text("节省").tag("economy")
+                            Text("标准").tag("standard")
+                            Text("详细").tag("detailed")
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: userStore.chatQualityMode) {
+                            userStore.applyQualityMode(userStore.chatQualityMode)
+                        }
                     }
                 } header: {
                     Text("对话")
                 } footer: {
-                    switch userStore.chatQualityMode {
-                    case "economy":
-                        Text("节省模式：追问 1 轮，上下文法条 15 条，参考法条 5 条。回答更简洁，消耗 token 最少。")
-                    case "detailed":
-                        Text("详细模式：追问 5 轮，法条上下文与引用数量不设上限。分析最全面，消耗 token 最多。")
-                    default:
-                        Text("标准模式：追问 3 轮，上下文法条 40 条，参考法条 80 条。兼顾质量与成本。")
-                    }
-                }
-
-                Section {
-                    // 目前仅支持 DeepSeek（国内直连），其他 provider 代码保留但不在 UI 展示
-                    let deepseek = LLMProviderRegistry.provider(id: "deepseek")!
-                    HStack {
-                        Label(deepseek.displayName, systemImage: "cpu")
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(AppColors.shared.searchHighlight)
-                            .font(.footnote.bold())
-                    }
-                } header: {
-                    Text("AI 模型")
-                } footer: {
-                    Text("当前使用 DeepSeek，需在下方填入您的 API Key。DeepSeek 新用户注册即有免费额度，价格低廉，国内可直连。")
-                }
-
-                // DeepSeek API Key 输入
-                let provider = LLMProviderRegistry.provider(id: "deepseek")!
-                let currentKey = KeychainHelper.load(forKey: provider.keychainKey) ?? ""
-                Section {
-                    HStack {
-                        SecureField("粘贴 DeepSeek API Key…", text: Binding(
-                            get: { savedKeys[provider.id] ?? "" },
-                            set: { savedKeys[provider.id] = $0 }
-                        ))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        switch testStatus {
-                        case .testing:
-                            ProgressView().scaleEffect(0.8)
-                        case .success:
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        case .failure:
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-                        case .idle:
-                            EmptyView()
+                    if case .basic = pm.access {
+                        switch userStore.chatQualityMode {
+                        case "economy":
+                            Text("节省模式：追问 1 轮，上下文法条 15 条，参考法条 5 条。回答更简洁，消耗 token 最少。")
+                        case "detailed":
+                            Text("详细模式：追问 5 轮，法条上下文与引用数量不设上限。分析最全面，消耗 token 最多。")
+                        default:
+                            Text("标准模式：追问 3 轮，上下文法条 40 条，参考法条 80 条。兼顾质量与成本。")
                         }
+                    } else {
+                        Text("畅用版使用标准分析模式。")
                     }
-                    Button {
-                        Task { await saveKeyWithTest(provider: provider) }
-                    } label: {
-                        if testStatus.isLoading {
-                            HStack(spacing: 6) {
+                }
+
+                // AI 模型与 API Key — 仅基础版（自备 Key）显示
+                if case .basic = pm.access {
+                    Section {
+                        let deepseek = LLMProviderRegistry.provider(id: "deepseek")!
+                        HStack {
+                            Label(deepseek.displayName, systemImage: "cpu")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(AppColors.shared.searchHighlight)
+                                .font(.footnote.bold())
+                        }
+                    } header: {
+                        Text("AI 模型")
+                    } footer: {
+                        Text("当前使用 DeepSeek，需在下方填入您的 API Key。DeepSeek 新用户注册即有免费额度，价格低廉，国内可直连。")
+                    }
+
+                    let provider = LLMProviderRegistry.provider(id: "deepseek")!
+                    let currentKey = KeychainHelper.load(forKey: provider.keychainKey) ?? ""
+                    Section {
+                        HStack {
+                            SecureField("粘贴 DeepSeek API Key…", text: Binding(
+                                get: { savedKeys[provider.id] ?? "" },
+                                set: { savedKeys[provider.id] = $0 }
+                            ))
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            switch testStatus {
+                            case .testing:
                                 ProgressView().scaleEffect(0.8)
-                                Text("验证中…")
+                            case .success:
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            case .failure:
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                            case .idle:
+                                EmptyView()
                             }
-                        } else {
-                            Text("验证并保存")
                         }
-                    }
-                    .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || testStatus.isLoading)
-                    if case .failure(let msg) = testStatus {
-                        Label(msg, systemImage: "xmark.circle.fill")
-                            .foregroundStyle(.red).font(.footnote)
-                    }
-                    if !currentKey.isEmpty {
-                        Button(role: .destructive) {
-                            showDeleteKeyConfirm = true
+                        Button {
+                            Task { await saveKeyWithTest(provider: provider) }
                         } label: {
-                            Label { Text("删除已保存的 Key") } icon: {
-                                Image(systemName: "trash")
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
+                            if testStatus.isLoading {
+                                HStack(spacing: 6) {
+                                    ProgressView().scaleEffect(0.8)
+                                    Text("验证中…")
+                                }
+                            } else {
+                                Text("验证并保存")
                             }
                         }
-                        .confirmationDialog("确认删除 API Key？", isPresented: $showDeleteKeyConfirm, titleVisibility: .visible) {
-                            Button("删除", role: .destructive) {
-                                KeychainHelper.delete(forKey: provider.keychainKey)
-                                savedKeys[provider.id] = ""
-                                userStore.refreshAPIKeyState()
-                                testStatus = .idle
-                            }
-                            Button("取消", role: .cancel) {}
-                        } message: {
-                            Text("删除后法律顾问功能将无法使用，需重新填入 Key。")
+                        .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || testStatus.isLoading)
+                        if case .failure(let msg) = testStatus {
+                            Label(msg, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red).font(.footnote)
                         }
+                        if !currentKey.isEmpty {
+                            Button(role: .destructive) {
+                                showDeleteKeyConfirm = true
+                            } label: {
+                                Label { Text("删除已保存的 Key") } icon: {
+                                    Image(systemName: "trash")
+                                        .font(.footnote)
+                                        .foregroundStyle(.red)
+                                }
+                            }
+                            .confirmationDialog("确认删除 API Key？", isPresented: $showDeleteKeyConfirm, titleVisibility: .visible) {
+                                Button("删除", role: .destructive) {
+                                    KeychainHelper.delete(forKey: provider.keychainKey)
+                                    savedKeys[provider.id] = ""
+                                    userStore.refreshAPIKeyState()
+                                    testStatus = .idle
+                                }
+                                Button("取消", role: .cancel) {}
+                            } message: {
+                                Text("删除后法律顾问功能将无法使用，需重新填入 Key。")
+                            }
+                        }
+                        if let url = provider.keyURL {
+                            Link("前往 DeepSeek 获取 API Key →", destination: url)
+                                .font(.footnote)
+                        }
+                    } header: {
+                        Text("DeepSeek API Key")
+                    } footer: {
+                        Text(currentKey.isEmpty
+                             ? "尚未配置 API Key，法律顾问功能暂不可用。"
+                             : "Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
+                            .font(.caption)
                     }
-                    if let url = provider.keyURL {
-                        Link("前往 DeepSeek 获取 API Key →", destination: url)
-                            .font(.footnote)
-                    }
-                } header: {
-                    Text("DeepSeek API Key")
-                } footer: {
-                    Text(currentKey.isEmpty
-                         ? "尚未配置 API Key，法律顾问功能暂不可用。"
-                         : "Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
-                        .font(.caption)
                 }
             }
             .navigationTitle("设置")

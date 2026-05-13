@@ -33,6 +33,15 @@ struct TOCView: View {
     @AppStorage("searchExcludeArtNum") private var excludeArtNum: Bool = true
     @AppStorage("searchTitleOnly")     private var titleOnly: Bool = false
     @AppStorage("searchResultLimit")   private var resultLimit: Int = 100
+    @AppStorage("searchIncludeLaws")   private var includeLaws: Bool = true
+    @AppStorage("searchIncludeInterp") private var includeInterp: Bool = true
+
+    private var searchCategories: [String] {
+        var cats: [String] = []
+        if includeLaws  { cats += ["法律", "宪法", "行政法规", "修正案", "法律解释", "监察法规"] }
+        if includeInterp { cats += ["司法解释"] }
+        return cats.isEmpty ? ["法律", "宪法", "行政法规", "修正案", "法律解释", "监察法规", "司法解释"] : cats
+    }
 
     @State private var menu: DatabaseManager.LawMenu? = nil
     @State private var expandedGroups:    Set<String> = []
@@ -156,10 +165,12 @@ struct TOCView: View {
         .searchable(text: $searchQuery,
                     placement: .navigationBarDrawer(displayMode: .always),
                     prompt: titleOnly ? "搜索法律名称" : "搜索法律名称或条文内容")
-        .onChange(of: searchQuery)   { _, q in runSearch(q) }
-        .onChange(of: excludeArtNum) { _, _ in runSearch(searchQuery) }
-        .onChange(of: titleOnly)     { _, _ in runSearch(searchQuery) }
-        .onChange(of: resultLimit)   { _, _ in runSearch(searchQuery) }
+        .onChange(of: searchQuery)    { _, q in runSearch(q) }
+        .onChange(of: excludeArtNum)  { _, _ in runSearch(searchQuery) }
+        .onChange(of: titleOnly)      { _, _ in runSearch(searchQuery) }
+        .onChange(of: resultLimit)    { _, _ in runSearch(searchQuery) }
+        .onChange(of: includeLaws)    { _, _ in runSearch(searchQuery) }
+        .onChange(of: includeInterp)  { _, _ in runSearch(searchQuery) }
         .task {
             menu = DatabaseManager.shared.loadMenu()
         }
@@ -176,20 +187,21 @@ struct TOCView: View {
         let excl      = excludeArtNum
         let limit     = resultLimit
         let onlyTitle = titleOnly
+        let cats      = searchCategories
         let variant   = DatabaseManager.numberVariant(of: q)
         let db = DatabaseManager.shared
         searchTask = Task.detached(priority: .userInitiated) {
-            var titles = db.searchByTitle(query: q)
+            var titles = db.searchByTitle(query: q, categories: cats)
             if let v = variant {
-                let extra = db.searchByTitle(query: v)
+                let extra = db.searchByTitle(query: v, categories: cats)
                 let seen  = Set(titles.map(\.id))
                 titles += extra.filter { !seen.contains($0.id) }
             }
             var articles: [SearchResult] = []
             if !onlyTitle {
-                articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl)
+                articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl, categories: cats)
                 if let v = variant {
-                    let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl)
+                    let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl, categories: cats)
                     let seen  = Set(articles.map(\.id))
                     articles += extra.filter { !seen.contains($0.id) }
                 }

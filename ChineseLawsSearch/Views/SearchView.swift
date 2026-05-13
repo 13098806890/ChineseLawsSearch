@@ -17,6 +17,16 @@ struct SearchView: View {
     @State private var excludeArticleNum = true
     @State private var titleOnly = false
     @State private var resultLimit = 50
+    @State private var includeLaws = true
+    @State private var includeInterp = true
+    @State private var searchTask: Task<Void, Never>? = nil
+
+    private var searchCategories: [String] {
+        var cats: [String] = []
+        if includeLaws   { cats += ["法律", "宪法", "行政法规", "修正案", "法律解释", "监察法规"] }
+        if includeInterp { cats += ["司法解释"] }
+        return cats.isEmpty ? ["法律", "宪法", "行政法规", "修正案", "法律解释", "监察法规", "司法解释"] : cats
+    }
 
     var body: some View {
         NavigationStack {
@@ -111,6 +121,8 @@ struct SearchView: View {
             .onChange(of: excludeArticleNum) { _, _ in runSearch(query) }
             .onChange(of: titleOnly)         { _, _ in runSearch(query) }
             .onChange(of: resultLimit)       { _, _ in runSearch(query) }
+            .onChange(of: includeLaws)       { _, _ in runSearch(query) }
+            .onChange(of: includeInterp)     { _, _ in runSearch(query) }
         }
     }
 
@@ -151,7 +163,7 @@ struct SearchView: View {
         var attributed = AttributedString(text)
         let highlightColor = AppColors.shared.searchHighlight
         for r in merged {
-            let attrRange = Range(r, in: attributed)!
+            guard let attrRange = Range(r, in: attributed) else { continue }
             attributed[attrRange].foregroundColor = highlightColor
             attributed[attrRange].font = .body.bold()
         }
@@ -180,6 +192,18 @@ struct SearchView: View {
                 .frame(width: 180)
             }
             .opacity(titleOnly ? 0.4 : 1)
+            Divider()
+            HStack(spacing: 12) {
+                Text("范围")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Toggle("法律法规", isOn: $includeLaws)
+                    .font(.subheadline)
+                    .toggleStyle(.button)
+                Toggle("司法解释", isOn: $includeInterp)
+                    .font(.subheadline)
+                    .toggleStyle(.button)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -189,6 +213,7 @@ struct SearchView: View {
     // MARK: - 搜索
 
     private func runSearch(_ q: String) {
+        searchTask?.cancel()
         guard !q.isEmpty else {
             titleResults   = []
             articleResults = []
@@ -198,13 +223,14 @@ struct SearchView: View {
         let excl      = excludeArticleNum
         let limit     = resultLimit
         let onlyTitle = titleOnly
+        let cats      = searchCategories
         let variant   = DatabaseManager.numberVariant(of: q)
 
         let db = DatabaseManager.shared
-        Task.detached(priority: .userInitiated) {
-            var titles = db.searchByTitle(query: q)
+        searchTask = Task.detached(priority: .userInitiated) {
+            var titles = db.searchByTitle(query: q, categories: cats)
             if let v = variant {
-                let extra = db.searchByTitle(query: v)
+                let extra = db.searchByTitle(query: v, categories: cats)
                 let seen  = Set(titles.map(\.id))
                 titles += extra.filter { !seen.contains($0.id) }
             }
@@ -212,15 +238,16 @@ struct SearchView: View {
             var articles: [SearchResult] = []
             if !onlyTitle {
                 articles = db.searchContent(
-                    query: q, limit: limit, excludeArticleNumber: excl)
+                    query: q, limit: limit, excludeArticleNumber: excl, categories: cats)
                 if let v = variant {
                     let extra = db.searchContent(
-                        query: v, limit: limit, excludeArticleNumber: excl)
+                        query: v, limit: limit, excludeArticleNumber: excl, categories: cats)
                     let seen = Set(articles.map(\.id))
                     articles += extra.filter { !seen.contains($0.id) }
                 }
             }
 
+            guard !Task.isCancelled else { return }
             let finalTitles   = titles
             let finalArticles = articles
             await MainActor.run {
