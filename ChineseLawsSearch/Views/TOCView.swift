@@ -16,9 +16,8 @@ private func highlighted(_ text: String, query: String,
     let lowerQ = query.lowercased()
     var searchFrom = lower.startIndex
     while let range = lower.range(of: lowerQ, range: searchFrom..<lower.endIndex) {
-        // Map String range → AttributedString range
         if let attrRange = Range(range, in: attr) {
-            attr[attrRange].font = UIFont.boldSystemFont(ofSize: UIFont.systemFontSize)
+            attr[attrRange].font = baseFont.bold()
             attr[attrRange].foregroundColor = UIColor(highlightColor)
         }
         searchFrom = range.upperBound
@@ -43,6 +42,7 @@ struct TOCView: View {
     @State private var titleResults:   [LawMeta]      = []
     @State private var articleResults: [SearchResult] = []
     @State private var isRunning = false
+    @State private var searchTask: Task<Void, Never>? = nil
 
     var body: some View {
         List {
@@ -168,6 +168,7 @@ struct TOCView: View {
     // MARK: - Search logic
 
     private func runSearch(_ q: String) {
+        searchTask?.cancel()
         guard !q.isEmpty else {
             titleResults = []; articleResults = []; return
         }
@@ -177,7 +178,7 @@ struct TOCView: View {
         let onlyTitle = titleOnly
         let variant   = DatabaseManager.numberVariant(of: q)
         let db = DatabaseManager.shared
-        Task.detached(priority: .userInitiated) {
+        searchTask = Task.detached(priority: .userInitiated) {
             var titles = db.searchByTitle(query: q)
             if let v = variant {
                 let extra = db.searchByTitle(query: v)
@@ -193,6 +194,7 @@ struct TOCView: View {
                     articles += extra.filter { !seen.contains($0.id) }
                 }
             }
+            guard !Task.isCancelled else { return }
             let finalTitles   = titles
             let finalArticles = articles
             await MainActor.run {
@@ -219,11 +221,9 @@ struct TOCView: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: isAdminSub
-                      ? (isExpanded ? "tag.fill" : "tag")
-                      : (isExpanded ? "folder.fill" : "folder"))
+                Image(systemName: isExpanded ? "folder.fill" : "folder")
                     .font(.subheadline)
-                    .foregroundStyle(isAdminSub ? AppColors.shared.tagIcon : AppColors.shared.folderIcon)
+                    .foregroundStyle(AppColors.shared.folderIcon)
                 Text(displayLabel)
                     .font(.subheadline)
                     .foregroundStyle(.primary)
