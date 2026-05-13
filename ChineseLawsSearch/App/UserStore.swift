@@ -39,6 +39,28 @@ struct FavoriteArticle: Codable, Identifiable, Equatable {
     }
 }
 
+// MARK: - 收藏公报文书
+
+struct FavoriteGongbaoDoc: Codable, Identifiable {
+    let id: UUID
+    let docId: Int
+    let source: String     // "al" | "cpwsxd" | "sfwj"
+    let title: String
+    let rulingGist: String
+    let issue: String
+    let savedAt: Date
+
+    init(docId: Int, source: String, title: String, rulingGist: String, issue: String) {
+        self.id         = UUID()
+        self.docId      = docId
+        self.source     = source
+        self.title      = title
+        self.rulingGist = rulingGist
+        self.issue      = issue
+        self.savedAt    = Date()
+    }
+}
+
 final class UserStore: ObservableObject {
 
     private let kv = NSUbiquitousKeyValueStore.default
@@ -173,9 +195,13 @@ final class UserStore: ObservableObject {
         ) { [weak self] _ in
             self?.objectWillChange.send()
             self?.loadFavorites()
+            self?.loadGongbaoFavorites()
+            self?.loadGongbaoNotes()
         }
         kv.synchronize()
         loadFavorites()
+        loadGongbaoFavorites()
+        loadGongbaoNotes()
     }
 
     deinit {
@@ -231,6 +257,76 @@ final class UserStore: ObservableObject {
     private func persistFavorites() {
         guard let data = try? JSONEncoder().encode(favorites) else { return }
         kv.set(data, forKey: Self.favoritesKey)
+        kv.synchronize()
+    }
+
+    // MARK: - 收藏公报文书
+
+    private static let gongbaoFavoritesKey = "favoriteGongbaoDocs"
+
+    @Published private(set) var favoriteGongbaoDocs: [FavoriteGongbaoDoc] = []
+
+    private func loadGongbaoFavorites() {
+        guard let data = kv.data(forKey: Self.gongbaoFavoritesKey),
+              let items = try? JSONDecoder().decode([FavoriteGongbaoDoc].self, from: data)
+        else { return }
+        favoriteGongbaoDocs = items
+    }
+
+    func isGongbaoFavorited(docId: Int) -> Bool {
+        favoriteGongbaoDocs.contains { $0.docId == docId }
+    }
+
+    func addGongbaoFavorite(_ doc: FavoriteGongbaoDoc) {
+        guard !isGongbaoFavorited(docId: doc.docId) else { return }
+        favoriteGongbaoDocs.insert(doc, at: 0)
+        persistGongbaoFavorites()
+    }
+
+    func removeGongbaoFavorite(docId: Int) {
+        favoriteGongbaoDocs.removeAll { $0.docId == docId }
+        persistGongbaoFavorites()
+    }
+
+    func removeGongbaoFavorites(at offsets: IndexSet) {
+        favoriteGongbaoDocs.remove(atOffsets: offsets)
+        persistGongbaoFavorites()
+    }
+
+    private func persistGongbaoFavorites() {
+        guard let data = try? JSONEncoder().encode(favoriteGongbaoDocs) else { return }
+        kv.set(data, forKey: Self.gongbaoFavoritesKey)
+        kv.synchronize()
+    }
+
+    // MARK: - 公报笔记
+
+    private static let gongbaoNotesKey = "gongbaoNotes"
+    @Published private(set) var gongbaoNotes: [String: String] = [:]
+
+    private func loadGongbaoNotes() {
+        guard let data = kv.data(forKey: Self.gongbaoNotesKey),
+              let dict = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return }
+        gongbaoNotes = dict
+    }
+
+    func gongbaoNote(docId: Int) -> String {
+        gongbaoNotes["\(docId)"] ?? ""
+    }
+
+    func setGongbaoNote(docId: Int, text: String) {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            gongbaoNotes.removeValue(forKey: "\(docId)")
+        } else {
+            gongbaoNotes["\(docId)"] = text
+        }
+        persistGongbaoNotes_()
+    }
+
+    private func persistGongbaoNotes_() {
+        guard let data = try? JSONEncoder().encode(gongbaoNotes) else { return }
+        kv.set(data, forKey: Self.gongbaoNotesKey)
         kv.synchronize()
     }
 }

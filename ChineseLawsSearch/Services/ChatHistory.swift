@@ -41,23 +41,25 @@ struct PersistedMessage: Codable {
     var citations: [PersistedCitation]
     var subQuestions: [String]
     var isClarifying: Bool
+    var gongbaoCitations: [GongbaoCitation]
 
     init(role: String, text: String, thinkSteps: [PersistedThinkStep] = [],
          citations: [PersistedCitation] = [], subQuestions: [String] = [],
-         isClarifying: Bool = false) {
+         isClarifying: Bool = false, gongbaoCitations: [GongbaoCitation] = []) {
         self.role = role; self.text = text; self.thinkSteps = thinkSteps
         self.citations = citations; self.subQuestions = subQuestions
-        self.isClarifying = isClarifying
+        self.isClarifying = isClarifying; self.gongbaoCitations = gongbaoCitations
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        role         = try c.decode(String.self, forKey: .role)
-        text         = try c.decode(String.self, forKey: .text)
-        thinkSteps   = (try? c.decodeIfPresent([PersistedThinkStep].self, forKey: .thinkSteps)) ?? []
-        citations    = (try? c.decodeIfPresent([PersistedCitation].self, forKey: .citations)) ?? []
-        subQuestions = (try? c.decodeIfPresent([String].self, forKey: .subQuestions)) ?? []
-        isClarifying = (try? c.decodeIfPresent(Bool.self, forKey: .isClarifying)) ?? false
+        role             = try c.decode(String.self, forKey: .role)
+        text             = try c.decode(String.self, forKey: .text)
+        thinkSteps       = (try? c.decodeIfPresent([PersistedThinkStep].self, forKey: .thinkSteps)) ?? []
+        citations        = (try? c.decodeIfPresent([PersistedCitation].self, forKey: .citations)) ?? []
+        subQuestions     = (try? c.decodeIfPresent([String].self, forKey: .subQuestions)) ?? []
+        isClarifying     = (try? c.decodeIfPresent(Bool.self, forKey: .isClarifying)) ?? false
+        gongbaoCitations = (try? c.decodeIfPresent([GongbaoCitation].self, forKey: .gongbaoCitations)) ?? []
     }
 }
 
@@ -76,6 +78,7 @@ struct ChatSession: Identifiable, Codable {
     var pendingFacts: [String: String]
     var isAwaitingClarification: Bool
     var followUpRound: Int
+    var lastQueryMode: String?   // QueryMode.rawValue，追问时恢复
 
     // Token 累计统计
     var totalPromptTokens: Int
@@ -87,6 +90,7 @@ struct ChatSession: Identifiable, Codable {
          pendingFacts: [String: String] = [:],
          isAwaitingClarification: Bool = false,
          followUpRound: Int = 0,
+         lastQueryMode: String? = nil,
          totalPromptTokens: Int = 0,
          totalCompletionTokens: Int = 0) {
         self.id = id; self.title = title; self.mode = mode
@@ -96,8 +100,20 @@ struct ChatSession: Identifiable, Codable {
         self.pendingFacts = pendingFacts
         self.isAwaitingClarification = isAwaitingClarification
         self.followUpRound = followUpRound
+        self.lastQueryMode = lastQueryMode
         self.totalPromptTokens = totalPromptTokens
         self.totalCompletionTokens = totalCompletionTokens
+    }
+}
+
+// MARK: - Persist actor (serializes all disk I/O, preventing concurrent-write races)
+
+private actor PersistActor {
+    func write(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+    }
+    func read(from url: URL) -> Data? {
+        try? Data(contentsOf: url)
     }
 }
 
@@ -107,10 +123,12 @@ final class ChatHistoryStore: ObservableObject {
     @Published var sessions: [ChatSession] = []
     @Published var isLoading: Bool = false
 
-    private static let fileName = "chat_history.json"
+    private static let fileName    = "chat_history.json"
+    /// Keep at most this many sessions to bound storage and memory.
+    private static let maxSessions = 200
 
-    /// 计算一次并缓存，避免每次调用 FileManager.url(forUbiquityContainerIdentifier:)
-    private let fileURL: URL = {
+    /// Resolves the storage URL lazily on first access (called from background thread in loadAsync).
+    private var fileURL: URL {
         if let ubiq = FileManager.default.url(forUbiquityContainerIdentifier: nil)?
             .appendingPathComponent("Documents") {
             if !FileManager.default.fileExists(atPath: ubiq.path) {
@@ -120,8 +138,9 @@ final class ChatHistoryStore: ObservableObject {
         }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent(ChatHistoryStore.fileName)
-    }()
+    }
 
+    private let persistActor = PersistActor()
     private var metadataQuery: NSMetadataQuery?
     /// Debounce iCloud update notifications to avoid hammering disk on rapid sync events.
     private var reloadWorkItem: DispatchWorkItem?
@@ -136,6 +155,10 @@ final class ChatHistoryStore: ObservableObject {
             sessions[idx] = session
         } else {
             sessions.insert(session, at: 0)
+            // Prune oldest sessions beyond the cap
+            if sessions.count > Self.maxSessions {
+                sessions = Array(sessions.prefix(Self.maxSessions))
+            }
         }
         persistAsync()
     }
@@ -148,11 +171,11 @@ final class ChatHistoryStore: ObservableObject {
     private func loadAsync() {
         isLoading = true
         let url = fileURL
+        let actor = persistActor
         Task.detached(priority: .userInitiated) {
             try? FileManager.default.startDownloadingUbiquitousItem(at: url)
-            let decoded = (try? Data(contentsOf: url))
-                .flatMap { try? JSONDecoder().decode([ChatSession].self, from: $0) }
-                ?? []
+            let data = await actor.read(from: url)
+            let decoded = data.flatMap { try? JSONDecoder().decode([ChatSession].self, from: $0) } ?? []
             await MainActor.run {
                 self.sessions = decoded
                 self.isLoading = false
@@ -160,13 +183,14 @@ final class ChatHistoryStore: ObservableObject {
         }
     }
 
-    /// 异步序列化 + 写文件，不阻塞主线程。
+    /// 序列化写文件，通过 PersistActor 保证同一时刻只有一个写操作。
     private func persistAsync() {
         let snapshot = sessions
         let url = fileURL
+        let actor = persistActor
         Task.detached(priority: .utility) {
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            try? data.write(to: url, options: .atomic)
+            try? await actor.write(data, to: url)
         }
     }
 

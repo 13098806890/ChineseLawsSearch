@@ -9,7 +9,7 @@ import Combine
 
 // MARK: - Mode (kept for history compatibility, only expert used)
 
-enum ChatMode: String, CaseIterable, Codable {
+enum ChatMode: String, Codable {
     case expert = "专家"
 
     var icon: String { "person.3" }
@@ -22,6 +22,7 @@ struct LegalChatView: View {
     let historyStore: ChatHistoryStore
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
+    let navigateToGongbao: (GongbaoDoc) -> Void
     var showHistoryButton: Bool = true
     var showNewSessionButton: Bool = false
     var onOpenSettings: (() -> Void)? = nil
@@ -59,17 +60,15 @@ struct LegalChatView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if vm.messages.isEmpty {
                         placeholderView
-                            .onAppear {
-                                // 无 key 且免费次数用完时弹 paywall
-                                if isActive && !canUseAgent { showPaywall = true }
-                            }
                     }
                     ForEach(vm.messages) { msg in
                         MessageBubble(message: msg, showThinking: showThinking,
                                       navigate: navigate,
+                                      navigateToGongbao: navigateToGongbao,
                                       onToggleStep: { vm.toggleStep(messageId: msg.id, stepId: $0) },
                                       onToggleSteps: { vm.toggleSteps(messageId: msg.id) },
-                                      onToggleCitations: { vm.toggleCitations(messageId: msg.id) })
+                                      onToggleCitations: { vm.toggleCitations(messageId: msg.id) },
+                                      onToggleGongbaoCitations: { vm.toggleGongbaoCitations(messageId: msg.id) })
                             .id(msg.id)
                     }
                 }
@@ -143,7 +142,7 @@ struct LegalChatView: View {
                                 }
                             }
                         Button {
-                            Task { await vm.send(historyStore: historyStore) }
+                            Task { await vm.send(historyStore: historyStore, gongbaoNotes: userStore.gongbaoNotes) }
                         } label: {
                             Image(systemName: vm.isThinking ? "stop.circle.fill" : "arrow.up.circle.fill")
                                 .font(.system(size: 26))
@@ -218,10 +217,29 @@ struct LegalChatView: View {
                         .padding(.vertical, 6)
                     }
 
-                    // Token counter — 仅基础版（自备 Key）显示，其余用内置 Key 无需展示成本
+                    // Token counter — DEBUG 模式始终显示，便于测试
                     let totalPrompt     = vm.tokenBasePrompt     + tokenCounter.session.promptTokens
                     let totalCompletion = vm.tokenBaseCompletion + tokenCounter.session.completionTokens
                     let totalTokens     = totalPrompt + totalCompletion
+                    #if DEBUG
+                    if totalTokens > 0 {
+                        HStack(spacing: 12) {
+                            Spacer()
+                            Label("\(formatTokens(totalPrompt))", systemImage: "arrow.up")
+                            Label("\(formatTokens(totalCompletion))", systemImage: "arrow.down")
+                            Text("共 \(formatTokens(totalTokens)) tokens")
+                            let cost = Double(totalPrompt)     / 1_000_000 * 0.27
+                                     + Double(totalCompletion) / 1_000_000 * 1.10
+                            Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 4)
+                    } else {
+                        Spacer().frame(height: 8)
+                    }
+                    #else
                     if case .basic = pm.access {
                         if totalTokens > 0 {
                             HStack(spacing: 12) {
@@ -243,6 +261,7 @@ struct LegalChatView: View {
                     } else {
                         Spacer().frame(height: 8)
                     }
+                    #endif
                 }
                 .background(.bar)
             }
@@ -254,7 +273,16 @@ struct LegalChatView: View {
                 if showHistoryButton || showNewSessionButton {
                     HStack(spacing: 16) {
                         if !vm.messages.isEmpty {
-                            Button { exportItem = ExportItem(text: vm.exportMarkdown()) } label: {
+                            Menu {
+                                Button("纯文本") {
+                                    exportItem = ExportItem(kind: .text(vm.exportMarkdown()))
+                                }
+                                Button("PDF 文件") {
+                                    let text = vm.exportMarkdown()
+                                    let url = ChatExportPDF.render(text: text)
+                                    exportItem = ExportItem(kind: .pdf(url))
+                                }
+                            } label: {
                                 Image(systemName: "paperplane")
                             }
                         }
@@ -290,7 +318,7 @@ struct LegalChatView: View {
             PaywallView(pm: pm)
         }
         .sheet(item: $exportItem) { item in
-            ShareSheet(activityItems: [item.text])
+            ShareSheet(activityItems: [item.activityItem])
         }
         .alert("需要配置 API Key", isPresented: $showNoKeyAlert) {
             Button("前往设置") { onOpenSettings?() }
@@ -302,6 +330,10 @@ struct LegalChatView: View {
             Button("确定", role: .cancel) {}
         } message: {
             Text("检测到设备时间异常，请恢复正确时间后再使用。")
+        }
+        .onChange(of: isActive) { _, active in
+            // 用户首次切到对话 Tab 且无权限时弹 Paywall，避免每次 onAppear 重复弹
+            if active && vm.messages.isEmpty && !canUseAgent { showPaywall = true }
         }
     }
 
@@ -318,7 +350,7 @@ struct LegalChatView: View {
                         .foregroundStyle(AppColors.shared.searchHighlight.opacity(0.7))
                     Text("律疏 · 法律顾问")
                         .font(.title2.bold())
-                    Text("多位细分领域专家协作，精准引用法条，给出有依据的法律意见")
+                    Text("多领域专家协作分析，精准检索法条与公报案例，给出有依据的法律意见")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -330,53 +362,57 @@ struct LegalChatView: View {
 
                 // 三种问答模式
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("支持三种问答模式")
+                    Text("三种提问方式")
                         .font(.headline)
 
                     modeCard(
                         icon: "person.crop.circle.badge.questionmark",
                         title: "案情分析",
-                        desc: "描述您亲历的具体纠纷——当事人关系、事件经过、时间节点。专家会追问缺失事实，分析责任归属，给出维权建议。",
+                        desc: "描述您遇到的具体纠纷：当事人关系、事件经过、时间节点。专家会追问关键细节，分析责任归属，给出维权建议。",
                         example: "我和房东签了一年租约，还有四个月到期，房东突然要求我两周内搬走并拒绝退押金，我该怎么办？"
                     )
 
                     modeCard(
                         icon: "lightbulb",
                         title: "法律咨询",
-                        desc: "询问某类场景下的权利义务或法律规则，无需有具体纠纷，适合提前了解或评估风险。",
+                        desc: "询问某类场景下的权利义务或法律规则。无需有具体纠纷，适合提前了解法律边界或评估潜在风险。",
                         example: "劳动合同到期公司不续签，员工能拿到经济补偿吗？"
                     )
 
                     modeCard(
                         icon: "doc.text.magnifyingglass",
-                        title: "法条检索",
-                        desc: "查询某概念的法律定义、某罪的构成要件，或某主题下的相关条文原文。",
-                        example: "交通肇事罪的构成要件是什么？"
+                        title: "法条与案例检索",
+                        desc: "查找特定主题的法律条文原文，或检索人民法院公报中的指导案例与裁判文书，了解司法实践口径。",
+                        example: "合同欺诈的认定标准是什么？有没有相关指导案例？"
                     )
                 }
 
                 Divider()
 
-                // 使用提示
+                // 功能亮点
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("使用提示")
+                    Text("功能亮点")
                         .font(.headline)
 
-                    tipRow(icon: "text.alignleft",
-                           title: "案情越详细，分析越准确",
-                           body: "说明当事人关系、事件经过、时间节点，专家能据此精准检索法条、给出针对性意见。")
+                    tipRow(icon: "book.closed",
+                           title: "本地法规库，精准引用",
+                           body: "内置 4000 余部法律法规、司法解释全文，回答时直接标注条文出处，不靠\"印象\"作答。点击引用法条可跳转原文查看。")
+
+                    tipRow(icon: "newspaper",
+                           title: "关联公报案例",
+                           body: "自动检索人民法院公报指导案例与裁判文书，以卡片形式展示于回答末尾，点击直接查看完整文书，了解同类纠纷的实际裁判结果。")
+
+                    tipRow(icon: "note.text",
+                           title: "案例笔记辅助检索",
+                           body: "在公报文书上添加个人笔记后，AI 咨询时会将笔记内容纳入检索，优先推荐您标注过的相关案例。")
 
                     tipRow(icon: "arrow.turn.down.right",
-                           title: "在同一会话里追问",
-                           body: "对答复中不清楚的地方直接追问，无需重复背景，专家会沿用上下文继续分析。")
+                           title: "多轮追问，深入分析",
+                           body: "对答复中不清楚的地方直接追问，专家会沿用上下文继续分析，无需重复背景。")
 
-                    tipRow(icon: "plus.circle",
-                           title: "新案情开新会话",
-                           body: "遇到完全不同的纠纷，点击右上角「+」新建对话，避免不同案情互相干扰。")
-
-                    tipRow(icon: "bookmark",
-                           title: "收藏重要条文",
-                           body: "在「法律浏览」中长按任意条文可收藏，底部「收藏」栏随时查阅，iCloud 多设备同步。")
+                    tipRow(icon: "clock",
+                           title: "历史记录与导出",
+                           body: "对话自动保存，点击右上角时钟图标查看历史。可将对话导出为文本或 PDF 分享存档。")
                 }
 
             }
@@ -465,9 +501,11 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let showThinking: Bool
     let navigate: (Int, Int?) -> Void
+    let navigateToGongbao: (GongbaoDoc) -> Void
     let onToggleStep: (UUID) -> Void
     let onToggleSteps: () -> Void
     let onToggleCitations: () -> Void
+    let onToggleGongbaoCitations: () -> Void
 
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
@@ -571,6 +609,23 @@ private struct MessageBubble: View {
 
                         if message.showCitations {
                             CitationList(citations: message.citations, navigate: navigate)
+                        }
+                    }
+
+                    if !message.gongbaoCitations.isEmpty {
+                        Button {
+                            withAnimation(.spring(duration: 0.25)) { onToggleGongbaoCitations() }
+                        } label: {
+                            Label(message.showGongbaoCitations ? "收起公报案例" : "查看公报案例（\(message.gongbaoCitations.count)条）",
+                                  systemImage: message.showGongbaoCitations ? "chevron.up" : "newspaper")
+                                .font(.caption)
+                                .foregroundStyle(AppColors.shared.searchHighlight)
+                        }
+                        .padding(.leading, 4)
+
+                        if message.showGongbaoCitations {
+                            GongbaoCitationCards(citations: message.gongbaoCitations,
+                                                 navigateToGongbao: navigateToGongbao)
                         }
                     }
                 }
@@ -846,6 +901,80 @@ private struct CitationList: View {
     }
 }
 
+// MARK: - Gongbao Citation Cards
+
+private struct GongbaoCitationCards: View {
+    let citations: [GongbaoCitation]
+    let navigateToGongbao: (GongbaoDoc) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "newspaper")
+                    .font(.caption)
+                    .foregroundStyle(AppColors.shared.searchHighlight)
+                Text("相关公报案例")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+
+            ForEach(citations) { cite in
+                Button {
+                    if let doc = DatabaseManager.shared.gongbaoDoc(id: cite.docId) {
+                        navigateToGongbao(doc)
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 4) {
+                            Text(sourceLabel(cite.source))
+                                .font(.caption2)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Color.appQuaternaryBackground)
+                                .clipShape(Capsule())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        Text(cite.title)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                        if !cite.rulingGist.isEmpty {
+                            Text(cite.rulingGist)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        if !cite.relevanceReason.isEmpty {
+                            Text(cite.relevanceReason)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.appBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.appSeparator, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func sourceLabel(_ source: String) -> String {
+        switch source {
+        case "al":     return "指导案例"
+        case "sfwj":   return "司法文件"
+        case "cpwsxd": return "裁判文书"
+        default:       return "公报"
+        }
+    }
+}
+
 // MARK: - History Sidebar (iPad split view)
 
 struct ChatHistorySidebar: View {
@@ -898,10 +1027,6 @@ struct ChatHistorySidebar: View {
         }
         .navigationTitle("历史记录")
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private func historyRow(_ session: ChatSession) -> some View {
-        SessionRowView(session: session)
     }
 }
 
@@ -1030,6 +1155,12 @@ final class LegalChatViewModel: ObservableObject {
     }
 
     @MainActor
+    func toggleGongbaoCitations(messageId: UUID) {
+        guard let mi = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        messages[mi].showGongbaoCitations.toggle()
+    }
+
+    @MainActor
     func newSession() {
         messages = []
         inputText = ""
@@ -1073,6 +1204,7 @@ final class LegalChatViewModel: ObservableObject {
                             category: $0.category, content: $0.content)
             }
             msg.subQuestions = pm.subQuestions
+            msg.gongbaoCitations = pm.gongbaoCitations
             return msg
         }
         // 恢复专家追问上下文
@@ -1088,7 +1220,7 @@ final class LegalChatViewModel: ObservableObject {
     }
 
     @MainActor
-    func send(historyStore: ChatHistoryStore) async {
+    func send(historyStore: ChatHistoryStore, gongbaoNotes: [String: String] = [:]) async {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !isThinking else { return }
 
@@ -1110,6 +1242,8 @@ final class LegalChatViewModel: ObservableObject {
         }
         kv.set(now, forKey: lastSendTimeKey)
         kv.synchronize()
+
+        LegalExpertService.shared.gongbaoNotes = gongbaoNotes
 
         let currentSessionId = sessionId  // capture before any await
         lastFailedQuestion = nil
@@ -1221,7 +1355,7 @@ final class LegalChatViewModel: ObservableObject {
                     maxFollowUpRounds: 0,
                     preClassifiedMode: preMode ?? .legalAdvisory
                 ) { [weak self] event in
-                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId) }
+                    self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId)
                 }
                 if mode == .caseAnalysis { isAwaitingClarification = false }
                 citations = c
@@ -1232,7 +1366,7 @@ final class LegalChatViewModel: ObservableObject {
                     conversationHistory: conversationHistory,
                     knownFacts: pendingFacts
                 ) { [weak self] event in
-                    Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId) }
+                    self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId)
                 }
                 lastSelectedExperts = updatedExperts
                 isAwaitingClarification = false
@@ -1256,7 +1390,7 @@ final class LegalChatViewModel: ObservableObject {
                 maxFollowUpRounds: maxRounds,
                 preClassifiedMode: preMode
             ) { [weak self] event in
-                Task { @MainActor [weak self] in self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId) }
+                self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId)
             }
             // Only case analysis supports multi-turn clarification
             if mode != .caseAnalysis { isAwaitingClarification = false }
@@ -1297,6 +1431,8 @@ final class LegalChatViewModel: ObservableObject {
             scrollToken += 1
         case .expertsSelected(let experts):
             lastSelectedExperts = experts
+        case .gongbaoCitations(let cites):
+            messages[replyIdx].gongbaoCitations = cites
         }
     }
 
@@ -1332,7 +1468,8 @@ final class LegalChatViewModel: ObservableObject {
                                           category: $0.category, content: $0.content)
                     },
                     subQuestions: msg.subQuestions,
-                    isClarifying: msg.isClarifying
+                    isClarifying: msg.isClarifying,
+                    gongbaoCitations: msg.gongbaoCitations
                 )
             },
             selectedExpertNames: lastSelectedExperts.map { $0.name },
@@ -1411,8 +1548,48 @@ final class LegalChatViewModel: ObservableObject {
 // MARK: - Export helpers
 
 struct ExportItem: Identifiable {
+    enum Kind { case text(String); case pdf(URL?) }
     let id = UUID()
-    let text: String
+    let kind: Kind
+    var activityItem: Any {
+        switch kind {
+        case .text(let s):    return s
+        case .pdf(let url):   return url as Any
+        }
+    }
+}
+
+enum ChatExportPDF {
+    static func render(text: String) -> URL? {
+        let pageRect = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+        let data = renderer.pdfData { ctx in
+            let margin: CGFloat = 44
+            let maxWidth = pageRect.width - margin * 2
+            let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 11)]
+            let attrStr = NSAttributedString(string: text, attributes: attrs)
+            let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
+            var charIndex = 0
+            ctx.beginPage()
+            while charIndex < attrStr.length {
+                let frameRect = CGRect(x: margin, y: margin, width: maxWidth, height: pageRect.height - margin * 2)
+                let path = CGPath(rect: frameRect, transform: nil)
+                let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(charIndex, 0), path, nil)
+                let range = CTFrameGetVisibleStringRange(frame)
+                let uiCtx = UIGraphicsGetCurrentContext()!
+                uiCtx.saveGState()
+                uiCtx.translateBy(x: 0, y: pageRect.height)
+                uiCtx.scaleBy(x: 1, y: -1)
+                CTFrameDraw(frame, uiCtx)
+                uiCtx.restoreGState()
+                charIndex += range.length
+                if charIndex < attrStr.length { ctx.beginPage() }
+            }
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("法律咨询记录.pdf")
+        try? data.write(to: url)
+        return url
+    }
 }
 
 private struct ShareSheet: UIViewControllerRepresentable {

@@ -66,7 +66,7 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 tabButton(title: "法律浏览", icon: "doc.text", tab: .browse)
-                tabButton(title: "人民法院公报", icon: "newspaper", tab: .gongbao)
+                tabButton(title: "高院公报", icon: "newspaper", tab: .gongbao)
                 tabButton(title: "法律咨询", icon: "message", tab: .chat)
                 tabButton(title: "收藏", icon: "star", tab: .favorites)
                 Button {
@@ -131,6 +131,7 @@ struct ContentView: View {
                 TOCView(target: $target)
                     .navigationDestination(item: $target) { t in
                         LawDetailView(target: t, navigate: navigate,
+                                      navigateToGongbao: navigateToGongbao,
                                       canGoBack: !backStack.isEmpty, goBack: goBack)
                             .environmentObject(userStore)
                     }
@@ -142,6 +143,7 @@ struct ContentView: View {
                 if let t = target {
                     NavigationStack {
                         LawDetailView(target: t, navigate: navigate,
+                                      navigateToGongbao: navigateToGongbao,
                                       canGoBack: !backStack.isEmpty, goBack: goBack)
                             .environmentObject(userStore)
                     }
@@ -161,6 +163,7 @@ struct ContentView: View {
                 NavigationStack {
                     LegalChatView(vm: chatVM, historyStore: historyStore,
                                   showThinking: userStore.showThinking, navigate: navigate,
+                                  navigateToGongbao: navigateToGongbao,
                                   onOpenSettings: { showSettings = true },
                                   isActive: tab == .chat)
                         .environmentObject(userStore)
@@ -172,6 +175,7 @@ struct ContentView: View {
                     NavigationStack {
                         LegalChatView(vm: chatVM, historyStore: historyStore,
                                       showThinking: userStore.showThinking, navigate: navigate,
+                                      navigateToGongbao: navigateToGongbao,
                                       showHistoryButton: false, showNewSessionButton: true,
                                       onOpenSettings: { showSettings = true },
                                       isActive: tab == .chat)
@@ -185,7 +189,7 @@ struct ContentView: View {
     // MARK: Favorites
 
     private var favoritesView: some View {
-        FavoritesView(navigate: navigate)
+        FavoritesView(navigate: navigate, navigateToGongbao: navigateToGongbao)
             .environmentObject(userStore)
     }
 
@@ -197,7 +201,14 @@ struct ContentView: View {
                 NavigationStack {
                     GongbaoView(selectedDoc: $selectedGongbaoDoc)
                         .navigationDestination(item: $selectedGongbaoDoc) { doc in
-                            GongbaoDetailView(doc: doc)
+                            GongbaoDetailView(
+                                doc: doc,
+                                navigateBack: gongbaoNavigatedFromBrowse ? { tab = .browse; gongbaoNavigatedFromBrowse = false }
+                                            : gongbaoNavigatedFromChat   ? { tab = .chat;   gongbaoNavigatedFromChat   = false }
+                                            : nil,
+                                backLabel: gongbaoNavigatedFromChat ? "返回对话" : "返回法条"
+                            )
+                            .environmentObject(userStore)
                         }
                 }
             } else {
@@ -205,7 +216,14 @@ struct ContentView: View {
                     GongbaoView(selectedDoc: $selectedGongbaoDoc)
                 } detail: {
                     if let doc = selectedGongbaoDoc {
-                        GongbaoDetailView(doc: doc)
+                        GongbaoDetailView(
+                            doc: doc,
+                            navigateBack: gongbaoNavigatedFromBrowse ? { tab = .browse; gongbaoNavigatedFromBrowse = false }
+                                        : gongbaoNavigatedFromChat   ? { tab = .chat;   gongbaoNavigatedFromChat   = false }
+                                        : nil,
+                            backLabel: gongbaoNavigatedFromChat ? "返回对话" : "返回法条"
+                        )
+                        .environmentObject(userStore)
                     } else {
                         VStack(spacing: 8) {
                             Image(systemName: "newspaper")
@@ -246,6 +264,16 @@ struct ContentView: View {
             tab = .browse
             target = LawTarget(law: law, scrollToArticle: articleNum)
         }
+    }
+
+    @State private var gongbaoNavigatedFromBrowse = false
+    @State private var gongbaoNavigatedFromChat   = false
+
+    func navigateToGongbao(_ doc: GongbaoDoc) {
+        gongbaoNavigatedFromBrowse = (tab == .browse)
+        gongbaoNavigatedFromChat   = (tab == .chat)
+        tab = .gongbao
+        selectedGongbaoDoc = doc
     }
 
     /// 持久化当前 backStack + target 到 UserDefaults
@@ -384,14 +412,8 @@ private struct SettingsSheet: View {
                         Text("大").tag("large")
                         Text("超大").tag("xlarge")
                     }
-                    Toggle(isOn: $userStore.flkMode) {
-                        Label("法考模式", systemImage: userStore.flkMode ? "graduationcap.fill" : "graduationcap")
-                    }
-                    .hidden()
                 } header: {
                     Text("法律浏览")
-                } footer: {
-                    EmptyView()
                 }
 
                 Section {
@@ -443,27 +465,26 @@ private struct SettingsSheet: View {
                     }
                 }
 
-                // AI 模型与 API Key — 仅基础版（自备 Key）显示
-                if case .basic = pm.access {
-                    Section {
-                        let deepseek = LLMProviderRegistry.provider(id: "deepseek")!
-                        HStack {
-                            Label(deepseek.displayName, systemImage: "cpu")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(AppColors.shared.searchHighlight)
-                                .font(.footnote.bold())
-                        }
-                    } header: {
-                        Text("AI 模型")
-                    } footer: {
-                        Text("当前使用 DeepSeek，需在下方填入您的 API Key。DeepSeek 新用户注册即有免费额度，价格低廉，国内可直连。")
+                // AI 模型与 API Key — 始终显示（pro+自备Key 优先走自备Key，不消耗额度）
+                Section {
+                    let deepseek = LLMProviderRegistry.provider(id: "deepseek")!
+                    HStack {
+                        Label(deepseek.displayName, systemImage: "cpu")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(AppColors.shared.searchHighlight)
+                            .font(.footnote.bold())
                     }
+                } header: {
+                    Text("AI 模型")
+                } footer: {
+                    Text("当前使用 DeepSeek，需在下方填入您的 API Key。DeepSeek 新用户注册即有免费额度，价格低廉，国内可直连。")
+                }
 
-                    let provider = LLMProviderRegistry.provider(id: "deepseek")!
-                    let currentKey = KeychainHelper.load(forKey: provider.keychainKey) ?? ""
-                    Section {
+                let provider = LLMProviderRegistry.provider(id: "deepseek")!
+                let currentKey = KeychainHelper.load(forKey: provider.keychainKey) ?? ""
+                Section {
                         HStack {
                             SecureField("粘贴 DeepSeek API Key…", text: Binding(
                                 get: { savedKeys[provider.id] ?? "" },
@@ -533,7 +554,6 @@ private struct SettingsSheet: View {
                              : "Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
                             .font(.caption)
                     }
-                }
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
@@ -541,6 +561,15 @@ private struct SettingsSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+                let build   = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+                Text("律疏 \(version).\(build)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
             }
             .sheet(isPresented: $showWelcome) {
                 NavigationStack {

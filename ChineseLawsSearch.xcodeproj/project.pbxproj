@@ -295,6 +295,8 @@
 /* Begin XCBuildConfiguration section */
 		DAA1D82E2FA1DF3B0003A448 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -317,7 +319,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.01;
+				MARKETING_VERSION = 1.03;
 				PRODUCT_BUNDLE_IDENTIFIER = Personal.ChineseLawsSearch;
 				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.doxie.chineseLawsAgent;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -336,6 +338,8 @@
 		};
 		DAA1D82F2FA1DF3B0003A448 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -358,7 +362,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.01;
+				MARKETING_VERSION = 1.03;
 				PRODUCT_BUNDLE_IDENTIFIER = Personal.ChineseLawsSearch;
 				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.doxie.chineseLawsAgent;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -377,6 +381,8 @@
 		};
 		DAA1D8302FA1DF3B0003A448 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -441,6 +447,8 @@
 		};
 		DAA1D8312FA1DF3B0003A448 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -498,6 +506,8 @@
 		};
 		DAA1D8332FA1DF3B0003A448 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
@@ -521,6 +531,8 @@
 		};
 		DAA1D8342FA1DF3B0003A448 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
@@ -544,6 +556,8 @@
 		};
 		DAA1D8362FA1DF3B0003A448 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -565,6 +579,8 @@
 		};
 		DAA1D8372FA1DF3B0003A448 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = DAA1D80B2FA1DF390003A448 /* ChineseLawsSearch */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;

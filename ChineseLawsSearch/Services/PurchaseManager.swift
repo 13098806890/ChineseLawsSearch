@@ -83,9 +83,9 @@ final class PurchaseManager: ObservableObject {
     //   .pro(weeklyRemaining: 0)  → 模拟畅用版额度用完
     //   .noAccess             → 模拟未购买且免费用完
     // ---------------------------------------------------------------
-    static let paymentEnabled: Bool      = true    // false = 本地调试，mockAccess 生效
+    static let paymentEnabled: Bool      = false   // false = 本地调试，mockAccess 生效
     #if DEBUG
-    static let mockAccess:     AgentAccess = .basic  // 仅 paymentEnabled=false 时有效
+    static let mockAccess:     AgentAccess = .pro(weeklyRemaining: 80)  // 仅 paymentEnabled=false 时有效
     #else
     static let mockAccess:     AgentAccess = .noAccess
     #endif
@@ -109,10 +109,14 @@ final class PurchaseManager: ObservableObject {
 
     // MARK: - Published state
     @Published private(set) var products:       [Product] = []
-    @Published private(set) var hasBASIC:       Bool = false   // 基础版买断
-    @Published private(set) var hasPRO:         Bool = false   // 畅用版（月/年订阅有效）
+    @Published private(set) var hasBASIC:       Bool = false
+    @Published private(set) var hasPRO:         Bool = false
     @Published private(set) var freeRemaining:  Int  = 0
     @Published private(set) var weeklyRemaining: Int = 0
+
+    /// 上次 consumeIfAllowed() 实际扣减的路径，refundIfNeeded() 依此精确退还
+    private enum ConsumedPath { case free, pro, userKey, none }
+    private var lastConsumedPath: ConsumedPath = .none
 
     private var updateListenerTask: Task<Void, Never>?
 
@@ -167,6 +171,7 @@ final class PurchaseManager: ObservableObject {
 
     /// 调用 Agent 前调用；有权限则消耗计数并返回 true。
     func consumeIfAllowed() -> Bool {
+        lastConsumedPath = .none
         if !Self.paymentEnabled {
             switch Self.mockAccess {
             case .noAccess:                return false
@@ -179,11 +184,15 @@ final class PurchaseManager: ObservableObject {
             let newVal = free - 1
             ud.set(newVal, forKey: freeCountKey)
             freeRemaining = max(0, newVal)
+            lastConsumedPath = .free
             return true
         }
         // 自备 Key（basic 或 pro+key）→ 不消耗内置额度
-        if (hasBASIC || hasPRO) && hasUserKey { return true }
-        // 畅用版内置 Key → 消耗周额度（同时写 iCloud + UserDefaults 防 fallback 虚高）
+        if (hasBASIC || hasPRO) && hasUserKey {
+            lastConsumedPath = .userKey
+            return true
+        }
+        // 畅用版内置 Key → 消耗周额度
         if hasPRO {
             let used = currentWeekUsed()
             guard used < Self.proWeeklyTotal else { return false }
@@ -192,37 +201,33 @@ final class PurchaseManager: ObservableObject {
             kv.synchronize()
             ud.set(newUsed, forKey: weekUsedUDKey)
             weeklyRemaining = Self.proWeeklyTotal - newUsed
+            lastConsumedPath = .pro
             return true
         }
         return false
     }
 
     /// 网络失败等不可控错误时退还已消耗的计数。
-    /// 只退还真正从计数中扣除的路径（免费次数 / 畅用版周额度），自备 Key 路径无需退还。
     func refundIfNeeded() {
         if !Self.paymentEnabled { return }
-        // 如果还有免费次数在本次调用前被消耗（即调用前 freeRemaining 比现在少一次），则退还
-        let currentFree = ud.integer(forKey: freeCountKey)
-        let initializedFree = ud.bool(forKey: freeInitedKey)
-        // 仅在当次调用扣了免费次数的情况下退还（freeRemaining 被减少过）
-        // 判断依据：消耗路径上 freeRemaining = max(0, free-1)，所以如果上一次消耗是免费路径
-        // 此时 currentFree < freeTotal 且 (hasBASIC||hasPRO) 都不成立（否则走自备Key路径）
-        if initializedFree && currentFree < freeTotal {
-            let restored = currentFree + 1
+        switch lastConsumedPath {
+        case .free:
+            let current = ud.integer(forKey: freeCountKey)
+            let restored = min(current + 1, freeTotal)
             ud.set(restored, forKey: freeCountKey)
             freeRemaining = restored
-            return
-        }
-        // 畅用版周额度退还
-        if hasPRO && !hasUserKey {
+        case .pro:
             let used = currentWeekUsed()
-            guard used > 0 else { return }
+            guard used > 0 else { break }
             let newUsed = used - 1
             kv.set(Int64(newUsed), forKey: weekUsedKey)
             kv.synchronize()
             ud.set(newUsed, forKey: weekUsedUDKey)
             weeklyRemaining = Self.proWeeklyTotal - newUsed
+        case .userKey, .none:
+            break   // 自备 Key 路径不消耗配额，无需退还
         }
+        lastConsumedPath = .none
     }
 
     // MARK: - StoreKit: load products

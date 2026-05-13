@@ -19,6 +19,9 @@ private struct ArticleBag {
 final class LegalExpertService {
     static let shared = LegalExpertService()
 
+    /// 用户公报笔记字典（docId字符串 → 笔记文本），由 ViewModel 在每次 send() 时从 MainActor 写入
+    @MainActor var gongbaoNotes: [String: String] = [:]
+
     // MARK: - Quality settings (mirrors UserStore computed properties)
     // Reads chatQualityMode from UserDefaults (the same key @AppStorage uses)
     // so LegalExpertService always sees the latest user preference without
@@ -79,9 +82,11 @@ final class LegalExpertService {
         - "case"：用户陈述了具体的事实情况（时间、地点、人物、发生了什么），需要分析其权利义务、胜诉可能或维权策略
         - "advisory"：用户询问某类情景下的权利义务，有假设场景但无具体案情事实
         - "statute"：用户询问法律概念定义、某罪/某权利的构成要件，或要求查找/列举某主题相关法条原文
+        - "gongbao"：用户明确要找案例、判决、公报文书，问句中含有"案例"、"判决"、"指导案例"、"裁判文书"、"司法文件"、"法院怎么判"、"实践中"、"有没有案例"、"案例检索"等表达
 
         输出格式（严格JSON，不要其他内容）：
         {"intent": "legal_query", "mode": "case"}
+        {"intent": "legal_query", "mode": "gongbao"}
         {"intent": "off_topic"}
         {"intent": "follow_up"}
 
@@ -121,7 +126,7 @@ final class LegalExpertService {
                        followUpRound: Int,
                        maxFollowUpRounds: Int,
                        preClassifiedMode: QueryMode? = nil,
-                       onEvent: @escaping (RAGEvent) -> Void) async throws -> ([RAGCitation], QueryMode) {
+                       onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> ([RAGCitation], QueryMode) {
         let mode = preClassifiedMode ?? .legalAdvisory
         onEvent(.thinkStep(name: "问题模式", content: mode.label))
 
@@ -153,6 +158,10 @@ final class LegalExpertService {
                 question: question, mode: .conceptAndStatute,
                 conversationHistory: conversationHistory, onEvent: onEvent)
             return (citations, mode)
+
+        case .gongbaoSearch:
+            try await askGongbaoSearch(question: question, onEvent: onEvent)
+            return ([], mode)
         }
     }
 
@@ -160,7 +169,7 @@ final class LegalExpertService {
     private func runPipelineWithMode(question: String,
                                      mode: QueryMode,
                                      conversationHistory: [(user: String, assistant: String)] = [],
-                                     onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+                                     onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
         let analysis = await characterizeAndRoute(question: question, knownFacts: [:], conversationHistory: conversationHistory)
         onEvent(.thinkStep(name: "法律定性", content: analysis.characterization))
         onEvent(.thinkStep(name: "细分专家", content: analysis.experts.isEmpty ? "综合顾问" : analysis.experts.map { $0.name }.joined(separator: "、")))
@@ -245,6 +254,8 @@ final class LegalExpertService {
             """
         case .caseAnalysis:
             modeInstruction = ""  // handled by existing analyzeWithExpert
+        case .gongbaoSearch:
+            modeInstruction = ""  // gongbaoSearch doesn't go through expert analysis
         }
 
         // Mod 4: add self-filter instruction
@@ -287,6 +298,8 @@ final class LegalExpertService {
             """
         case .caseAnalysis:
             return coordinatorSystemPrompt
+        case .gongbaoSearch:
+            return coordinatorSystemPrompt  // not used by this path
         }
     }
 
@@ -381,7 +394,7 @@ final class LegalExpertService {
                      lastExperts: [SubExpert],
                      conversationHistory: [(user: String, assistant: String)],
                      knownFacts: [String: String],
-                     onEvent: @escaping (RAGEvent) -> Void) async throws -> ([RAGCitation], [SubExpert]) {
+                     onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> ([RAGCitation], [SubExpert]) {
         // Check if new legal domains are needed
         var nameToExpert: [String: SubExpert] = [:]
         for group in allExpertGroups.values {
@@ -441,7 +454,7 @@ final class LegalExpertService {
                               knownFacts: [String: String],
                               followUpRound: Int,
                               maxFollowUpRounds: Int,
-                              onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+                              onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
         let questionsToAnalyze = subQs.isEmpty ? [question] : subQs
 
@@ -489,7 +502,7 @@ final class LegalExpertService {
                                          experts: [SubExpert],
                                          conversationHistory: [(user: String, assistant: String)],
                                          knownFacts: [String: String],
-                                         onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+                                         onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
         var expertToQuestions: [String: [String]] = [:]
         for e in experts { expertToQuestions[e.name] = [question] }
         return try await runExpertStages(
@@ -513,7 +526,7 @@ final class LegalExpertService {
                                   knownFacts: [String: String],
                                   followUpRound: Int,
                                   maxFollowUpRounds: Int,
-                                  onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
+                                  onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
         let allUserText = ([factContext, question] + conversationHistory.map { $0.user + " " + $0.assistant })
             .filter { !$0.isEmpty }.joined(separator: "\n")
         var mergedFacts = autoExtractFacts(question: allUserText, experts: allSelectedExperts)
@@ -644,8 +657,19 @@ final class LegalExpertService {
                                       groupAnswers: [String: String],
                                       allArticlesFlat: [DatabaseManager.RAGArticle],
                                       systemPrompt: String,
-                                      onEvent: @escaping (RAGEvent) -> Void) async throws -> [RAGCitation] {
-        let context = buildGroupContext(groupAnswers: groupAnswers, articles: allArticlesFlat)
+                                      onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
+
+        // 公报案例检索在 coordinator 生成之前完成，结果注入 context
+        let lawIds = Array(Set(allArticlesFlat.map { $0.lawId }))
+        let gongbaoCites = await retrieveGongbaoCases(
+            question: question,
+            expandedTerms: [],
+            sourceFilter: nil,
+            candidateLawIds: lawIds,
+            onEvent: onEvent)
+
+        let context = buildGroupContext(groupAnswers: groupAnswers, articles: allArticlesFlat,
+                                        gongbaoCites: gongbaoCites)
         var userMsg = "用户问题：\(question)\n\n"
         if !subQs.isEmpty {
             userMsg += "问题已拆分为以下独立子问题，请逐一分标题回答，每个子问题回答前先用一句话复述该子问题：\n"
@@ -655,7 +679,7 @@ final class LegalExpertService {
         userMsg += context
 
         var answerText = ""
-        try await LLMProviderRegistry.current.streamChat(
+        try await LLMProviderRegistry.agentProvider.streamChat(
             messages: [["role": "system", "content": systemPrompt],
                        ["role": "user",   "content": userMsg]],
             temperature: 0.2,
@@ -665,11 +689,273 @@ final class LegalExpertService {
         let cited = citationsFromAnswer(answerText: answerText, candidates: allArticlesFlat)
         onEvent(.thinkStep(name: "参考法条筛选",
                            content: "从答案正文引用中提取 \(cited.count) 条直接引用的法条"))
+
+        if !gongbaoCites.isEmpty {
+            onEvent(.gongbaoCitations(gongbaoCites))
+        }
+
         return cited.map {
             RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
                         articleNumber: $0.articleNumber, articleNum: $0.articleNum,
                         category: $0.category, content: $0.content)
         }
+    }
+
+    // MARK: - 公报案例检索（扩词 → 多路召回 → LLM 筛选）
+
+    /// 专用公报检索路径：扩词 → 多路召回 → LLM 汇总回答
+    private func askGongbaoSearch(
+        question: String,
+        onEvent: @escaping @MainActor (RAGEvent) -> Void
+    ) async throws {
+        onEvent(.thinkStep(name: "公报检索模式", content: "直接检索人民法院公报案例库"))
+
+        // Stage 0: LLM 扩词 + 来源推断
+        let expansion = await expandSearchTerms(question: question)
+        let termsSummary = expansion.terms.isEmpty ? question : expansion.terms.joined(separator: "、")
+        onEvent(.thinkStep(name: "检索词扩展", content: "检索词：\(termsSummary)\n目标库：\(expansion.sourceLabel)"))
+
+        // Stage 1: 多路召回
+        let gongbaoCites = await retrieveGongbaoCases(
+            question: question,
+            expandedTerms: expansion.terms,
+            sourceFilter: expansion.sourceFilter,
+            candidateLawIds: [],
+            onEvent: onEvent
+        )
+
+        if !gongbaoCites.isEmpty {
+            onEvent(.gongbaoCitations(gongbaoCites))
+        }
+
+        // Stage 2: LLM 基于检索结果汇总回答
+        let caseContext: String
+        if gongbaoCites.isEmpty {
+            caseContext = "未找到直接相关的公报文书。"
+        } else {
+            caseContext = gongbaoCites.map { cite in
+                "【\(cite.title)】\n裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : String(cite.rulingGist.prefix(200)))"
+            }.joined(separator: "\n\n")
+        }
+
+        let systemPrompt = """
+        你是中国法律案例检索助手。根据用户问题和检索到的公报文书，给出简洁准确的回答。
+        规则：
+        - 只基于提供的案例内容作答，不编造案例
+        - 如果找到相关案例，提炼共同裁判规则和司法口径
+        - 如果没有找到，说明原因并建议换词搜索
+        - 严禁使用Markdown格式（不用**、#、- 等），用中文序号和书名号
+        - 总长度200-400字
+        """
+        let userMsg = "用户问题：\(question)\n\n检索到的公报文书：\n\(caseContext)"
+        try await LLMProviderRegistry.agentProvider.streamChat(
+            messages: [["role": "system", "content": systemPrompt],
+                       ["role": "user",   "content": userMsg]],
+            temperature: 0.2,
+            onToken: { onEvent(.token($0)) }
+        )
+    }
+
+    /// LLM 扩词：把口语问题转换为法律检索词 + 推断来源
+    private struct SearchExpansion {
+        let terms: [String]
+        let sourceFilter: String?   // nil = all, "al"/"cpwsxd"/"sfwj"
+        var sourceLabel: String {
+            switch sourceFilter {
+            case "al":     return "指导案例"
+            case "cpwsxd": return "裁判文书"
+            case "sfwj":   return "司法文件"
+            default:       return "全部公报"
+            }
+        }
+    }
+
+    private func expandSearchTerms(question: String) async -> SearchExpansion {
+        let system = """
+        你是法律检索词扩展器。将用户的口语化问题转化为中文法律数据库检索词。
+
+        输出严格JSON（不要其他内容）：
+        {"terms":["词1","词2","词3"],"source":"al"}
+
+        source 字段规则：
+        - "al"：用户明确提到"指导案例"、"指导性案例"
+        - "cpwsxd"：用户明确提到"裁判文书"、"判决书"、"裁定书"
+        - "sfwj"：用户明确提到"司法文件"、"通知"、"意见"、"规定"（最高院发的）
+        - "all"：不明确或同时涉及多类
+
+        terms 字段规则：
+        - 3到6个词，每个词3到8字，必须是中文法律专业术语
+        - 覆盖：法律行为名称、法条名称、裁判规则关键词、同义词
+        - 例："裁员相关指导案例" → terms:["经济性裁员","裁减人员","劳动合同解除","经济补偿金","违法解除劳动合同"]，source:"al"
+        - 例："网购退款纠纷判决" → terms:["网络购物合同","消费者权益保护","七日无理由退货","电子商务纠纷"]，source:"cpwsxd"
+        """
+        guard let raw = try? await chat(system: system, user: question),
+              let data = extractJSON(raw, open: "{", close: "}").data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let terms = obj["terms"] as? [String], !terms.isEmpty
+        else {
+            // 降级：用 extractTerms 做本地扩词
+            return SearchExpansion(terms: extractTerms(from: question), sourceFilter: nil)
+        }
+        let src = obj["source"] as? String
+        let sourceFilter: String? = (src == "all" || src == nil) ? nil : src
+        return SearchExpansion(terms: terms, sourceFilter: sourceFilter)
+    }
+
+    private func retrieveGongbaoCases(
+        question: String,
+        expandedTerms: [String] = [],
+        sourceFilter: String? = nil,
+        candidateLawIds: [Int],
+        onEvent: @escaping @MainActor (RAGEvent) -> Void
+    ) async -> [GongbaoCitation] {
+        let db = DatabaseManager.shared
+        // Capture @MainActor property before entering background work
+        let notes = await MainActor.run { gongbaoNotes }
+
+        // 合并检索词：扩展词优先，fallback 到本地提取词
+        let searchTerms: [String] = expandedTerms.isEmpty ? extractTerms(from: question) : expandedTerms
+
+        // 策略 A：多词 FTS（每词独立搜索，绕过 2 字限制）
+        let docsA = await Task.detached(priority: .userInitiated) {
+            db.searchGongbaoDocsMultiTerm(terms: searchTerms, sourceFilter: sourceFilter, limit: 15)
+        }.value
+
+        // 策略 B：keywords 字段 LIKE 匹配
+        let docsB = await Task.detached(priority: .userInitiated) {
+            db.searchGongbaoByKeywords(terms: searchTerms, limit: 10)
+        }.value
+
+        // 策略 C：法条关联（仅普通查询路径有 candidateLawIds）
+        let docsC: [GongbaoDoc]
+        if !candidateLawIds.isEmpty {
+            docsC = await Task.detached(priority: .userInitiated) {
+                db.searchGongbaoByLawIds(candidateLawIds, limit: 10)
+            }.value
+        } else {
+            docsC = []
+        }
+
+        // 策略 Note：笔记文本关键词匹配
+        var noteMatches: [GongbaoDoc] = []
+        if !notes.isEmpty {
+            let questionChars = Set(question.filter { $0.isLetter })
+            for (docIdStr, noteText) in notes {
+                guard let docId = Int(docIdStr) else { continue }
+                let noteChars = Set(noteText.filter { $0.isLetter })
+                let overlap = questionChars.intersection(noteChars).count
+                if overlap >= 2, let doc = db.gongbaoDoc(id: docId) {
+                    noteMatches.append(doc)
+                }
+            }
+        }
+
+        // 合并去重（来源过滤后）
+        var seen = Set<Int>()
+        var candidates: [(doc: GongbaoDoc, strategy: String)] = []
+
+        func addDocs(_ docs: [GongbaoDoc], strategy: String) {
+            for doc in docs {
+                // 如果指定了来源过滤，只保留该来源（笔记匹配不过滤）
+                if let sf = sourceFilter, strategy != "note", doc.source != sf { continue }
+                if seen.insert(doc.id).inserted {
+                    candidates.append((doc, strategy))
+                }
+            }
+        }
+
+        addDocs(noteMatches, strategy: "note")
+        addDocs(docsA, strategy: "fts")
+        addDocs(docsC, strategy: "lawlinks")
+        addDocs(docsB, strategy: "keywords")
+
+        guard !candidates.isEmpty else { return [] }
+
+        // LLM 筛选：超过 5 条时
+        let filtered: [(doc: GongbaoDoc, strategy: String, reason: String)]
+        if candidates.count > 5 {
+            filtered = await llmFilterGongbaoCases(question: question, candidates: candidates)
+        } else {
+            filtered = candidates.map { ($0.doc, $0.strategy, "") }
+        }
+
+        let result = filtered.map { item in
+            GongbaoCitation(docId: item.doc.id, source: item.doc.source,
+                            title: item.doc.title, rulingGist: item.doc.rulingGist,
+                            strategy: item.strategy, relevanceReason: item.reason)
+        }
+
+        let summary = result.map { "• \($0.title)" }.joined(separator: "\n")
+        onEvent(.thinkStep(name: "相关公报案例", content: summary.isEmpty ? "未找到相关案例" : summary))
+
+        return result
+    }
+
+    /// 从问题文本中提取 2-6 字汉字词语（去除常见停用词）
+    private func extractTerms(from text: String) -> [String] {
+        let stopWords: Set<String> = ["的", "了", "是", "在", "我", "有", "和", "就", "不", "人",
+                                       "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去",
+                                       "如何", "怎么", "什么", "可以", "应该", "能否", "是否", "有没有",
+                                       "怎样", "哪些", "这个", "那个", "情况", "问题", "请问", "想问"]
+        // 按标点/空格分割，过滤 2-6 字中文词
+        let extraPunct = "\u{FF0C}\u{3002}\u{FF01}\u{FF1F}\u{3001}\u{FF1B}\u{FF1A}\u{201C}\u{201D}\u{2018}\u{2019}\u{FF08}\u{FF09}\u{3010}\u{3011}\u{300A}\u{300B}\u{2026}\u{2014}"
+        let tokens = text.components(separatedBy: CharacterSet.punctuationCharacters
+            .union(.whitespaces).union(CharacterSet(charactersIn: extraPunct)))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { s in
+                let count = s.count
+                guard count >= 2 && count <= 6 else { return false }
+                guard s.unicodeScalars.allSatisfy({ $0.value >= 0x4E00 && $0.value <= 0x9FFF }) else { return false }
+                return !stopWords.contains(s)
+            }
+        return Array(Set(tokens)).prefix(8).map { $0 }
+    }
+
+    /// 用 LLM 从候选列表中筛选最相关的前 5 条
+    private func llmFilterGongbaoCases(
+        question: String,
+        candidates: [(doc: GongbaoDoc, strategy: String)]
+    ) async -> [(doc: GongbaoDoc, strategy: String, reason: String)] {
+        let listText = candidates.enumerated().map { i, item in
+            "[\(item.doc.id)] 标题：\(item.doc.title)\n裁判要点：\(item.doc.rulingGist.prefix(100))"
+        }.joined(separator: "\n\n")
+
+        let prompt = """
+            用户问题：\(question)
+
+            以下是候选公报文书，请从中选出最相关的最多5条，只输出 JSON 数组，格式：
+            [{"id":123,"reason":"一句话原因"}]
+            不要输出任何其他内容。
+
+            候选列表：
+            \(listText)
+            """
+
+        var responseText = ""
+        try? await LLMProviderRegistry.agentProvider.streamChat(
+            messages: [["role": "user", "content": prompt]],
+            temperature: 0.1,
+            onToken: { responseText += $0 }
+        )
+
+        // 解析 JSON
+        let jsonStr = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = jsonStr.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            // fallback: return first 5
+            return candidates.prefix(5).map { ($0.doc, $0.strategy, "") }
+        }
+
+        var result: [(doc: GongbaoDoc, strategy: String, reason: String)] = []
+        let candidateMap = Dictionary(uniqueKeysWithValues: candidates.map { ($0.doc.id, $0) })
+        for item in arr.prefix(5) {
+            guard let id = item["id"] as? Int,
+                  let candidate = candidateMap[id] else { continue }
+            let reason = (item["reason"] as? String) ?? ""
+            result.append((candidate.doc, candidate.strategy, reason))
+        }
+        return result.isEmpty ? candidates.prefix(5).map { ($0.doc, $0.strategy, "") } : result
     }
 
     // MARK: - 法律定性 + 递进路由
@@ -968,6 +1254,7 @@ final class LegalExpertService {
     - 法律判断（谁违约、谁承担责任、行为是否合法）由你独立作出，不要推给提问者判断
     - 【严格限制】只能引用"检索到的法条"中出现的条文。不得引用任何未在检索结果中列出的法律法规，即使你知道相关规定存在。
     - 【重要】如果检索到的法条不足以完整回答问题，明确说明哪部分无法回答及原因，不得编造条文编号或内容。
+    - 【公报案例】如果上下文中提供了"人民法院公报相关案例"，可在回答中自然引用，格式：《案例标题》中确立的裁判规则……
     格式要求：
     1. 若只有一个问题：开头用一句话复述用户问题（如"关于XXX的问题："），再给出核心结论。
     2. 若有多个子问题：用中文序号（一、二、三）分段，每段开头复述该子问题（如"一、关于彩礼返还："），再给出该问题的结论和分析。
@@ -979,7 +1266,8 @@ final class LegalExpertService {
     """ }
 
     private func buildGroupContext(groupAnswers: [String: String],
-                                   articles: [DatabaseManager.RAGArticle]) -> String {
+                                   articles: [DatabaseManager.RAGArticle],
+                                   gongbaoCites: [GongbaoCitation] = []) -> String {
         let groupText = groupAnswers.map { "【\($0.key)】\n\($0.value)" }.joined(separator: "\n\n")
         let citeCap = maxCitationsLimit
         var seenCites = Set<String>()
@@ -989,7 +1277,14 @@ final class LegalExpertService {
             return "• 《\(a.lawTitle)》\(a.articleNumber) — \(String(a.content.prefix(60)))..."
         }
         if citeCap > 0 { citeLines = Array(citeLines.prefix(citeCap)) }
-        return "各专家组分析：\n\(groupText)\n\n检索到的法条（供引用）：\n\(citeLines.joined(separator: "\n"))"
+        var result = "各专家组分析：\n\(groupText)\n\n检索到的法条（供引用）：\n\(citeLines.joined(separator: "\n"))"
+        if !gongbaoCites.isEmpty {
+            let caseSummary = gongbaoCites.map { cite in
+                "• 《\(cite.title)》裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : String(cite.rulingGist.prefix(100)))"
+            }.joined(separator: "\n")
+            result += "\n\n人民法院公报相关案例（可在回答中引用）：\n\(caseSummary)"
+        }
+        return result
     }
 
     // MARK: - Citation extraction
@@ -1054,7 +1349,7 @@ final class LegalExpertService {
             }
         }
 
-        return result.isEmpty ? candidates : result
+        return result
     }
 
     private func chineseOrArabicToInt(_ s: String) -> Int? {
@@ -1167,7 +1462,7 @@ final class LegalExpertService {
             ["role": "system", "content": system],
             ["role": "user",   "content": user],
         ]
-        return try await LLMProviderRegistry.current.chat(messages: messages, temperature: 0.05)
+        return try await LLMProviderRegistry.agentProvider.chat(messages: messages, temperature: 0.05)
     }
 
     private func extractJSON(_ s: String, open: String, close: String) -> String {

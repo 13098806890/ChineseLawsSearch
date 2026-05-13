@@ -1,39 +1,41 @@
-# 中国法律助手
+# 律疏 · 中国法律助手
 
 中国法律法规检索与智能咨询 iOS 应用，数据来源于 [laws-data](https://github.com/13098806890/laws-data) 开放数据集。
+
+**当前版本：1.03** — [Release Notes](CHANGELOG.md)
 
 ---
 
 ## 功能
 
 ### 法律浏览
-- 按法律部门（民法、刑法、行政法等）分类浏览 ~1,945 部法律法规
-- 编 / 章 / 节 / 条 层级导航，支持目录跳转
-- 条文内容全文展示，支持字号调节
-- **法考模式**：一键切换，仅显示法律职业资格考试收录的 208 部法律
-- 条文收藏（书签）与历史阅读记录恢复
+- 按法律部门（民法、刑法、行政法等）分类浏览约 1,945 部现行有效法规
+- 编 / 章 / 节 / 条 层级导航，支持目录跳转与条文锚点滚动
+- 条文内容全文展示，支持字号调节（小 / 中 / 大 / 超大）
+- 条文收藏（书签）与 iCloud 多设备同步
+- 法条下方显示关联公报案例链接，点击跳转对应文书
 
 ### 全文搜索
 - FTS5 trigram 索引，支持任意中文短语搜索（≥3 字）
-- 1–2 字短词搜索（unicode61 分词）
+- FTS5 unicode61 索引，支持 1–2 字短词搜索
 - 结果按法律部门过滤，关键词高亮显示
 - 支持仅搜标题 / 含条文内容两种模式
 
 ### 人民法院公报
-- 浏览最高人民法院公报全量数据
+- 收录最高人民法院公报全量数据，共 2,289 篇
   - **指导案例**：986 篇，含裁判要点摘要和关键词
   - **司法文件**：860 篇
   - **裁判文书**：443 篇
 - 关键词全文搜索（FTS5 trigram）
-- 点击查看全文，支持跳转原始网页
+- 案例笔记：为文书添加个人标注，辅助 AI 咨询时的相关案例推荐
+- 收藏案例，iCloud 多设备同步
 
-### 法律咨询（AI）
-- 基于 RAG（检索增强生成）的法律问答
-- **RAG 模式**：快速检索相关法条，DeepSeek 生成简要解答
-- **专家模式**：多层专家协作（协调员 → 6 个专家组 → 17 个细分专家），追问补全关键信息（最多 1–5 轮，可在设置中配置）
-- 意图识别自动路由，支持条文直查、实体提取等场景
+### 法律顾问（AI）
+- 意图识别自动路由三种模式：案情分析 / 法律咨询 / 法条与案例检索
+- **多专家协作**：协调员 → 6 个专家组 → 17 个细分领域专家，追问补全关键信息（最多 1–5 轮，可在设置中配置）
+- **关联公报案例**：回答结束后自动检索相关公报案例，以卡片形式展示，点击查看完整文书
 - 对话历史持久化，支持跨 session 恢复
-- 对话内容导出分享
+- 对话内容导出为文本或 PDF
 
 ---
 
@@ -69,23 +71,23 @@
 | 组件 | 说明 |
 |------|------|
 | `DatabaseManager.swift` | SQLite 封装，单例，串行队列保证线程安全 |
-| `LegalRAGService.swift` | RAG pipeline：意图分类 → FTS 检索 → 上下文构建 → LLM 流式生成 |
-| `LegalExpertService.swift` | 专家协作系统：角色分配 → 信息收集 → 并行检索 → 综合分析 |
+| `LegalExpertService.swift` | 专家协作系统：意图分类 → 角色分配 → 信息收集 → 并行检索 → 综合分析 → 公报案例检索 |
 | `LegalChatViewModel` | 对话状态管理，追问轮次控制，ViewModel 驱动 UI |
-| `ChatHistoryStore.swift` | 对话历史持久化（Documents/chat_history.json） |
-| `GongbaoView.swift` | 公报浏览与搜索界面 |
-| `TOCView.swift` | 法律目录树（`law_menu.json` / `flk_menu.json`） |
-| `LawDetailView.swift` | 法律全文阅读，支持条文锚点滚动 |
+| `ChatHistoryStore.swift` | 对话历史持久化（iCloud Documents / 本地 Documents fallback） |
+| `PurchaseManager.swift` | StoreKit 2 内购管理，免费次数 + 每周 Pro 配额 |
+| `GongbaoView.swift` | 公报浏览、搜索、案例笔记界面 |
+| `LawDetailView.swift` | 法律全文阅读，条文锚点滚动，公报案例链接 |
+| `UserStore.swift` | 用户偏好、收藏、公报笔记持久化（iCloud KV） |
 
-LLM 接入：默认 DeepSeek（`deepseek-chat` / `deepseek-reasoner`），API Key 存储于系统 Keychain。
+LLM 接入：DeepSeek（`deepseek-chat` / `deepseek-reasoner`），API Key 存储于系统 Keychain。
 
 ---
 
 ## 变现
 
 - **免费**：5 次体验额度
-- **畅用版**（内购）：内置 API Key，每周 N 次，周一自动重置
-- **基础版**（内购）：自备 DeepSeek API Key，无次数限制
+- **畅用版**（月/年订阅）：内置 API Key，每周 80 次，周一自动重置
+- **基础版**（买断）：自备 DeepSeek API Key，无次数限制
 
 ---
 

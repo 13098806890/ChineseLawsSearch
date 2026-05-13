@@ -79,7 +79,17 @@ struct IncomingRef: Identifiable {
     let fromArticleLabel: String
 }
 
-// MARK: - DatabaseManager
+// 某条文被公报案例引用的统计
+struct GongbaoRef: Identifiable {
+    let id: Int          // article_num (用作 map key)
+    let articleNum: Int
+    let count: Int       // 引用该条文的公报案例数量
+}
+
+struct GongbaoDocLink: Identifiable {
+    let id: Int          // doc_id
+    let title: String
+}
 
 final class DatabaseManager {
     static let shared = DatabaseManager()
@@ -111,9 +121,31 @@ final class DatabaseManager {
         let destURL = docs.appendingPathComponent("\(resource).\(ext)")
         do {
             if fm.fileExists(atPath: destURL.path) {
-                let bundleSize = (try? fm.attributesOfItem(atPath: bundleURL.path)[.size] as? Int) ?? 0
-                let destSize   = (try? fm.attributesOfItem(atPath: destURL.path)[.size]   as? Int) ?? 0
-                if bundleSize != destSize { try fm.removeItem(at: destURL) }
+                // Force re-copy if: sizes differ, bundle is newer, or key tables are missing
+                let bundleAttrs = try? fm.attributesOfItem(atPath: bundleURL.path)
+                let destAttrs   = try? fm.attributesOfItem(atPath: destURL.path)
+                let bundleMod   = bundleAttrs?[.modificationDate] as? Date ?? .distantPast
+                let destMod     = destAttrs?[.modificationDate]   as? Date ?? .distantPast
+                let bundleSize  = bundleAttrs?[.size] as? Int ?? 0
+                let destSize    = destAttrs?[.size]   as? Int ?? 0
+                var needsCopy   = bundleSize != destSize || bundleMod > destMod
+                // Extra check: verify gongbao_docs table exists (catches schema-only updates)
+                if !needsCopy && resource == "law_content" {
+                    var checkPtr: OpaquePointer?
+                    if sqlite3_open_v2(destURL.path, &checkPtr, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
+                        var checkStmt: OpaquePointer?
+                        let checkSQL = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='gongbao_docs'"
+                        if sqlite3_prepare_v2(checkPtr, checkSQL, -1, &checkStmt, nil) == SQLITE_OK {
+                            if sqlite3_step(checkStmt) == SQLITE_ROW {
+                                let count = sqlite3_column_int(checkStmt, 0)
+                                if count == 0 { needsCopy = true }
+                            }
+                            sqlite3_finalize(checkStmt)
+                        }
+                        sqlite3_close(checkPtr)
+                    }
+                }
+                if needsCopy { try fm.removeItem(at: destURL) }
             }
             if !fm.fileExists(atPath: destURL.path) {
                 try fm.copyItem(at: bundleURL, to: destURL)
@@ -300,6 +332,56 @@ final class DatabaseManager {
 
     func incomingRefsForLaw(lawId: Int, flkOnly: Bool = false) -> [IncomingRef] {
         queue.sync { _incomingRefsForLaw(lawId: lawId, flkOnly: flkOnly) }
+    }
+
+    /// 查询某部法律中被公报案例引用的条文，按 article_num 分组返回引用数量
+    func gongbaoRefsForLaw(lawId: Int) -> [GongbaoRef] {
+        queue.sync {
+            guard let db = db else { return [] }
+            let sql = """
+                SELECT article_num, COUNT(DISTINCT doc_id) as cnt
+                FROM gongbao_case_law_links
+                WHERE law_id = ? AND article_num > 0
+                GROUP BY article_num
+                """
+            var stmt: OpaquePointer?
+            var result: [GongbaoRef] = []
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return result }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(lawId))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let artNum = Int(sqlite3_column_int(stmt, 0))
+                let cnt    = Int(sqlite3_column_int(stmt, 1))
+                result.append(GongbaoRef(id: artNum, articleNum: artNum, count: cnt))
+            }
+            return result
+        }
+    }
+
+    /// articleNum → [GongbaoDocLink]，用于法条视图内跳转公报
+    func gongbaoLinksForLaw(lawId: Int) -> [Int: [GongbaoDocLink]] {
+        queue.sync {
+            guard let db = db else { return [:] }
+            let sql = """
+                SELECT l.article_num, d.id, d.title
+                FROM gongbao_case_law_links l
+                JOIN gongbao_docs d ON d.id = l.doc_id
+                WHERE l.law_id = ? AND l.article_num > 0
+                ORDER BY l.article_num, d.year DESC
+                """
+            var stmt: OpaquePointer?
+            var result: [Int: [GongbaoDocLink]] = [:]
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return result }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(lawId))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let artNum = Int(sqlite3_column_int(stmt, 0))
+                let docId  = Int(sqlite3_column_int(stmt, 1))
+                let title  = String(cString: sqlite3_column_text(stmt, 2))
+                result[artNum, default: []].append(GongbaoDocLink(id: docId, title: title))
+            }
+            return result
+        }
     }
 
     private func _incomingRefsForLaw(lawId: Int, flkOnly: Bool) -> [IncomingRef] {
@@ -994,8 +1076,135 @@ final class DatabaseManager {
         queue.sync { _gongbaoDocs(source: source, query: query, limit: limit) }
     }
 
-    private func _gongbaoDocs(source: String?, query: String, limit: Int) -> [GongbaoDoc] {
-        guard let db = db else { return [] }
+    func gongbaoCount(source: String, query: String) -> Int {
+        queue.sync {
+            guard let db = db else { return 0 }
+            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            if q.isEmpty {
+                let sql = "SELECT COUNT(*) FROM gongbao_docs WHERE source = ?"
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+                defer { sqlite3_finalize(stmt) }
+                sqlite3_bind_text(stmt, 1, source, -1, t)
+                return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
+            } else {
+                let like = "%\(q)%"
+                let sql = """
+                    SELECT COUNT(*) FROM gongbao_docs
+                    WHERE source = ?
+                      AND (title LIKE ? OR ruling_gist LIKE ? OR keywords LIKE ?
+                           OR case_number LIKE ? OR full_text LIKE ?)
+                    """
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+                defer { sqlite3_finalize(stmt) }
+                sqlite3_bind_text(stmt, 1, source, -1, t)
+                for i in 2...6 { sqlite3_bind_text(stmt, Int32(i), like, -1, t) }
+                return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
+            }
+        }
+    }
+
+    func gongbaoDoc(id: Int) -> GongbaoDoc? {
+        queue.sync {
+            guard let db = db else { return nil }
+            let sql = """
+                SELECT id, source, COALESCE(case_number,''), title,
+                       COALESCE(issue,''), COALESCE(year,0),
+                       COALESCE(pub_date,''), COALESCE(url,''),
+                       COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                       keywords_meta, COALESCE(full_text,'')
+                FROM gongbao_docs WHERE id = ?
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(id))
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return _rowToDoc(stmt)
+            }
+            return nil
+        }
+    }
+
+    /// 策略 A：复用 FTS+LIKE 逻辑，不限 source，供 AI agent 使用
+    func searchGongbaoDocs(query: String, sourceFilter: String? = nil, limit: Int = 10) -> [GongbaoDoc] {
+        queue.sync { _gongbaoDocs(source: sourceFilter, query: query, limit: limit) }
+    }
+
+    /// 策略 A 多词版：对多个扩展词分别搜索后合并去重（绕过 FTS 短词限制）
+    func searchGongbaoDocsMultiTerm(terms: [String], sourceFilter: String? = nil, limit: Int = 20) -> [GongbaoDoc] {
+        queue.sync {
+            var seen = Set<Int>()
+            var results: [GongbaoDoc] = []
+            for term in terms {
+                let docs = _gongbaoDocs(source: sourceFilter, query: term, limit: limit)
+                for doc in docs where seen.insert(doc.id).inserted {
+                    results.append(doc)
+                }
+                if results.count >= limit { break }
+            }
+            return Array(results.prefix(limit))
+        }
+    }
+
+    /// 策略 B：按 keywords 平铺字段 LIKE 检索（多词 OR）
+    func searchGongbaoByKeywords(terms: [String], limit: Int = 10) -> [GongbaoDoc] {
+        queue.sync {
+            guard let db = db, !terms.isEmpty else { return [] }
+            let clauses = terms.map { _ in "keywords LIKE ?" }.joined(separator: " OR ")
+            let sql = """
+                SELECT id, source, COALESCE(case_number,''), title,
+                       COALESCE(issue,''), COALESCE(year,0),
+                       COALESCE(pub_date,''), COALESCE(url,''),
+                       COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                       keywords_meta, COALESCE(full_text,'')
+                FROM gongbao_docs WHERE \(clauses)
+                ORDER BY year DESC, issue_num DESC LIMIT \(limit)
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            for (i, term) in terms.enumerated() {
+                let pattern = "%\(term)%" as NSString
+                sqlite3_bind_text(stmt, Int32(i + 1), pattern.utf8String, -1, nil)
+            }
+            var docs: [GongbaoDoc] = []
+            while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToDoc(stmt)) }
+            return docs
+        }
+    }
+
+    /// 策略 C：通过 gongbao_case_law_links 反查引用了指定法律的公报文书
+    func searchGongbaoByLawIds(_ lawIds: [Int], limit: Int = 10) -> [GongbaoDoc] {
+        queue.sync {
+            guard let db = db, !lawIds.isEmpty else { return [] }
+            let placeholders = lawIds.map { _ in "?" }.joined(separator: ",")
+            let sql = """
+                SELECT DISTINCT d.id, d.source, COALESCE(d.case_number,''), d.title,
+                       COALESCE(d.issue,''), COALESCE(d.year,0),
+                       COALESCE(d.pub_date,''), COALESCE(d.url,''),
+                       COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
+                       d.keywords_meta, COALESCE(d.full_text,'')
+                FROM gongbao_case_law_links l
+                JOIN gongbao_docs d ON l.doc_id = d.id
+                WHERE l.law_id IN (\(placeholders))
+                ORDER BY d.year DESC, d.issue_num DESC LIMIT \(limit)
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            for (i, lid) in lawIds.enumerated() {
+                sqlite3_bind_int(stmt, Int32(i + 1), Int32(lid))
+            }
+            var docs: [GongbaoDoc] = []
+            while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToDoc(stmt)) }
+            return docs
+        }
+    }
+
+    private func _gongbaoDocs(source: String?, query: String, limit: Int) -> [GongbaoDoc] {        guard let db = db else { return [] }
         var docs: [GongbaoDoc] = []
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         let sourceFilter = source.map { "AND d.source = '\($0)'" } ?? ""

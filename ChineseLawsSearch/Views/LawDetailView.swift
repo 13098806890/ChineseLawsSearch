@@ -9,6 +9,7 @@ import UIKit
 struct LawDetailView: View {
     let target: LawTarget
     let navigate: (Int, Int?) -> Void
+    var navigateToGongbao: (GongbaoDoc) -> Void = { _ in }
     var canGoBack: Bool = false
     var goBack: () -> Void = {}
 
@@ -18,6 +19,7 @@ struct LawDetailView: View {
     @State private var isLoadingNodes = true
     @State private var outgoingMap: [Int: [OutgoingRef]] = [:]
     @State private var incomingMap: [Int: [IncomingRef]] = [:]
+    @State private var gongbaoRefMap: [Int: [GongbaoDocLink]] = [:]   // articleNum → docs
     @State private var highlightedArticle: Int? = nil
     @State private var scrollPosition: Int? = nil
     @State private var isSearching = false
@@ -68,11 +70,13 @@ struct LawDetailView: View {
                         node: node,
                         outgoing: node.articleNum.flatMap { outgoingMap[$0] } ?? [],
                         incoming: node.articleNum.flatMap { incomingMap[$0] } ?? [],
+                        gongbaoLinks: node.articleNum.flatMap { gongbaoRefMap[$0] } ?? [],
                         highlighted: node.articleNum != nil && node.articleNum == highlightedArticle,
                         highlightQuery: searchQuery.trimmingCharacters(in: .whitespaces),
                         lawId: law.id,
                         lawTitle: law.title,
-                        navigate: navigate
+                        navigate: navigate,
+                        navigateToGongbao: navigateToGongbao
                     )
                     .id(node.id)
                 }
@@ -170,9 +174,11 @@ struct LawDetailView: View {
             // 引用关系并行加载（不阻塞渲染，加载完后静默更新）
             async let ogTask = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId, flkOnly: flk)
             async let icTask = DatabaseManager.shared.incomingRefsForLaw(lawId: lawId, flkOnly: flk)
-            let (ogList, icList) = await (ogTask, icTask)
+            async let gbTask = DatabaseManager.shared.gongbaoLinksForLaw(lawId: lawId)
+            let (ogList, icList, gbMap) = await (ogTask, icTask, gbTask)
             outgoingMap = Dictionary(grouping: ogList, by: \.fromArticleNum)
             incomingMap = Dictionary(grouping: icList, by: \.toArticleNum)
+            gongbaoRefMap = gbMap
 
             // 高亮动画（引用加载完后再做，不影响滚动）
             if let artNum = target.scrollToArticle {
@@ -261,11 +267,13 @@ struct NodeRowView: View {
     let node: LawNode
     let outgoing: [OutgoingRef]
     let incoming: [IncomingRef]
+    var gongbaoLinks: [GongbaoDocLink] = []
     let highlighted: Bool
     var highlightQuery: String = ""
     let lawId: Int
     let lawTitle: String
     let navigate: (Int, Int?) -> Void
+    var navigateToGongbao: (GongbaoDoc) -> Void = { _ in }
 
     @EnvironmentObject private var userStore: UserStore
 
@@ -306,7 +314,9 @@ struct NodeRowView: View {
                     highlightQuery: highlightQuery,
                     outgoing: outgoing,
                     incoming: incoming,
-                    navigate: navigate
+                    gongbaoLinks: gongbaoLinks,
+                    navigate: navigate,
+                    navigateToGongbao: navigateToGongbao
                 )
                 .contextMenu {
                     Button {
@@ -350,7 +360,9 @@ struct ArticleView: View {
     var highlightQuery: String = ""
     let outgoing: [OutgoingRef]
     let incoming: [IncomingRef]
+    var gongbaoLinks: [GongbaoDocLink] = []
     let navigate: (Int, Int?) -> Void
+    var navigateToGongbao: (GongbaoDoc) -> Void = { _ in }
 
     // 把单段文字里的 rawText 替换成超链接，并高亮搜索关键词
     func attributed(_ text: String) -> AttributedString {
@@ -399,6 +411,29 @@ struct ArticleView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(incoming.enumerated()), id: \.element.id) { i, ref in
                         IncomingRefBadge(index: i + 1, ref: ref, navigate: navigate)
+                    }
+                }
+                .padding(.top, 4)
+            }
+
+            if !gongbaoLinks.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(gongbaoLinks) { link in
+                        Button {
+                            if let doc = DatabaseManager.shared.gongbaoDoc(id: link.id) {
+                                navigateToGongbao(doc)
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "newspaper")
+                                    .font(.caption2)
+                                Text(link.title)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(AppColors.shared.incomingRef)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.top, 4)

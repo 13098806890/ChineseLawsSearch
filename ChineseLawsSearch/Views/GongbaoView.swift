@@ -5,6 +5,7 @@
 //  人民法院公报 — 指导案例 / 司法文件 / 裁判文书 浏览与搜索
 
 import SwiftUI
+import UIKit
 
 // MARK: - 来源枚举
 
@@ -25,7 +26,7 @@ enum GongbaoSource: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .al:     return "star.circle"
+        case .al:     return "lightbulb.circle"
         case .sfwj:   return "doc.plaintext"
         case .cpwsxd: return "doc.text.magnifyingglass"
         }
@@ -48,6 +49,7 @@ struct GongbaoView: View {
     @State private var selectedSource: GongbaoSource = .al
     @State private var searchText: String = ""
     @State private var docs: [GongbaoDoc] = []
+    @State private var counts: [GongbaoSource: Int] = [:]
     @State private var isLoading = false
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var hasLoaded = false
@@ -73,7 +75,7 @@ struct GongbaoView: View {
                 docList(docs: docs)
             }
         }
-        .navigationTitle("人民法院公报")
+        .navigationTitle("最高人民法院公报")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             guard !hasLoaded else { return }
@@ -91,19 +93,19 @@ struct GongbaoView: View {
     // MARK: 来源选择栏
 
     private var sourcePickerBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             ForEach(GongbaoSource.allCases) { src in
                 Button {
                     selectedSource = src
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: src.icon)
-                            .font(.caption)
+                            .font(.caption2)
                         Text(src.displayName)
-                            .font(.subheadline)
+                            .font(.caption)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
                     .background(
                         selectedSource == src
                             ? AppColors.shared.searchHighlight
@@ -190,11 +192,22 @@ struct GongbaoView: View {
             }
             guard !Task.isCancelled else { return }
             await MainActor.run { isLoading = true }
-            let result = await Task.detached(priority: .userInitiated) {
+            // Fetch current tab docs + counts for all sources in parallel
+            async let mainDocs = Task.detached(priority: .userInitiated) {
                 DatabaseManager.shared.gongbaoDocs(source: src, query: q)
             }.value
+            async let allCounts = Task.detached(priority: .userInitiated) {
+                var result: [GongbaoSource: Int] = [:]
+                for source in GongbaoSource.allCases {
+                    result[source] = DatabaseManager.shared.gongbaoCount(source: source.rawValue, query: q)
+                }
+                return result
+            }.value
+            let (result, newCounts) = await (mainDocs, allCounts)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 docs = result
+                counts = newCounts
                 isLoading = false
             }
         }
@@ -209,14 +222,10 @@ struct GongbaoDocRow: View {
     /// 去掉标题中与 case_number 重复的前缀（al 来源标题常以案号开头）
     private var cleanTitle: String {
         let cn = doc.caseNumber
-        guard !cn.isEmpty, doc.title.hasPrefix(cn) else { return doc.title }
-        return doc.title.drop(while: { _ in false })  // 保留原，下面处理
-            .replacingOccurrences(of: cn, with: "", range: doc.title.range(of: cn))
+        guard !cn.isEmpty, let range = doc.title.range(of: cn) else { return doc.title }
+        let trimmed = doc.title.replacingCharacters(in: range, with: "")
             .trimmingCharacters(in: .init(charactersIn: "　 ——-：:"))
-            .isEmpty ? doc.title :
-            doc.title
-                .replacingOccurrences(of: cn, with: "", range: doc.title.range(of: cn))
-                .trimmingCharacters(in: .init(charactersIn: "　 ——-：:"))
+        return trimmed.isEmpty ? doc.title : trimmed
     }
 
     /// sfwj 通常 ruling_gist 为空，用全文前 80 字作为预览
@@ -236,9 +245,13 @@ struct GongbaoDocRow: View {
 
             HStack(spacing: 8) {
                 if !doc.caseNumber.isEmpty {
-                    Label(doc.caseNumber, systemImage: "bookmark.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
+                    HStack(spacing: 2) {
+                        Image(systemName: "lightbulb")
+                            .font(.caption2)
+                        Text(doc.caseNumber)
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.blue)
                 }
                 if !doc.issue.isEmpty {
                     Text(doc.issue)
@@ -270,6 +283,13 @@ struct GongbaoDocRow: View {
 
 struct GongbaoDetailView: View {
     let doc: GongbaoDoc
+    var navigateBack: (() -> Void)? = nil
+    var backLabel: String = "返回法条"
+    @EnvironmentObject private var userStore: UserStore
+
+    private var isFav: Bool { userStore.isGongbaoFavorited(docId: doc.id) }
+    @State private var showNoteSheet = false
+    private var hasNote: Bool { !userStore.gongbaoNote(docId: doc.id).isEmpty }
 
     private var cleanTitle: String {
         let cn = doc.caseNumber
@@ -286,6 +306,27 @@ struct GongbaoDetailView: View {
                     .font(.title3.weight(.semibold))
 
                 metaRow
+
+                // 笔记展示块
+                let note = userStore.gongbaoNote(docId: doc.id)
+                if !note.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "note.text")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("我的笔记")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(note)
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
 
                 Divider()
 
@@ -337,13 +378,59 @@ struct GongbaoDetailView: View {
         .navigationTitle(sourceLabel)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if !doc.url.isEmpty, let url = URL(string: doc.url) {
-                    Link(destination: url) {
-                        Image(systemName: "safari")
+            if let back = navigateBack {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        back()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text(backLabel)
+                                .font(.body)
+                        }
                     }
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: 16) {
+                    Button {
+                        showNoteSheet = true
+                    } label: {
+                        Image(systemName: hasNote ? "note.text" : "note.text.badge.plus")
+                            .foregroundStyle(hasNote ? AppColors.shared.searchHighlight : .secondary)
+                    }
+                    Button {
+                        if isFav {
+                            userStore.removeGongbaoFavorite(docId: doc.id)
+                        } else {
+                            userStore.addGongbaoFavorite(
+                                FavoriteGongbaoDoc(
+                                    docId: doc.id,
+                                    source: doc.source,
+                                    title: doc.title,
+                                    rulingGist: doc.rulingGist,
+                                    issue: doc.issue
+                                )
+                            )
+                        }
+                    } label: {
+                        Image(systemName: isFav ? "star.fill" : "star")
+                            .foregroundStyle(isFav ? AppColors.shared.searchHighlight : .secondary)
+                    }
+                    Menu {
+                        Button("纯文本") { shareAsText() }
+                        Button("PDF 文件") { shareAsPDF() }
+                    } label: {
+                        Image(systemName: "paperplane")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showNoteSheet) {
+            GongbaoNoteSheet(doc: doc)
+                .environmentObject(userStore)
         }
     }
 
@@ -356,12 +443,102 @@ struct GongbaoDetailView: View {
         }
     }
 
+    // MARK: 分享
+
+    private func plainText() -> String {
+        var parts: [String] = [doc.title]
+        if !doc.caseNumber.isEmpty { parts.append("案号：\(doc.caseNumber)") }
+        if !doc.issue.isEmpty { parts.append("期次：\(doc.issue)") }
+        if !doc.rulingGist.isEmpty { parts.append("\n裁判要点：\n\(doc.rulingGist)") }
+        if !doc.keywords.isEmpty { parts.append("\n关键词：\(doc.keywords)") }
+        if !doc.fullText.isEmpty { parts.append("\n\(doc.fullText)") }
+        return parts.joined(separator: "\n")
+    }
+
+    private func shareAsText() {
+        let text = plainText()
+        let av = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        present(av)
+    }
+
+    private func shareAsPDF() {
+        let text = plainText()
+        let pageRect = CGRect(x: 0, y: 0, width: 595, height: 842) // A4
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+        let data = renderer.pdfData { ctx in
+            ctx.beginPage()
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 14, weight: .semibold)
+            ]
+            let bodyAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 11)
+            ]
+            let margin: CGFloat = 40
+            let maxWidth = pageRect.width - margin * 2
+
+            // Title
+            let titleStr = NSAttributedString(string: doc.title + "\n\n", attributes: titleAttrs)
+            let bodyStr  = NSAttributedString(string: text.replacingOccurrences(of: doc.title + "\n", with: ""),
+                                              attributes: bodyAttrs)
+            let full = NSMutableAttributedString()
+            full.append(titleStr)
+            full.append(bodyStr)
+
+            let framesetter = CTFramesetterCreateWithAttributedString(full)
+            var charIndex = 0
+            var pageY: CGFloat = margin
+
+            while charIndex < full.length {
+                let frameRect = CGRect(x: margin, y: margin, width: maxWidth, height: pageRect.height - margin * 2)
+                let path = CGPath(rect: frameRect, transform: nil)
+                let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(charIndex, 0), path, nil)
+                let range = CTFrameGetVisibleStringRange(frame)
+
+                // Flip coordinate for CoreText
+                let uiCtx = UIGraphicsGetCurrentContext()!
+                uiCtx.saveGState()
+                uiCtx.translateBy(x: 0, y: pageRect.height)
+                uiCtx.scaleBy(x: 1, y: -1)
+                CTFrameDraw(frame, uiCtx)
+                uiCtx.restoreGState()
+
+                charIndex += range.length
+                if charIndex < full.length {
+                    ctx.beginPage()
+                }
+            }
+            _ = pageY // suppress unused warning
+        }
+
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(doc.title.prefix(30)).pdf")
+        try? data.write(to: tmpURL)
+        let av = UIActivityViewController(activityItems: [tmpURL], applicationActivities: nil)
+        present(av)
+    }
+
+    private func present(_ vc: UIActivityViewController) {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let root = scene.windows.first?.rootViewController else { return }
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
+        if let popover = vc.popoverPresentationController {
+            popover.sourceView = top.view
+            popover.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.safeAreaInsets.top + 44, width: 0, height: 0)
+            popover.permittedArrowDirections = .up
+        }
+        top.present(vc, animated: true)
+    }
+
     private var metaRow: some View {
         HStack(spacing: 12) {
             if !doc.caseNumber.isEmpty {
-                Label(doc.caseNumber, systemImage: "bookmark.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                HStack(spacing: 2) {
+                    Image(systemName: "lightbulb")
+                    Text(doc.caseNumber)
+                }
+                .font(.caption)
+                .foregroundStyle(.blue)
             }
             if !doc.issue.isEmpty {
                 Label(doc.issue, systemImage: "calendar")
@@ -378,6 +555,37 @@ struct GongbaoDetailView: View {
 extension GongbaoDoc: Hashable, Equatable {
     static func == (lhs: GongbaoDoc, rhs: GongbaoDoc) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+// MARK: - 笔记 Sheet
+
+struct GongbaoNoteSheet: View {
+    let doc: GongbaoDoc
+    @EnvironmentObject var userStore: UserStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String = ""
+
+    var body: some View {
+        NavigationStack {
+            TextEditor(text: $text)
+                .padding()
+                .navigationTitle("笔记")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") {
+                            userStore.setGongbaoNote(docId: doc.id, text: text)
+                            dismiss()
+                        }
+                    }
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { dismiss() }
+                    }
+                }
+        }
+        .onAppear { text = userStore.gongbaoNote(docId: doc.id) }
+        .presentationDetents([.medium, .large])
+    }
 }
 
 #Preview {
