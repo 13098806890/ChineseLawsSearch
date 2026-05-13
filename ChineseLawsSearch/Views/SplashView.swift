@@ -10,13 +10,14 @@ struct SplashView: View {
     @State private var scale: Double = 0.92
     var onFinish: () -> Void
 
-    private let sealRed    = Color(red: 0.78, green: 0.12, blue: 0.10)
     private let paperColor = Color(red: 0.949, green: 0.929, blue: 0.878)
 
     var body: some View {
         ZStack {
             paperColor.ignoresSafeArea()
-            sealStamp
+            Image("SealGlyph")
+                .resizable()
+                .frame(width: 200, height: 200)
                 .scaleEffect(scale)
                 .opacity(opacity)
         }
@@ -29,27 +30,6 @@ struct SplashView: View {
                 withAnimation(.easeIn(duration: 0.35)) { opacity = 0 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onFinish() }
             }
-        }
-    }
-
-    private var sealStamp: some View {
-        ZStack {
-            // 纸色印面
-            RoundedRectangle(cornerRadius: 10)
-                .fill(paperColor)
-                .frame(width: 210, height: 210)
-            // 外边框
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(sealRed, lineWidth: 4)
-                .frame(width: 210, height: 210)
-            // 内边框
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(sealRed, lineWidth: 2)
-                .frame(width: 194, height: 194)
-            // 阳刻字形
-            Image("SealGlyph")
-                .resizable()
-                .frame(width: 152, height: 152)
         }
     }
 }
