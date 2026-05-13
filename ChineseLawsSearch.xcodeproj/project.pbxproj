@@ -209,9 +209,10 @@
 				};
 			};
 			buildConfigurationList = DAA1D8042FA1DF390003A448 /* Build configuration list for PBXProject "ChineseLawsSearch" */;
-			developmentRegion = en;
+			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
+				"zh-Hans",
 				en,
 				Base,
 			);
