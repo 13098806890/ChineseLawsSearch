@@ -359,10 +359,11 @@ private struct SettingsSheet: View {
                     Toggle(isOn: $userStore.flkMode) {
                         Label("法考模式", systemImage: userStore.flkMode ? "graduationcap.fill" : "graduationcap")
                     }
+                    .hidden()
                 } header: {
                     Text("法律浏览")
                 } footer: {
-                    Text("开启后，目录和搜索仅显示法律职业资格考试（法考）收录的 208 部法律法规。")
+                    EmptyView()
                 }
 
                 Section {
