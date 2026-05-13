@@ -26,6 +26,7 @@ struct ContentView: View {
     @State private var tab: Tab = .browse
     @State private var target: LawTarget?
     @State private var selectedGongbaoDoc: GongbaoDoc?
+    @State private var selectedGongbaoSfjs: GongbaoSfjs?
     @State private var showSettings = false
     @State private var showWelcome = false
     @State private var backStack: [BackItem] = []
@@ -199,7 +200,7 @@ struct ContentView: View {
         Group {
             if isCompact {
                 NavigationStack {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc)
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc, selectedSfjs: $selectedGongbaoSfjs)
                         .navigationDestination(item: $selectedGongbaoDoc) { doc in
                             GongbaoDetailView(
                                 doc: doc,
@@ -210,10 +211,13 @@ struct ContentView: View {
                             )
                             .environmentObject(userStore)
                         }
+                        .navigationDestination(item: $selectedGongbaoSfjs) { doc in
+                            GongbaoSfjsDetailView(doc: doc)
+                        }
                 }
             } else {
                 NavigationSplitView {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc)
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc, selectedSfjs: $selectedGongbaoSfjs)
                 } detail: {
                     if let doc = selectedGongbaoDoc {
                         GongbaoDetailView(
@@ -224,6 +228,8 @@ struct ContentView: View {
                             backLabel: gongbaoNavigatedFromChat ? "返回对话" : "返回法条"
                         )
                         .environmentObject(userStore)
+                    } else if let doc = selectedGongbaoSfjs {
+                        GongbaoSfjsDetailView(doc: doc)
                     } else {
                         VStack(spacing: 8) {
                             Image(systemName: "newspaper")

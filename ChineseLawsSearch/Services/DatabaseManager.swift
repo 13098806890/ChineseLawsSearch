@@ -91,6 +91,16 @@ struct GongbaoDocLink: Identifiable {
     let title: String
 }
 
+struct GongbaoSfjs: Identifiable, Hashable {
+    let id: Int
+    let title: String
+    let docNumber: String
+    let pubDate: String
+    let effectiveDate: String
+    let url: String
+    let fullText: String
+}
+
 final class DatabaseManager {
     static let shared = DatabaseManager()
 
@@ -1324,5 +1334,88 @@ final class DatabaseManager {
     private func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {
         guard let cstr = sqlite3_column_text(stmt, col) else { return "" }
         return String(cString: cstr)
+    }
+
+    // MARK: - 公报司法解释
+
+    func gongbaoSfjsDocs(query: String, limit: Int = 500) -> [GongbaoSfjs] {
+        queue.sync { _gongbaoSfjsDocs(query: query, limit: limit) }
+    }
+
+    func gongbaoSfjsCount(query: String) -> Int {
+        queue.sync {
+            guard let db = db else { return 0 }
+            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            var stmt: OpaquePointer?
+            let count: Int
+            if query.isEmpty {
+                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM gongbao_sfjs", -1, &stmt, nil)
+            } else {
+                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM gongbao_sfjs_fts WHERE gongbao_sfjs_fts MATCH ?", -1, &stmt, nil)
+                sqlite3_bind_text(stmt, 1, query, -1, t)
+            }
+            count = sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
+            sqlite3_finalize(stmt)
+            return count
+        }
+    }
+
+    func gongbaoSfjsDoc(id: Int) -> GongbaoSfjs? {
+        queue.sync {
+            guard let db = db else { return nil }
+            let sql = "SELECT id, title, doc_number, pub_date, effective_date, url, full_text FROM gongbao_sfjs WHERE id = ?"
+            var stmt: OpaquePointer?
+            sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+            sqlite3_bind_int(stmt, 1, Int32(id))
+            let result: GongbaoSfjs? = sqlite3_step(stmt) == SQLITE_ROW ? self._rowToSfjs(stmt) : nil
+            sqlite3_finalize(stmt)
+            return result
+        }
+    }
+
+    func searchGongbaoSfjs(query: String, limit: Int = 10) -> [GongbaoSfjs] {
+        queue.sync { _gongbaoSfjsDocs(query: query, limit: limit) }
+    }
+
+    private func _gongbaoSfjsDocs(query: String, limit: Int) -> [GongbaoSfjs] {
+        guard let db = db else { return [] }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        var stmt: OpaquePointer?
+        let sql: String
+        if query.isEmpty {
+            sql = "SELECT id, title, doc_number, pub_date, effective_date, url, full_text FROM gongbao_sfjs ORDER BY pub_date DESC LIMIT ?"
+            sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+            sqlite3_bind_int(stmt, 1, Int32(limit))
+        } else {
+            sql = """
+            SELECT s.id, s.title, s.doc_number, s.pub_date, s.effective_date, s.url, s.full_text
+            FROM gongbao_sfjs_fts f
+            JOIN gongbao_sfjs s ON f.rowid = s.id
+            WHERE gongbao_sfjs_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """
+            sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+            sqlite3_bind_text(stmt, 1, query, -1, t)
+            sqlite3_bind_int(stmt, 2, Int32(limit))
+        }
+        var results: [GongbaoSfjs] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(_rowToSfjs(stmt))
+        }
+        sqlite3_finalize(stmt)
+        return results
+    }
+
+    private func _rowToSfjs(_ stmt: OpaquePointer?) -> GongbaoSfjs {
+        GongbaoSfjs(
+            id:            Int(sqlite3_column_int(stmt, 0)),
+            title:         str(stmt, 1),
+            docNumber:     str(stmt, 2),
+            pubDate:       str(stmt, 3),
+            effectiveDate: str(stmt, 4),
+            url:           str(stmt, 5),
+            fullText:      str(stmt, 6)
+        )
     }
 }
