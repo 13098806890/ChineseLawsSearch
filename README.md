@@ -9,7 +9,7 @@
 ## 功能
 
 ### 法律浏览
-- 按法律部门（民法、刑法、行政法等）分类浏览约 1,945 部现行有效法规
+- 按法律部门（民法、刑法、行政法等）分类浏览约 **1,572 部**现行有效法规（含高法司法解释）
 - 编 / 章 / 节 / 条 层级导航，支持目录跳转与条文锚点滚动
 - 条文内容全文展示，支持字号调节（小 / 中 / 大 / 超大）
 - 条文收藏（书签）与 iCloud 多设备同步
@@ -130,14 +130,13 @@ LLM 根据问题内容，从 6 个专家组中选取 1–3 个相关组，每组
 
 | 表 | 说明 |
 |----|------|
-| `laws` | 1,945 部法律元数据，含 `is_current`、`is_flk`、`aliases` 等字段 |
-| `nodes` | ~78,000 条条文及编章节节点，含 `global_order`、`article_num` 等 |
+| `laws` | 2,020 部法律元数据（主库 1,253 + 公报司法解释 767），含 `source`、`is_current`、`is_flk` 等字段 |
+| `nodes` | ~84,000 条条文及编章节节点，含 `global_order`、`article_num` 等 |
 | `nodes_fts` | FTS5 trigram 全文索引（外部内容表，≥3 字） |
 | `nodes_fts_bigram` | FTS5 unicode61 索引（1–2 字短词） |
-| `article_references` | 6,452 条法条间引用关系，解析率 98.8% |
+| `article_references` | 8,340 条法条间引用关系，解析率 96.2% |
 | `gongbao_docs` | 公报文书 2,289 条（指导案例/司法文件/裁判文书） |
-| `gongbao_sfjs` | 公报独有司法解释 487 条 |
-| `gongbao_case_law_links` | 公报文书 → 法条关联 3,526 条，解析率 99.8% |
+| `gongbao_case_law_links` | 公报文书 → 法条关联 3,533 条，解析率 99.8% |
 | `gongbao_docs_fts` | 公报 FTS5 trigram 全文索引 |
 
 数据库由 [laws-data](https://github.com/13098806890/laws-data) 项目的 pipeline 生成，每次发版随应用 Bundle 更新。
