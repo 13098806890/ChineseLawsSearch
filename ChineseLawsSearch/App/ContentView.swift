@@ -26,8 +26,6 @@ struct ContentView: View {
     @State private var tab: Tab = .browse
     @State private var target: LawTarget?
     @State private var selectedGongbaoDoc: GongbaoDoc?
-    @State private var selectedGongbaoSfjs: GongbaoSfjs?
-    @State private var sfjsScrollTarget: Int?
     @State private var showSettings = false
     @State private var showWelcome = false
     @State private var backStack: [BackItem] = []
@@ -134,7 +132,6 @@ struct ContentView: View {
                     .navigationDestination(item: $target) { t in
                         LawDetailView(target: t, navigate: navigate,
                                       navigateToGongbao: navigateToGongbao,
-                                      navigateToGongbaoSfjs: navigateToGongbaoSfjs,
                                       canGoBack: !backStack.isEmpty, goBack: goBack)
                             .environmentObject(userStore)
                     }
@@ -147,7 +144,6 @@ struct ContentView: View {
                     NavigationStack {
                         LawDetailView(target: t, navigate: navigate,
                                       navigateToGongbao: navigateToGongbao,
-                                      navigateToGongbaoSfjs: navigateToGongbaoSfjs,
                                       canGoBack: !backStack.isEmpty, goBack: goBack)
                             .environmentObject(userStore)
                     }
@@ -168,7 +164,6 @@ struct ContentView: View {
                     LegalChatView(vm: chatVM, historyStore: historyStore,
                                   showThinking: userStore.showThinking, navigate: navigate,
                                   navigateToGongbao: navigateToGongbao,
-                                  navigateToGongbaoSfjs: navigateToGongbaoSfjs,
                                   onOpenSettings: { showSettings = true },
                                   isActive: tab == .chat)
                         .environmentObject(userStore)
@@ -181,7 +176,6 @@ struct ContentView: View {
                         LegalChatView(vm: chatVM, historyStore: historyStore,
                                       showThinking: userStore.showThinking, navigate: navigate,
                                       navigateToGongbao: navigateToGongbao,
-                                      navigateToGongbaoSfjs: navigateToGongbaoSfjs,
                                       showHistoryButton: false, showNewSessionButton: true,
                                       onOpenSettings: { showSettings = true },
                                       isActive: tab == .chat)
@@ -205,7 +199,7 @@ struct ContentView: View {
         Group {
             if isCompact {
                 NavigationStack {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc, selectedSfjs: $selectedGongbaoSfjs)
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc, navigate: navigate)
                         .navigationDestination(item: $selectedGongbaoDoc) { doc in
                             GongbaoDetailView(
                                 doc: doc,
@@ -216,13 +210,10 @@ struct ContentView: View {
                             )
                             .environmentObject(userStore)
                         }
-                        .navigationDestination(item: $selectedGongbaoSfjs) { doc in
-                            GongbaoSfjsDetailView(doc: doc, scrollToArticle: sfjsScrollTarget)
-                        }
                 }
             } else {
                 NavigationSplitView {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc, selectedSfjs: $selectedGongbaoSfjs)
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc, navigate: navigate)
                 } detail: {
                     if let doc = selectedGongbaoDoc {
                         GongbaoDetailView(
@@ -233,8 +224,6 @@ struct ContentView: View {
                             backLabel: gongbaoNavigatedFromChat ? "返回对话" : "返回法条"
                         )
                         .environmentObject(userStore)
-                    } else if let doc = selectedGongbaoSfjs {
-                        GongbaoSfjsDetailView(doc: doc, scrollToArticle: sfjsScrollTarget)
                     } else {
                         VStack(spacing: 8) {
                             Image(systemName: "newspaper")
@@ -285,14 +274,6 @@ struct ContentView: View {
         gongbaoNavigatedFromChat   = (tab == .chat)
         tab = .gongbao
         selectedGongbaoDoc = doc
-    }
-
-    func navigateToGongbaoSfjs(_ sfjs: GongbaoSfjs, scrollTo articleNum: Int? = nil) {
-        gongbaoNavigatedFromBrowse = (tab == .browse)
-        gongbaoNavigatedFromChat   = (tab == .chat)
-        tab = .gongbao
-        sfjsScrollTarget = articleNum
-        selectedGongbaoSfjs = sfjs
     }
 
     /// 持久化当前 backStack + target 到 UserDefaults

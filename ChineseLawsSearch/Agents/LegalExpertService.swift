@@ -836,11 +836,6 @@ final class LegalExpertService {
             docsC = []
         }
 
-        // 策略 D：公报司法解释 FTS
-        let sfjsDocs = await Task.detached(priority: .userInitiated) {
-            db.searchGongbaoSfjs(query: searchTerms.first ?? "", limit: 5)
-        }.value
-
         // 策略 Note：笔记文本关键词匹配
         var noteMatches: [GongbaoDoc] = []
         if !notes.isEmpty {
@@ -873,18 +868,6 @@ final class LegalExpertService {
         addDocs(docsA, strategy: "fts")
         addDocs(docsC, strategy: "lawlinks")
         addDocs(docsB, strategy: "keywords")
-
-        // 合并公报司法解释（单独 id 空间，用负数偏移区分，展示时统一用 sfjs source）
-        var sfjsCandidates: [(doc: GongbaoDoc, strategy: String)] = []
-        for sfjs in sfjsDocs {
-            let synthetic = GongbaoDoc(id: -(sfjs.id), source: "sfjs", caseNumber: "",
-                                       title: sfjs.title, issue: "", year: 0,
-                                       pubDate: sfjs.pubDate, url: sfjs.url,
-                                       rulingGist: "", keywords: "", keywordsMeta: [:],
-                                       fullText: sfjs.fullText)
-            sfjsCandidates.append((synthetic, "sfjs_fts"))
-        }
-        candidates.append(contentsOf: sfjsCandidates)
 
         guard !candidates.isEmpty else { return [] }
 

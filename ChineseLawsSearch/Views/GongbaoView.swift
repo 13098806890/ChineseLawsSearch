@@ -49,12 +49,12 @@ enum GongbaoSource: String, CaseIterable, Identifiable {
 
 struct GongbaoView: View {
     @Binding var selectedDoc: GongbaoDoc?
-    @Binding var selectedSfjs: GongbaoSfjs?
+    var navigate: (Int, Int?) -> Void = { _, _ in }
 
     @State private var selectedSource: GongbaoSource = .al
     @State private var searchText: String = ""
     @State private var docs: [GongbaoDoc] = []
-    @State private var sfjsDocs: [GongbaoSfjs] = []
+    @State private var sfjsDocs: [LawMeta] = []
     @State private var counts: [GongbaoSource: Int] = [:]
     @State private var isLoading = false
     @State private var searchTask: Task<Void, Never>? = nil
@@ -201,19 +201,22 @@ struct GongbaoView: View {
 
             if src == .sfjs {
                 async let sfjsResult = Task.detached(priority: .userInitiated) {
-                    DatabaseManager.shared.gongbaoSfjsDocs(query: q)
+                    DatabaseManager.shared.searchByTitle(query: q.isEmpty ? "" : q, limit: 500,
+                                                         categories: ["司法解释"])
+                        .filter { $0.source == "gongbao" }
                 }.value
                 async let allCounts = Task.detached(priority: .userInitiated) {
                     var result: [GongbaoSource: Int] = [:]
                     for source in GongbaoSource.allCases where source != .sfjs {
                         result[source] = DatabaseManager.shared.gongbaoCount(source: source.rawValue, query: q)
                     }
-                    result[.sfjs] = DatabaseManager.shared.gongbaoSfjsCount(query: q)
                     return result
                 }.value
                 let (sfjs, newCounts) = await (sfjsResult, allCounts)
                 guard !Task.isCancelled else { return }
-                await MainActor.run { sfjsDocs = sfjs; counts = newCounts; isLoading = false }
+                var updatedCounts = newCounts
+                updatedCounts[.sfjs] = sfjs.count
+                await MainActor.run { sfjsDocs = sfjs; counts = updatedCounts; isLoading = false }
             } else {
                 async let mainDocs = Task.detached(priority: .userInitiated) {
                     DatabaseManager.shared.gongbaoDocs(source: src.rawValue, query: q)
@@ -223,7 +226,8 @@ struct GongbaoView: View {
                     for source in GongbaoSource.allCases where source != .sfjs {
                         result[source] = DatabaseManager.shared.gongbaoCount(source: source.rawValue, query: q)
                     }
-                    result[.sfjs] = DatabaseManager.shared.gongbaoSfjsCount(query: q)
+                    result[.sfjs] = DatabaseManager.shared.searchByTitle(query: q, limit: 1000, categories: ["司法解释"])
+                        .filter { $0.source == "gongbao" }.count
                     return result
                 }.value
                 let (result, newCounts) = await (mainDocs, allCounts)
@@ -237,7 +241,7 @@ struct GongbaoView: View {
 // MARK: - 司法解释列表（GongbaoView 内部方法抽到扩展）
 extension GongbaoView {
     @ViewBuilder
-    func sfjsList(docs: [GongbaoSfjs]) -> some View {
+    func sfjsList(docs: [LawMeta]) -> some View {
         if docs.isEmpty {
             VStack(spacing: 8) {
                 Image(systemName: searchText.isEmpty ? "text.book.closed" : "magnifyingglass")
@@ -248,15 +252,33 @@ extension GongbaoView {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List(docs, selection: isCompact ? nil : $selectedSfjs) { doc in
-                if isCompact {
-                    Button { selectedSfjs = doc } label: {
-                        GongbaoSfjsRow(doc: doc).contentShape(Rectangle())
+            List(docs, id: \.id) { doc in
+                Button {
+                    navigate(doc.id, nil)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(doc.title)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(2)
+                            .foregroundStyle(.primary)
+                        HStack(spacing: 6) {
+                            if !doc.pubDate.isEmpty {
+                                Text(doc.pubDate)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if !doc.docNumber.isEmpty {
+                                Text(doc.docNumber)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
-                    .buttonStyle(.plain)
-                } else {
-                    GongbaoSfjsRow(doc: doc).tag(doc)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
             .listStyle(.plain)
         }
@@ -637,117 +659,8 @@ struct GongbaoNoteSheet: View {
     }
 }
 
-// MARK: - 司法解释列表行
-
-struct GongbaoSfjsRow: View {
-    let doc: GongbaoSfjs
-
-    private var preview: String {
-        let text = doc.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return "" }
-        let end = text.index(text.startIndex, offsetBy: min(80, text.count))
-        return String(text[..<end])
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(doc.title)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(2)
-            HStack(spacing: 8) {
-                if !doc.docNumber.isEmpty {
-                    Text(doc.docNumber)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                if !doc.pubDate.isEmpty {
-                    Text(doc.pubDate)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            if !preview.isEmpty {
-                Text(preview)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-// MARK: - 司法解释详情页
-
-struct GongbaoSfjsDetailView: View {
-    let doc: GongbaoSfjs
-    var backLabel: String = ""
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(doc.title)
-                    .font(.title3.bold())
-                    .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    if !doc.docNumber.isEmpty {
-                        metaRow(label: "发文字号", value: doc.docNumber)
-                    }
-                    if !doc.pubDate.isEmpty {
-                        metaRow(label: "公布日期", value: doc.pubDate)
-                    }
-                    if !doc.effectiveDate.isEmpty {
-                        metaRow(label: "施行日期", value: doc.effectiveDate)
-                    }
-                }
-                .padding()
-                .background(Color(.systemGray6))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                Divider()
-
-                Text(doc.fullText)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding()
-        }
-        .navigationTitle("司法解释")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if !backLabel.isEmpty {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button { dismiss() } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                            Text(backLabel)
-                        }
-                        .font(.subheadline)
-                    }
-                }
-            }
-        }
-    }
-
-    private func metaRow(label: String, value: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 60, alignment: .leading)
-            Text(value)
-                .font(.caption)
-                .foregroundStyle(.primary)
-        }
-    }
-}
-
 #Preview {
     NavigationStack {
-        GongbaoView(selectedDoc: .constant(nil), selectedSfjs: .constant(nil))
+        GongbaoView(selectedDoc: .constant(nil))
     }
 }
