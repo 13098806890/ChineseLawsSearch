@@ -344,7 +344,7 @@ struct NodeRowView: View {
                         }
                     }
                 }
-                Divider().padding(.leading).opacity(0.4)
+                Divider().padding(.leading)
             }
         }
         .background(highlighted ? AppColors.shared.articleHighlight.opacity(0.15) : Color.clear)
