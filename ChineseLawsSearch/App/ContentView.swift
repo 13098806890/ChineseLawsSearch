@@ -26,6 +26,7 @@ struct ContentView: View {
     @State private var tab: Tab = .browse
     @State private var target: LawTarget?
     @State private var selectedGongbaoDoc: GongbaoDoc?
+    @State private var selectedGongbaoLaw: LawTarget?
     @State private var showSettings = false
     @State private var showWelcome = false
     @State private var backStack: [BackItem] = []
@@ -199,7 +200,9 @@ struct ContentView: View {
         Group {
             if isCompact {
                 NavigationStack {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc, navigate: navigate)
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc,
+                                navigate: navigate,
+                                navigateToLaw: { selectedGongbaoLaw = $0 })
                         .navigationDestination(item: $selectedGongbaoDoc) { doc in
                             GongbaoDetailView(
                                 doc: doc,
@@ -210,12 +213,23 @@ struct ContentView: View {
                             )
                             .environmentObject(userStore)
                         }
+                        .navigationDestination(item: $selectedGongbaoLaw) { lawTarget in
+                            LawDetailView(target: lawTarget, navigate: navigate,
+                                          navigateToGongbao: navigateToGongbao)
+                                .environmentObject(userStore)
+                        }
                 }
             } else {
                 NavigationSplitView {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc, navigate: navigate)
+                    GongbaoView(selectedDoc: $selectedGongbaoDoc,
+                                navigate: navigate,
+                                navigateToLaw: { selectedGongbaoLaw = $0 })
                 } detail: {
-                    if let doc = selectedGongbaoDoc {
+                    if let lawTarget = selectedGongbaoLaw {
+                        LawDetailView(target: lawTarget, navigate: navigate,
+                                      navigateToGongbao: navigateToGongbao)
+                            .environmentObject(userStore)
+                    } else if let doc = selectedGongbaoDoc {
                         GongbaoDetailView(
                             doc: doc,
                             navigateBack: gongbaoNavigatedFromBrowse ? { tab = .browse; gongbaoNavigatedFromBrowse = false }

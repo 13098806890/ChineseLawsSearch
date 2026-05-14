@@ -50,6 +50,7 @@ enum GongbaoSource: String, CaseIterable, Identifiable {
 struct GongbaoView: View {
     @Binding var selectedDoc: GongbaoDoc?
     var navigate: (Int, Int?) -> Void = { _, _ in }
+    var navigateToLaw: (LawTarget) -> Void = { _ in }
 
     @State private var selectedSource: GongbaoSource = .al
     @State private var searchText: String = ""
@@ -254,7 +255,9 @@ extension GongbaoView {
         } else {
             List(docs, id: \.id) { doc in
                 Button {
-                    navigate(doc.id, nil)
+                    if let law = DatabaseManager.shared.lawMeta(id: doc.id) {
+                        navigateToLaw(LawTarget(law: law, scrollToArticle: nil))
+                    }
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(doc.title)
