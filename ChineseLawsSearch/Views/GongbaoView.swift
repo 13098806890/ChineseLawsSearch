@@ -9,54 +9,54 @@ import UIKit
 
 // MARK: - 来源枚举
 
-enum GongbaoSource: String, CaseIterable, Identifiable {
-    case al     = "al"
-    case sfwj   = "sfwj"
-    case cpwsxd = "cpwsxd"
-    case sfjs   = "sfjs"
+enum GazetteSource: String, CaseIterable, Identifiable {
+    case guidingCase      = "al"
+    case judicialDoc      = "sfwj"
+    case selectedCase     = "cpwsxd"
+    case interpretation   = "sfjs"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .al:     return "指导案例"
-        case .sfwj:   return "司法文件"
-        case .cpwsxd: return "裁判文书"
-        case .sfjs:   return "司法解释"
+        case .guidingCase:     return "指导案例"
+        case .judicialDoc:   return "司法文件"
+        case .selectedCase: return "裁判文书"
+        case .interpretation:   return "司法解释"
         }
     }
 
     var icon: String {
         switch self {
-        case .al:     return "lightbulb.circle"
-        case .sfwj:   return "doc.plaintext"
-        case .cpwsxd: return "doc.text.magnifyingglass"
-        case .sfjs:   return "text.book.closed"
+        case .guidingCase:     return "lightbulb.circle"
+        case .judicialDoc:   return "doc.plaintext"
+        case .selectedCase: return "doc.text.magnifyingglass"
+        case .interpretation:   return "text.book.closed"
         }
     }
 
     var searchPlaceholder: String {
         switch self {
-        case .al:     return "案件名称、案例编号、关键词…"
-        case .sfwj:   return "文件标题、关键词…"
-        case .cpwsxd: return "案件名称、摘要关键词…"
-        case .sfjs:   return "标题、发文字号、关键词…"
+        case .guidingCase:     return "案件名称、案例编号、关键词…"
+        case .judicialDoc:   return "文件标题、关键词…"
+        case .selectedCase: return "案件名称、摘要关键词…"
+        case .interpretation:   return "标题、发文字号、关键词…"
         }
     }
 }
 
 // MARK: - 主视图（sidebar list，供 ContentView 包装进 SplitView / NavigationStack）
 
-struct GongbaoView: View {
-    @Binding var selectedDoc: GongbaoDoc?
+struct GazetteView: View {
+    @Binding var selectedDoc: GazetteDoc?
     var navigate: (Int, Int?) -> Void = { _, _ in }
     var navigateToLaw: (LawTarget) -> Void = { _ in }
 
-    @State private var selectedSource: GongbaoSource = .al
+    @State private var selectedSource: GazetteSource = .guidingCase
     @State private var searchText: String = ""
-    @State private var docs: [GongbaoDoc] = []
+    @State private var docs: [GazetteDoc] = []
     @State private var sfjsDocs: [LawMeta] = []
-    @State private var counts: [GongbaoSource: Int] = [:]
+    @State private var counts: [GazetteSource: Int] = [:]
     @State private var isLoading = false
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var hasLoaded = false
@@ -78,7 +78,7 @@ struct GongbaoView: View {
 
             if isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if selectedSource == .sfjs {
+            } else if selectedSource == .interpretation {
                 sfjsList(docs: sfjsDocs)
             } else {
                 docList(docs: docs)
@@ -103,7 +103,7 @@ struct GongbaoView: View {
 
     private var sourcePickerBar: some View {
         HStack(spacing: 6) {
-            ForEach(GongbaoSource.allCases) { src in
+            ForEach(GazetteSource.allCases) { src in
                 Button {
                     selectedSource = src
                 } label: {
@@ -153,7 +153,7 @@ struct GongbaoView: View {
     // MARK: 列表
 
     @ViewBuilder
-    private func docList(docs: [GongbaoDoc]) -> some View {
+    private func docList(docs: [GazetteDoc]) -> some View {
         if docs.isEmpty {
             VStack(spacing: 8) {
                 Image(systemName: searchText.isEmpty ? "doc.text" : "magnifyingglass")
@@ -175,12 +175,12 @@ struct GongbaoView: View {
                     Button {
                         selectedDoc = doc
                     } label: {
-                        GongbaoDocRow(doc: doc)
+                        GazetteDocRow(doc: doc)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 } else {
-                    GongbaoDocRow(doc: doc)
+                    GazetteDocRow(doc: doc)
                         .tag(doc)
                 }
             }
@@ -200,34 +200,34 @@ struct GongbaoView: View {
             guard !Task.isCancelled else { return }
             await MainActor.run { isLoading = true }
 
-            if src == .sfjs {
+            if src == .interpretation {
                 async let sfjsResult = Task.detached(priority: .userInitiated) {
                     DatabaseManager.shared.searchByTitle(query: q.isEmpty ? "" : q, limit: 500,
                                                          categories: ["司法解释"])
                         .filter { $0.source == "gongbao" }
                 }.value
                 async let allCounts = Task.detached(priority: .userInitiated) {
-                    var result: [GongbaoSource: Int] = [:]
-                    for source in GongbaoSource.allCases where source != .sfjs {
-                        result[source] = DatabaseManager.shared.gongbaoCount(source: source.rawValue, query: q)
+                    var result: [GazetteSource: Int] = [:]
+                    for source in GazetteSource.allCases where source != .interpretation {
+                        result[source] = DatabaseManager.shared.gazetteCount(source: source.rawValue, query: q)
                     }
                     return result
                 }.value
                 let (sfjs, newCounts) = await (sfjsResult, allCounts)
                 guard !Task.isCancelled else { return }
                 var updatedCounts = newCounts
-                updatedCounts[.sfjs] = sfjs.count
+                updatedCounts[.interpretation] = sfjs.count
                 await MainActor.run { sfjsDocs = sfjs; counts = updatedCounts; isLoading = false }
             } else {
                 async let mainDocs = Task.detached(priority: .userInitiated) {
-                    DatabaseManager.shared.gongbaoDocs(source: src.rawValue, query: q)
+                    DatabaseManager.shared.gazetteDocs(source: src.rawValue, query: q)
                 }.value
                 async let allCounts = Task.detached(priority: .userInitiated) {
-                    var result: [GongbaoSource: Int] = [:]
-                    for source in GongbaoSource.allCases where source != .sfjs {
-                        result[source] = DatabaseManager.shared.gongbaoCount(source: source.rawValue, query: q)
+                    var result: [GazetteSource: Int] = [:]
+                    for source in GazetteSource.allCases where source != .interpretation {
+                        result[source] = DatabaseManager.shared.gazetteCount(source: source.rawValue, query: q)
                     }
-                    result[.sfjs] = DatabaseManager.shared.searchByTitle(query: q, limit: 1000, categories: ["司法解释"])
+                    result[.interpretation] = DatabaseManager.shared.searchByTitle(query: q, limit: 1000, categories: ["司法解释"])
                         .filter { $0.source == "gongbao" }.count
                     return result
                 }.value
@@ -240,7 +240,7 @@ struct GongbaoView: View {
 }
 
 // MARK: - 司法解释列表（GongbaoView 内部方法抽到扩展）
-extension GongbaoView {
+extension GazetteView {
     @ViewBuilder
     func sfjsList(docs: [LawMeta]) -> some View {
         if docs.isEmpty {
@@ -290,8 +290,8 @@ extension GongbaoView {
 
 // MARK: - 列表行
 
-struct GongbaoDocRow: View {
-    let doc: GongbaoDoc
+struct GazetteDocRow: View {
+    let doc: GazetteDoc
 
     /// 去掉标题中与 case_number 重复的前缀（al 来源标题常以案号开头）
     private var cleanTitle: String {
@@ -355,15 +355,15 @@ struct GongbaoDocRow: View {
 
 // MARK: - 详情视图
 
-struct GongbaoDetailView: View {
-    let doc: GongbaoDoc
+struct GazetteDetailView: View {
+    let doc: GazetteDoc
     var navigateBack: (() -> Void)? = nil
     var backLabel: String = "返回法条"
     @EnvironmentObject private var userStore: UserStore
 
-    private var isFav: Bool { userStore.isGongbaoFavorited(docId: doc.id) }
+    private var isFav: Bool { userStore.isGazetteFavorited(docId: doc.id) }
     @State private var showNoteSheet = false
-    private var hasNote: Bool { !userStore.gongbaoNote(docId: doc.id).isEmpty }
+    private var hasNote: Bool { !userStore.gazetteNote(docId: doc.id).isEmpty }
 
     private var cleanTitle: String {
         let cn = doc.caseNumber
@@ -382,7 +382,7 @@ struct GongbaoDetailView: View {
                 metaRow
 
                 // 笔记展示块
-                let note = userStore.gongbaoNote(docId: doc.id)
+                let note = userStore.gazetteNote(docId: doc.id)
                 if !note.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 4) {
@@ -476,10 +476,10 @@ struct GongbaoDetailView: View {
                     }
                     Button {
                         if isFav {
-                            userStore.removeGongbaoFavorite(docId: doc.id)
+                            userStore.removeGazetteFavorite(docId: doc.id)
                         } else {
-                            userStore.addGongbaoFavorite(
-                                FavoriteGongbaoDoc(
+                            userStore.addGazetteFavorite(
+                                FavoriteGazetteDoc(
                                     docId: doc.id,
                                     source: doc.source,
                                     title: doc.title,
@@ -503,7 +503,7 @@ struct GongbaoDetailView: View {
             }
         }
         .sheet(isPresented: $showNoteSheet) {
-            GongbaoNoteSheet(doc: doc)
+            GazetteNoteSheet(doc: doc)
                 .environmentObject(userStore)
         }
     }
@@ -624,17 +624,17 @@ struct GongbaoDetailView: View {
     }
 }
 
-// MARK: - GongbaoDoc: Hashable, Equatable
+// MARK: - GazetteDoc: Hashable, Equatable
 
-extension GongbaoDoc: Hashable, Equatable {
-    static func == (lhs: GongbaoDoc, rhs: GongbaoDoc) -> Bool { lhs.id == rhs.id }
+extension GazetteDoc: Hashable, Equatable {
+    static func == (lhs: GazetteDoc, rhs: GazetteDoc) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 // MARK: - 笔记 Sheet
 
-struct GongbaoNoteSheet: View {
-    let doc: GongbaoDoc
+struct GazetteNoteSheet: View {
+    let doc: GazetteDoc
     @EnvironmentObject var userStore: UserStore
     @Environment(\.dismiss) private var dismiss
     @State private var text: String = ""
@@ -648,7 +648,7 @@ struct GongbaoNoteSheet: View {
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("保存") {
-                            userStore.setGongbaoNote(docId: doc.id, text: text)
+                            userStore.setGazetteNote(docId: doc.id, text: text)
                             dismiss()
                         }
                     }
@@ -657,13 +657,13 @@ struct GongbaoNoteSheet: View {
                     }
                 }
         }
-        .onAppear { text = userStore.gongbaoNote(docId: doc.id) }
+        .onAppear { text = userStore.gazetteNote(docId: doc.id) }
         .presentationDetents([.medium, .large])
     }
 }
 
 #Preview {
     NavigationStack {
-        GongbaoView(selectedDoc: .constant(nil))
+        GazetteView(selectedDoc: .constant(nil))
     }
 }

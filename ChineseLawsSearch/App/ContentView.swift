@@ -25,8 +25,8 @@ struct LawTarget: Identifiable, Hashable {
 struct ContentView: View {
     @State private var tab: Tab = .browse
     @State private var target: LawTarget?
-    @State private var selectedGongbaoDoc: GongbaoDoc?
-    @State private var selectedGongbaoLaw: LawTarget?
+    @State private var selectedGazetteDoc: GazetteDoc?
+    @State private var selectedGazetteLaw: LawTarget?
     @State private var showSettings = false
     @State private var showWelcome = false
     @State private var backStack: [BackItem] = []
@@ -58,7 +58,7 @@ struct ContentView: View {
                 favoritesView
                     .opacity(tab == .favorites ? 1 : 0)
                     .allowsHitTesting(tab == .favorites)
-                gongbaoView
+                gazetteView
                     .opacity(tab == .gongbao ? 1 : 0)
                     .allowsHitTesting(tab == .gongbao)
             }
@@ -132,7 +132,7 @@ struct ContentView: View {
                 TOCView(target: $target)
                     .navigationDestination(item: $target) { t in
                         LawDetailView(target: t, navigate: navigate,
-                                      navigateToGongbao: navigateToGongbao,
+                                      navigateToGazette: navigateToGazette,
                                       canGoBack: !backStack.isEmpty, goBack: goBack)
                             .environmentObject(userStore)
                     }
@@ -144,7 +144,7 @@ struct ContentView: View {
                 if let t = target {
                     NavigationStack {
                         LawDetailView(target: t, navigate: navigate,
-                                      navigateToGongbao: navigateToGongbao,
+                                      navigateToGazette: navigateToGazette,
                                       canGoBack: !backStack.isEmpty, goBack: goBack)
                             .environmentObject(userStore)
                     }
@@ -164,7 +164,7 @@ struct ContentView: View {
                 NavigationStack {
                     LegalChatView(vm: chatVM, historyStore: historyStore,
                                   showThinking: userStore.showThinking, navigate: navigate,
-                                  navigateToGongbao: navigateToGongbao,
+                                  navigateToGazette: navigateToGazette,
                                   onOpenSettings: { showSettings = true },
                                   isActive: tab == .chat)
                         .environmentObject(userStore)
@@ -176,7 +176,7 @@ struct ContentView: View {
                     NavigationStack {
                         LegalChatView(vm: chatVM, historyStore: historyStore,
                                       showThinking: userStore.showThinking, navigate: navigate,
-                                      navigateToGongbao: navigateToGongbao,
+                                      navigateToGazette: navigateToGazette,
                                       showHistoryButton: false, showNewSessionButton: true,
                                       onOpenSettings: { showSettings = true },
                                       isActive: tab == .chat)
@@ -190,52 +190,52 @@ struct ContentView: View {
     // MARK: Favorites
 
     private var favoritesView: some View {
-        FavoritesView(navigate: navigate, navigateToGongbao: navigateToGongbao)
+        FavoritesView(navigate: navigate, navigateToGazette: navigateToGazette)
             .environmentObject(userStore)
     }
 
-    // MARK: Gongbao
+    // MARK: Gazette
 
-    private var gongbaoView: some View {
+    private var gazetteView: some View {
         Group {
             if isCompact {
                 NavigationStack {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc,
+                    GazetteView(selectedDoc: $selectedGazetteDoc,
                                 navigate: navigate,
-                                navigateToLaw: { selectedGongbaoLaw = $0 })
-                        .navigationDestination(item: $selectedGongbaoDoc) { doc in
-                            GongbaoDetailView(
+                                navigateToLaw: { selectedGazetteLaw = $0 })
+                        .navigationDestination(item: $selectedGazetteDoc) { doc in
+                            GazetteDetailView(
                                 doc: doc,
-                                navigateBack: gongbaoNavigatedFromBrowse ? { tab = .browse; gongbaoNavigatedFromBrowse = false }
-                                            : gongbaoNavigatedFromChat   ? { tab = .chat;   gongbaoNavigatedFromChat   = false }
+                                navigateBack: gazetteNavigatedFromBrowse ? { tab = .browse; gazetteNavigatedFromBrowse = false }
+                                            : gazetteNavigatedFromChat   ? { tab = .chat;   gazetteNavigatedFromChat   = false }
                                             : nil,
-                                backLabel: gongbaoNavigatedFromChat ? "返回对话" : "返回法条"
+                                backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条"
                             )
                             .environmentObject(userStore)
                         }
-                        .navigationDestination(item: $selectedGongbaoLaw) { lawTarget in
+                        .navigationDestination(item: $selectedGazetteLaw) { lawTarget in
                             LawDetailView(target: lawTarget, navigate: navigate,
-                                          navigateToGongbao: navigateToGongbao)
+                                          navigateToGazette: navigateToGazette)
                                 .environmentObject(userStore)
                         }
                 }
             } else {
                 NavigationSplitView {
-                    GongbaoView(selectedDoc: $selectedGongbaoDoc,
+                    GazetteView(selectedDoc: $selectedGazetteDoc,
                                 navigate: navigate,
-                                navigateToLaw: { selectedGongbaoLaw = $0 })
+                                navigateToLaw: { selectedGazetteLaw = $0 })
                 } detail: {
-                    if let lawTarget = selectedGongbaoLaw {
+                    if let lawTarget = selectedGazetteLaw {
                         LawDetailView(target: lawTarget, navigate: navigate,
-                                      navigateToGongbao: navigateToGongbao)
+                                      navigateToGazette: navigateToGazette)
                             .environmentObject(userStore)
-                    } else if let doc = selectedGongbaoDoc {
-                        GongbaoDetailView(
+                    } else if let doc = selectedGazetteDoc {
+                        GazetteDetailView(
                             doc: doc,
-                            navigateBack: gongbaoNavigatedFromBrowse ? { tab = .browse; gongbaoNavigatedFromBrowse = false }
-                                        : gongbaoNavigatedFromChat   ? { tab = .chat;   gongbaoNavigatedFromChat   = false }
+                            navigateBack: gazetteNavigatedFromBrowse ? { tab = .browse; gazetteNavigatedFromBrowse = false }
+                                        : gazetteNavigatedFromChat   ? { tab = .chat;   gazetteNavigatedFromChat   = false }
                                         : nil,
-                            backLabel: gongbaoNavigatedFromChat ? "返回对话" : "返回法条"
+                            backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条"
                         )
                         .environmentObject(userStore)
                     } else {
@@ -280,14 +280,14 @@ struct ContentView: View {
         }
     }
 
-    @State private var gongbaoNavigatedFromBrowse = false
-    @State private var gongbaoNavigatedFromChat   = false
+    @State private var gazetteNavigatedFromBrowse = false
+    @State private var gazetteNavigatedFromChat   = false
 
-    func navigateToGongbao(_ doc: GongbaoDoc) {
-        gongbaoNavigatedFromBrowse = (tab == .browse)
-        gongbaoNavigatedFromChat   = (tab == .chat)
+    func navigateToGazette(_ doc: GazetteDoc) {
+        gazetteNavigatedFromBrowse = (tab == .browse)
+        gazetteNavigatedFromChat   = (tab == .chat)
         tab = .gongbao
-        selectedGongbaoDoc = doc
+        selectedGazetteDoc = doc
     }
 
     /// 持久化当前 backStack + target 到 UserDefaults

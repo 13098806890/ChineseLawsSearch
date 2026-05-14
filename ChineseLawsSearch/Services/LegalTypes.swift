@@ -16,13 +16,13 @@ struct ChatMessage: Identifiable, Equatable {
     var text: String             = ""
     var thinkSteps: [ThinkStep]  = []
     var citations: [RAGCitation] = []
-    var gongbaoCitations: [GongbaoCitation] = []
+    var gazetteCitations: [GazetteCitation] = []
     var subQuestions: [String]   = []
     var isClarifying: Bool       = false
     var subQuestionIndex: Int?   = nil
     var showSteps: Bool               = true
     var showCitations: Bool           = false
-    var showGongbaoCitations: Bool    = false
+    var showGazetteCitations: Bool    = false
     var intent: MessageIntent?   = nil
 
     init(role: Role, text: String = "", isClarifying: Bool = false) {
@@ -57,7 +57,7 @@ struct RAGCitation: Identifiable, Equatable {
 
 // MARK: - Gongbao citation (公报案例引用)
 
-struct GongbaoCitation: Identifiable, Codable, Equatable {
+struct GazetteCitation: Identifiable, Codable, Equatable {
     var id: Int           { docId }
     let docId: Int
     let source: String
@@ -76,7 +76,7 @@ enum RAGEvent {
     case token(String)
     case clarifyingQuestion(String)
     case expertsSelected([SubExpert])
-    case gongbaoCitations([GongbaoCitation])
+    case gazetteCitations([GazetteCitation])
 }
 
 // MARK: - Message intent

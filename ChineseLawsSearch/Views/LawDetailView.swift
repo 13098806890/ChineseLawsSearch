@@ -9,7 +9,7 @@ import UIKit
 struct LawDetailView: View {
     let target: LawTarget
     let navigate: (Int, Int?) -> Void
-    var navigateToGongbao: (GongbaoDoc) -> Void = { _ in }
+    var navigateToGazette: (GazetteDoc) -> Void = { _ in }
     var canGoBack: Bool = false
     var goBack: () -> Void = {}
 
@@ -19,7 +19,7 @@ struct LawDetailView: View {
     @State private var isLoadingNodes = true
     @State private var outgoingMap: [Int: [OutgoingRef]] = [:]
     @State private var incomingMap: [Int: [IncomingRef]] = [:]
-    @State private var gongbaoRefMap: [Int: [GongbaoDocLink]] = [:]   // articleNum → docs
+    @State private var gazetteRefMap: [Int: [GazetteDocLink]] = [:]   // articleNum → docs
     @State private var highlightedArticle: Int? = nil
     @State private var scrollPosition: Int? = nil
     @State private var isSearching = false
@@ -70,13 +70,13 @@ struct LawDetailView: View {
                         node: node,
                         outgoing: node.articleNum.flatMap { outgoingMap[$0] } ?? [],
                         incoming: node.articleNum.flatMap { incomingMap[$0] } ?? [],
-                        gongbaoLinks: node.articleNum.flatMap { gongbaoRefMap[$0] } ?? [],
+                        gazetteLinks: node.articleNum.flatMap { gazetteRefMap[$0] } ?? [],
                         highlighted: node.articleNum != nil && node.articleNum == highlightedArticle,
                         highlightQuery: searchQuery.trimmingCharacters(in: .whitespaces),
                         lawId: law.id,
                         lawTitle: law.title,
                         navigate: navigate,
-                        navigateToGongbao: navigateToGongbao
+                        navigateToGazette: navigateToGazette
                     )
                     .id(node.id)
                 }
@@ -148,10 +148,10 @@ struct LawDetailView: View {
                 .ignoresSafeArea()
             }
         }
-        .task(id: "\(target.law.id)-\(userStore.flkMode)") {
+        .task(id: "\(target.law.id)-\(userStore.lawsExamMode)") {
             // 仅在切换法律或法考模式变化时重新加载，同法律内跳条文走 onChange
             let lawId = law.id
-            let flk   = userStore.flkMode
+            let flk   = userStore.lawsExamMode
             highlightedArticle = nil
             isLoadingNodes = true
 
@@ -172,13 +172,13 @@ struct LawDetailView: View {
             scrollPosition = targetNodeId ?? -1
 
             // 引用关系并行加载（不阻塞渲染，加载完后静默更新）
-            async let ogTask = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId, flkOnly: flk)
-            async let icTask = DatabaseManager.shared.incomingRefsForLaw(lawId: lawId, flkOnly: flk)
-            async let gbTask = DatabaseManager.shared.gongbaoLinksForLaw(lawId: lawId)
-            let (ogList, icList, gbMap) = await (ogTask, icTask, gbTask)
+            async let ogTask = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId, lawsExamOnly: flk)
+            async let icTask = DatabaseManager.shared.incomingRefsForLaw(lawId: lawId, lawsExamOnly: flk)
+            async let gazetteTask = DatabaseManager.shared.gazetteLinksForLaw(lawId: lawId)
+            let (ogList, icList, gazetteMap) = await (ogTask, icTask, gazetteTask)
             outgoingMap = Dictionary(grouping: ogList, by: \.fromArticleNum)
             incomingMap = Dictionary(grouping: icList, by: \.toArticleNum)
-            gongbaoRefMap = gbMap
+            gazetteRefMap = gazetteMap
 
             // 高亮动画（引用加载完后再做，不影响滚动）
             if let artNum = target.scrollToArticle {
@@ -267,13 +267,13 @@ struct NodeRowView: View {
     let node: LawNode
     let outgoing: [OutgoingRef]
     let incoming: [IncomingRef]
-    var gongbaoLinks: [GongbaoDocLink] = []
+    var gazetteLinks: [GazetteDocLink] = []
     let highlighted: Bool
     var highlightQuery: String = ""
     let lawId: Int
     let lawTitle: String
     let navigate: (Int, Int?) -> Void
-    var navigateToGongbao: (GongbaoDoc) -> Void = { _ in }
+    var navigateToGazette: (GazetteDoc) -> Void = { _ in }
 
     @EnvironmentObject private var userStore: UserStore
 
@@ -314,9 +314,9 @@ struct NodeRowView: View {
                     highlightQuery: highlightQuery,
                     outgoing: outgoing,
                     incoming: incoming,
-                    gongbaoLinks: gongbaoLinks,
+                    gazetteLinks: gazetteLinks,
                     navigate: navigate,
-                    navigateToGongbao: navigateToGongbao
+                    navigateToGazette: navigateToGazette
                 )
                 .contextMenu {
                     Button {
@@ -360,9 +360,9 @@ struct ArticleView: View {
     var highlightQuery: String = ""
     let outgoing: [OutgoingRef]
     let incoming: [IncomingRef]
-    var gongbaoLinks: [GongbaoDocLink] = []
+    var gazetteLinks: [GazetteDocLink] = []
     let navigate: (Int, Int?) -> Void
-    var navigateToGongbao: (GongbaoDoc) -> Void = { _ in }
+    var navigateToGazette: (GazetteDoc) -> Void = { _ in }
 
     // 把单段文字里的 rawText 替换成超链接，并高亮搜索关键词
     func attributed(_ text: String) -> AttributedString {
@@ -416,12 +416,12 @@ struct ArticleView: View {
                 .padding(.top, 4)
             }
 
-            if !gongbaoLinks.isEmpty {
+            if !gazetteLinks.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
-                    ForEach(gongbaoLinks) { link in
+                    ForEach(gazetteLinks) { link in
                         Button {
-                            if let doc = DatabaseManager.shared.gongbaoDoc(id: link.id) {
-                                navigateToGongbao(doc)
+                            if let doc = DatabaseManager.shared.gazetteDoc(id: link.id) {
+                                navigateToGazette(doc)
                             }
                         } label: {
                             HStack(spacing: 4) {

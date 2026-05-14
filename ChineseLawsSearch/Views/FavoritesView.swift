@@ -9,27 +9,27 @@ import SwiftUI
 
 private enum FavTab: String, CaseIterable, Identifiable {
     case laws    = "laws"
-    case al      = "al"
-    case cpwsxd  = "cpwsxd"
-    case sfwj    = "sfwj"
+    case guidingCase  = "al"
+    case selectedCase = "cpwsxd"
+    case judicialDoc  = "sfwj"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .laws:    return "法条"
-        case .al:      return "指导案例"
-        case .cpwsxd:  return "裁判文书"
-        case .sfwj:    return "司法文件"
+        case .guidingCase:      return "指导案例"
+        case .selectedCase:  return "裁判文书"
+        case .judicialDoc:    return "司法文件"
         }
     }
 
     var icon: String {
         switch self {
         case .laws:    return "text.book.closed"
-        case .al:      return "star.circle"
-        case .cpwsxd:  return "doc.text.magnifyingglass"
-        case .sfwj:    return "doc.plaintext"
+        case .guidingCase:      return "star.circle"
+        case .selectedCase:  return "doc.text.magnifyingglass"
+        case .judicialDoc:    return "doc.plaintext"
         }
     }
 }
@@ -38,7 +38,7 @@ private enum FavTab: String, CaseIterable, Identifiable {
 
 struct FavoritesView: View {
     let navigate: (Int, Int?) -> Void
-    let navigateToGongbao: (GongbaoDoc) -> Void
+    let navigateToGazette: (GazetteDoc) -> Void
 
     @EnvironmentObject private var userStore: UserStore
     @State private var selectedTab: FavTab = .laws
@@ -107,9 +107,9 @@ struct FavoritesView: View {
     private func badgeCount(_ tab: FavTab) -> Int {
         switch tab {
         case .laws:   return userStore.favorites.count
-        case .al:     return userStore.favoriteGongbaoDocs.filter { $0.source == "al" }.count
-        case .cpwsxd: return userStore.favoriteGongbaoDocs.filter { $0.source == "cpwsxd" }.count
-        case .sfwj:   return userStore.favoriteGongbaoDocs.filter { $0.source == "sfwj" }.count
+        case .guidingCase:     return userStore.favoriteGazetteDocs.filter { $0.source == "al" }.count
+        case .selectedCase: return userStore.favoriteGazetteDocs.filter { $0.source == "cpwsxd" }.count
+        case .judicialDoc:   return userStore.favoriteGazetteDocs.filter { $0.source == "sfwj" }.count
         }
     }
 
@@ -120,8 +120,8 @@ struct FavoritesView: View {
         switch selectedTab {
         case .laws:
             lawsList
-        case .al, .cpwsxd, .sfwj:
-            gongbaoList(source: selectedTab.rawValue)
+        case .guidingCase, .selectedCase, .judicialDoc:
+            gazetteList(source: selectedTab.rawValue)
         }
     }
 
@@ -156,8 +156,8 @@ struct FavoritesView: View {
 
     // MARK: 公报文书列表
 
-    private func gongbaoList(source: String) -> some View {
-        let items = userStore.favoriteGongbaoDocs.filter { $0.source == source }
+    private func gazetteList(source: String) -> some View {
+        let items = userStore.favoriteGazetteDocs.filter { $0.source == source }
         return Group {
             if items.isEmpty {
                 emptyState(icon: "star", message: "暂无收藏", hint: "在公报文书详情页点击星标图标即可收藏。")
@@ -166,16 +166,16 @@ struct FavoritesView: View {
                     ForEach(items) { fav in
                         Button {
                             // 从DB加载完整文档后导航
-                            if let doc = DatabaseManager.shared.gongbaoDoc(id: fav.docId) {
-                                navigateToGongbao(doc)
+                            if let doc = DatabaseManager.shared.gazetteDoc(id: fav.docId) {
+                                navigateToGazette(doc)
                             }
                         } label: {
-                            GongbaoFavoriteRow(fav: fav)
+                            GazetteFavoriteRow(fav: fav)
                         }
                         .buttonStyle(.plain)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
-                                userStore.removeGongbaoFavorite(docId: fav.docId)
+                                userStore.removeGazetteFavorite(docId: fav.docId)
                             } label: {
                                 Label("删除", systemImage: "trash")
                             }
@@ -236,8 +236,8 @@ private struct FavoriteRow: View {
 
 // MARK: - 公报文书行
 
-private struct GongbaoFavoriteRow: View {
-    let fav: FavoriteGongbaoDoc
+private struct GazetteFavoriteRow: View {
+    let fav: FavoriteGazetteDoc
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {

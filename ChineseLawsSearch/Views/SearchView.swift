@@ -21,15 +21,9 @@ struct SearchView: View {
     @State private var includeInterp = true
     @State private var searchTask: Task<Void, Never>? = nil
 
-    @AppStorage("flkMode") private var flkMode: Bool = false
+    @AppStorage("flkMode") private var lawsExamMode: Bool = false
 
-    private var searchCategories: [String] {
-        if flkMode { return [] }
-        var cats: [String] = []
-        if includeLaws   { cats += ["法律", "宪法", "行政法规", "修正案", "法律解释", "监察法规"] }
-        if includeInterp { cats += ["司法解释"] }
-        return cats.isEmpty ? ["法律", "宪法", "行政法规", "修正案", "法律解释", "监察法规", "司法解释"] : cats
-    }
+    @EnvironmentObject private var userStore: UserStore
 
     var body: some View {
         NavigationStack {
@@ -226,15 +220,15 @@ struct SearchView: View {
         let excl      = excludeArticleNum
         let limit     = resultLimit
         let onlyTitle = titleOnly
-        let cats      = searchCategories
-        let flk       = flkMode
+        let cats      = lawsExamMode ? [] : userStore.searchCategories
+        let flk       = lawsExamMode
         let variant   = DatabaseManager.numberVariant(of: q)
 
         let db = DatabaseManager.shared
         searchTask = Task.detached(priority: .userInitiated) {
-            var titles = db.searchByTitle(query: q, categories: cats, flkOnly: flk)
+            var titles = db.searchByTitle(query: q, categories: cats, lawsExamOnly: flk)
             if let v = variant {
-                let extra = db.searchByTitle(query: v, categories: cats, flkOnly: flk)
+                let extra = db.searchByTitle(query: v, categories: cats, lawsExamOnly: flk)
                 let seen  = Set(titles.map(\.id))
                 titles += extra.filter { !seen.contains($0.id) }
             }
@@ -242,10 +236,10 @@ struct SearchView: View {
             var articles: [SearchResult] = []
             if !onlyTitle {
                 articles = db.searchContent(
-                    query: q, limit: limit, excludeArticleNumber: excl, categories: cats, flkOnly: flk)
+                    query: q, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
                 if let v = variant {
                     let extra = db.searchContent(
-                        query: v, limit: limit, excludeArticleNumber: excl, categories: cats, flkOnly: flk)
+                        query: v, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
                     let seen = Set(articles.map(\.id))
                     articles += extra.filter { !seen.contains($0.id) }
                 }

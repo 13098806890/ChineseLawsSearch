@@ -46,7 +46,7 @@ struct SearchResult: Identifiable {
     var source: String = "flk"
 }
 
-struct GongbaoDoc: Identifiable {
+struct GazetteDoc: Identifiable {
     let id: Int
     let source: String      // "cpwsxd" | "al" | "sfwj"
     let caseNumber: String  // 仅 al 有
@@ -84,20 +84,20 @@ struct IncomingRef: Identifiable {
 }
 
 // 某条文被公报案例引用的统计
-struct GongbaoRef: Identifiable {
+struct GazetteRef: Identifiable {
     let id: Int          // article_num (用作 map key)
     let articleNum: Int
     let count: Int       // 引用该条文的公报案例数量
 }
 
-struct GongbaoDocLink: Identifiable {
+struct GazetteDocLink: Identifiable {
     let id: Int          // doc_id (negative for sfjs)
     let title: String
     let isSfjs: Bool
     let sfjsArticleNum: Int?  // sfjs 中的具体条文序号（可为 nil）
 }
 
-struct GongbaoSfjsArticle: Identifiable {
+struct GazetteSfjsArticle: Identifiable {
     let id: Int
     let sfjsId: Int
     let articleNum: Int
@@ -106,7 +106,7 @@ struct GongbaoSfjsArticle: Identifiable {
     let globalOrder: Int
 }
 
-struct GongbaoSfjs: Identifiable, Hashable {
+struct GazetteSfjs: Identifiable, Hashable {
     let id: Int
     let title: String
     let docNumber: String
@@ -231,7 +231,7 @@ final class DatabaseManager {
         let groups: [MenuGroup]
     }
 
-    func loadFlkMenu() -> LawMenu? { loadMenuResource("flk_menu") }
+    func loadLawsExamMenu() -> LawMenu? { loadMenuResource("flk_menu") }
 
     func loadMenu() -> LawMenu? { loadMenuResource("law_menu") }
 
@@ -344,19 +344,19 @@ final class DatabaseManager {
 
     // MARK: 某部法律的全部出向引用（按条文分组用）
 
-    func outgoingRefsForLaw(lawId: Int, flkOnly: Bool = false) -> [OutgoingRef] {
-        queue.sync { _outgoingRefsForLaw(lawId: lawId, flkOnly: flkOnly) }
+    func outgoingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [OutgoingRef] {
+        queue.sync { _outgoingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
     }
 
-    private func _outgoingRefsForLaw(lawId: Int, flkOnly: Bool) -> [OutgoingRef] {
-        let flkFilter = flkOnly ? "AND l.is_flk = 1" : ""
+    private func _outgoingRefsForLaw(lawId: Int, lawsExamOnly: Bool) -> [OutgoingRef] {
+        let lawsExamFilter = lawsExamOnly ? "AND l.is_flk = 1" : ""
         let sql = """
             SELECT ar.id, ar.from_article_num, ar.raw_text, ar.to_law_id, l.title, ar.to_article_num
             FROM article_references ar
             JOIN laws l ON ar.to_law_id = l.id
             WHERE ar.from_law_id = ?
               AND ar.resolved = 1 AND ar.to_article_num IS NOT NULL
-              \(flkFilter)
+              \(lawsExamFilter)
             """
         var stmt: OpaquePointer?
         var result: [OutgoingRef] = []
@@ -378,12 +378,12 @@ final class DatabaseManager {
 
     // MARK: 某部法律的全部入向引用（按条文分组用）
 
-    func incomingRefsForLaw(lawId: Int, flkOnly: Bool = false) -> [IncomingRef] {
-        queue.sync { _incomingRefsForLaw(lawId: lawId, flkOnly: flkOnly) }
+    func incomingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [IncomingRef] {
+        queue.sync { _incomingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
     }
 
     /// 查询某部法律中被公报案例引用的条文，按 article_num 分组返回引用数量
-    func gongbaoRefsForLaw(lawId: Int) -> [GongbaoRef] {
+    func gazetteRefsForLaw(lawId: Int) -> [GazetteRef] {
         queue.sync {
             guard let db = db else { return [] }
             let sql = """
@@ -393,21 +393,21 @@ final class DatabaseManager {
                 GROUP BY article_num
                 """
             var stmt: OpaquePointer?
-            var result: [GongbaoRef] = []
+            var result: [GazetteRef] = []
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return result }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt, 1, Int32(lawId))
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let artNum = Int(sqlite3_column_int(stmt, 0))
                 let cnt    = Int(sqlite3_column_int(stmt, 1))
-                result.append(GongbaoRef(id: artNum, articleNum: artNum, count: cnt))
+                result.append(GazetteRef(id: artNum, articleNum: artNum, count: cnt))
             }
             return result
         }
     }
 
-    /// articleNum → [GongbaoDocLink]，用于法条视图内跳转公报
-    func gongbaoLinksForLaw(lawId: Int) -> [Int: [GongbaoDocLink]] {
+    /// articleNum → [GazetteDocLink]，用于法条视图内跳转公报
+    func gazetteLinksForLaw(lawId: Int) -> [Int: [GazetteDocLink]] {
         queue.sync {
             guard let db = db else { return [:] }
             let sql = """
@@ -418,7 +418,7 @@ final class DatabaseManager {
                 ORDER BY l.article_num, d.title
                 """
             var stmt: OpaquePointer?
-            var result: [Int: [GongbaoDocLink]] = [:]
+            var result: [Int: [GazetteDocLink]] = [:]
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return result }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt, 1, Int32(lawId))
@@ -426,14 +426,14 @@ final class DatabaseManager {
                 let artNum = Int(sqlite3_column_int(stmt, 0))
                 let docId  = Int(sqlite3_column_int(stmt, 1))
                 let title  = String(cString: sqlite3_column_text(stmt, 2))
-                result[artNum, default: []].append(GongbaoDocLink(id: docId, title: title, isSfjs: false, sfjsArticleNum: nil))
+                result[artNum, default: []].append(GazetteDocLink(id: docId, title: title, isSfjs: false, sfjsArticleNum: nil))
             }
             return result
         }
     }
 
-    private func _incomingRefsForLaw(lawId: Int, flkOnly: Bool) -> [IncomingRef] {
-        let flkFilter = flkOnly ? "AND l.is_flk = 1" : ""
+    private func _incomingRefsForLaw(lawId: Int, lawsExamOnly: Bool) -> [IncomingRef] {
+        let lawsExamFilter = lawsExamOnly ? "AND l.is_flk = 1" : ""
         let sql = """
             SELECT ar.id, ar.to_article_num, ar.from_law_id, l.title, ar.from_article_num, n.article_number
             FROM article_references ar
@@ -441,7 +441,7 @@ final class DatabaseManager {
             JOIN nodes n ON ar.from_node_id = n.id
             WHERE ar.to_law_id = ?
               AND ar.resolved = 1 AND ar.ref_type = 'cross_law'
-              \(flkFilter)
+              \(lawsExamFilter)
             """
         var stmt: OpaquePointer?
         var result: [IncomingRef] = []
@@ -463,13 +463,13 @@ final class DatabaseManager {
 
     // MARK: 按标题搜索法律
 
-    nonisolated func searchByTitle(query: String, limit: Int = 50, categories: [String] = [], flkOnly: Bool = false) -> [LawMeta] {
-        queue.sync { _searchByTitle(query: query, limit: limit, categories: categories, flkOnly: flkOnly) }
+    nonisolated func searchByTitle(query: String, limit: Int = 50, categories: [String] = [], lawsExamOnly: Bool = false) -> [LawMeta] {
+        queue.sync { _searchByTitle(query: query, limit: limit, categories: categories, lawsExamOnly: lawsExamOnly) }
     }
 
-    private func _searchByTitle(query: String, limit: Int = 50, categories: [String] = [], flkOnly: Bool = false) -> [LawMeta] {
+    private func _searchByTitle(query: String, limit: Int = 50, categories: [String] = [], lawsExamOnly: Bool = false) -> [LawMeta] {
         let catFilter = categories.isEmpty ? "" : "AND category IN (\(categories.map { _ in "?" }.joined(separator: ",")))"
-        let flkFilter = flkOnly ? "AND is_flk = 1" : ""
+        let lawsExamFilter = lawsExamOnly ? "AND is_flk = 1" : ""
         let sql = """
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
@@ -477,7 +477,7 @@ final class DatabaseManager {
                    COALESCE(aliases, '') AS aliases,
                    COALESCE(source, 'flk') AS source
             FROM laws
-            WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?) \(catFilter) \(flkFilter)
+            WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?) \(catFilter) \(lawsExamFilter)
             ORDER BY title
             LIMIT ?
             """
@@ -521,17 +521,17 @@ final class DatabaseManager {
     nonisolated func searchContent(query: String, limit: Int = 100,
                        excludeArticleNumber: Bool = false,
                        categories: [String] = [],
-                       flkOnly: Bool = false) -> [SearchResult] {
+                       lawsExamOnly: Bool = false) -> [SearchResult] {
         queue.sync { _searchContent(query: query, limit: limit,
                                     excludeArticleNumber: excludeArticleNumber,
                                     categories: categories,
-                                    flkOnly: flkOnly) }
+                                    lawsExamOnly: lawsExamOnly) }
     }
 
     private func _searchContent(query: String, limit: Int = 100,
                        excludeArticleNumber: Bool = false,
                        categories: [String] = [],
-                       flkOnly: Bool = false) -> [SearchResult] {
+                       lawsExamOnly: Bool = false) -> [SearchResult] {
         guard !query.isEmpty else { return [] }
 
         let cjkChars = query.unicodeScalars.filter {
@@ -540,7 +540,7 @@ final class DatabaseManager {
         let useLike = cjkChars.count < 3   // 短词用 LIKE，避免 bigram 单字拆开无结果
 
         let catFilter = categories.isEmpty ? "" : "AND l.category IN (\(categories.map { _ in "?" }.joined(separator: ",")))"
-        let flkFilter = flkOnly ? "AND l.is_flk = 1" : ""
+        let lawsExamFilter = lawsExamOnly ? "AND l.is_flk = 1" : ""
         let sql: String
         let ftsQuery: String
 
@@ -551,7 +551,7 @@ final class DatabaseManager {
                 SELECT n.id, n.law_id, l.title, n.article_number, n.content, n.article_num
                 FROM nodes n
                 JOIN laws l ON n.law_id = l.id
-                WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1 \(catFilter) \(flkFilter)
+                WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1 \(catFilter) \(lawsExamFilter)
                 LIMIT ?
                 """
             ftsQuery = "%\(query)%"
@@ -564,7 +564,7 @@ final class DatabaseManager {
                 FROM nodes_fts f
                 JOIN nodes n ON f.rowid = n.id
                 JOIN laws  l ON n.law_id = l.id
-                WHERE \(col) MATCH ? AND n.type = 'article' AND l.is_current = 1 \(catFilter) \(flkFilter)
+                WHERE \(col) MATCH ? AND n.type = 'article' AND l.is_current = 1 \(catFilter) \(lawsExamFilter)
                 LIMIT ?
                 """
         }
@@ -1125,11 +1125,11 @@ final class DatabaseManager {
 
     // MARK: - 公报查询
 
-    func gongbaoDocs(source: String?, query: String, limit: Int = 500) -> [GongbaoDoc] {
-        queue.sync { _gongbaoDocs(source: source, query: query, limit: limit) }
+    func gazetteDocs(source: String?, query: String, limit: Int = 500) -> [GazetteDoc] {
+        queue.sync { _gazetteDocs(source: source, query: query, limit: limit) }
     }
 
-    func gongbaoCount(source: String, query: String) -> Int {
+    func gazetteCount(source: String, query: String) -> Int {
         queue.sync {
             guard let db = db else { return 0 }
             let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -1159,7 +1159,7 @@ final class DatabaseManager {
         }
     }
 
-    func gongbaoDoc(id: Int) -> GongbaoDoc? {
+    func gazetteDoc(id: Int) -> GazetteDoc? {
         queue.sync {
             guard let db = db else { return nil }
             let sql = """
@@ -1175,24 +1175,24 @@ final class DatabaseManager {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt, 1, Int32(id))
             if sqlite3_step(stmt) == SQLITE_ROW {
-                return _rowToDoc(stmt)
+                return _rowToGazetteDoc(stmt)
             }
             return nil
         }
     }
 
     /// 策略 A：复用 FTS+LIKE 逻辑，不限 source，供 AI agent 使用
-    func searchGongbaoDocs(query: String, sourceFilter: String? = nil, limit: Int = 10) -> [GongbaoDoc] {
-        queue.sync { _gongbaoDocs(source: sourceFilter, query: query, limit: limit) }
+    func searchGazetteDocs(query: String, sourceFilter: String? = nil, limit: Int = 10) -> [GazetteDoc] {
+        queue.sync { _gazetteDocs(source: sourceFilter, query: query, limit: limit) }
     }
 
     /// 策略 A 多词版：对多个扩展词分别搜索后合并去重（绕过 FTS 短词限制）
-    func searchGongbaoDocsMultiTerm(terms: [String], sourceFilter: String? = nil, limit: Int = 20) -> [GongbaoDoc] {
+    func searchGazetteDocsMultiTerm(terms: [String], sourceFilter: String? = nil, limit: Int = 20) -> [GazetteDoc] {
         queue.sync {
             var seen = Set<Int>()
-            var results: [GongbaoDoc] = []
+            var results: [GazetteDoc] = []
             for term in terms {
-                let docs = _gongbaoDocs(source: sourceFilter, query: term, limit: limit)
+                let docs = _gazetteDocs(source: sourceFilter, query: term, limit: limit)
                 for doc in docs where seen.insert(doc.id).inserted {
                     results.append(doc)
                 }
@@ -1203,7 +1203,7 @@ final class DatabaseManager {
     }
 
     /// 策略 B：按 keywords 平铺字段 LIKE 检索（多词 OR）
-    func searchGongbaoByKeywords(terms: [String], limit: Int = 10) -> [GongbaoDoc] {
+    func searchGazetteByKeywords(terms: [String], limit: Int = 10) -> [GazetteDoc] {
         queue.sync {
             guard let db = db, !terms.isEmpty else { return [] }
             let clauses = terms.map { _ in "keywords LIKE ?" }.joined(separator: " OR ")
@@ -1223,14 +1223,14 @@ final class DatabaseManager {
                 let pattern = "%\(term)%" as NSString
                 sqlite3_bind_text(stmt, Int32(i + 1), pattern.utf8String, -1, nil)
             }
-            var docs: [GongbaoDoc] = []
-            while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToDoc(stmt)) }
+            var docs: [GazetteDoc] = []
+            while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToGazetteDoc(stmt)) }
             return docs
         }
     }
 
     /// 策略 C：通过 gongbao_case_law_links 反查引用了指定法律的公报文书
-    func searchGongbaoByLawIds(_ lawIds: [Int], limit: Int = 10) -> [GongbaoDoc] {
+    func searchGazetteByLawIds(_ lawIds: [Int], limit: Int = 10) -> [GazetteDoc] {
         queue.sync {
             guard let db = db, !lawIds.isEmpty else { return [] }
             let placeholders = lawIds.map { _ in "?" }.joined(separator: ",")
@@ -1251,14 +1251,14 @@ final class DatabaseManager {
             for (i, lid) in lawIds.enumerated() {
                 sqlite3_bind_int(stmt, Int32(i + 1), Int32(lid))
             }
-            var docs: [GongbaoDoc] = []
-            while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToDoc(stmt)) }
+            var docs: [GazetteDoc] = []
+            while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToGazetteDoc(stmt)) }
             return docs
         }
     }
 
-    private func _gongbaoDocs(source: String?, query: String, limit: Int) -> [GongbaoDoc] {        guard let db = db else { return [] }
-        var docs: [GongbaoDoc] = []
+    private func _gazetteDocs(source: String?, query: String, limit: Int) -> [GazetteDoc] {        guard let db = db else { return [] }
+        var docs: [GazetteDoc] = []
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         let sourceFilter = source.map { "AND d.source = '\($0)'" } ?? ""
         let sourceFilterPlain = source.map { "AND source = '\($0)'" } ?? ""
@@ -1285,7 +1285,7 @@ final class DatabaseManager {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, (escaped as NSString).utf8String, -1, nil)
             while sqlite3_step(stmt) == SQLITE_ROW {
-                docs.append(_rowToDoc(stmt))
+                docs.append(_rowToGazetteDoc(stmt))
             }
 
         } else if trimmed.count >= 1 {
@@ -1311,7 +1311,7 @@ final class DatabaseManager {
             sqlite3_bind_text(stmt, 2, p, -1, nil)
             sqlite3_bind_text(stmt, 3, p, -1, nil)
             while sqlite3_step(stmt) == SQLITE_ROW {
-                docs.append(_rowToDoc(stmt))
+                docs.append(_rowToGazetteDoc(stmt))
             }
 
         } else {
@@ -1331,13 +1331,13 @@ final class DatabaseManager {
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
             while sqlite3_step(stmt) == SQLITE_ROW {
-                docs.append(_rowToDoc(stmt))
+                docs.append(_rowToGazetteDoc(stmt))
             }
         }
         return docs
     }
 
-    private func _rowToDoc(_ stmt: OpaquePointer?) -> GongbaoDoc {
+    private func _rowToGazetteDoc(_ stmt: OpaquePointer?) -> GazetteDoc {
         // col 10 = keywords_meta (JSON), col 11 = full_text
         let metaJson = str(stmt, 10)
         let keywordsMeta: [String: [String]]
@@ -1356,7 +1356,7 @@ final class DatabaseManager {
         } else {
             keywordsMeta = [:]
         }
-        return GongbaoDoc(
+        return GazetteDoc(
             id: Int(sqlite3_column_int(stmt, 0)),
             source: str(stmt, 1),
             caseNumber: str(stmt, 2),
@@ -1381,11 +1381,11 @@ final class DatabaseManager {
 
     // MARK: - 公报司法解释（现已迁移至 laws 表 source='gongbao'）
 
-    func gongbaoSfjsDocs(query: String, limit: Int = 500) -> [GongbaoSfjs] {
-        queue.sync { _gongbaoSfjsDocs(query: query, limit: limit) }
+    func gazetteSfjsDocs(query: String, limit: Int = 500) -> [GazetteSfjs] {
+        queue.sync { _gazetteSfjsDocs(query: query, limit: limit) }
     }
 
-    func gongbaoSfjsCount(query: String) -> Int {
+    func gazetteSfjsCount(query: String) -> Int {
         queue.sync {
             guard let db = db else { return 0 }
             let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -1403,7 +1403,7 @@ final class DatabaseManager {
         }
     }
 
-    func gongbaoSfjsArticles(sfjsId: Int) -> [GongbaoSfjsArticle] {
+    func gazetteSfjsArticles(sfjsId: Int) -> [GazetteSfjsArticle] {
         queue.sync {
             guard let db = db else { return [] }
             let sql = """
@@ -1416,11 +1416,11 @@ final class DatabaseManager {
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt, 1, Int32(sfjsId))
-            var results: [GongbaoSfjsArticle] = []
+            var results: [GazetteSfjsArticle] = []
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let artNumCol = sqlite3_column_type(stmt, 2)
                 let artNum = artNumCol == SQLITE_NULL ? 0 : Int(sqlite3_column_int(stmt, 2))
-                results.append(GongbaoSfjsArticle(
+                results.append(GazetteSfjsArticle(
                     id: Int(sqlite3_column_int(stmt, 0)),
                     sfjsId: Int(sqlite3_column_int(stmt, 1)),
                     articleNum: artNum,
@@ -1433,7 +1433,7 @@ final class DatabaseManager {
         }
     }
 
-    func gongbaoSfjsDoc(id: Int) -> GongbaoSfjs? {
+    func gazetteSfjsDoc(id: Int) -> GazetteSfjs? {
         queue.sync {
             guard let db = db else { return nil }
             let sql = """
@@ -1443,17 +1443,17 @@ final class DatabaseManager {
             var stmt: OpaquePointer?
             sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
             sqlite3_bind_int(stmt, 1, Int32(id))
-            let result: GongbaoSfjs? = sqlite3_step(stmt) == SQLITE_ROW ? self._rowToSfjs(stmt) : nil
+            let result: GazetteSfjs? = sqlite3_step(stmt) == SQLITE_ROW ? self._rowToGazetteSfjs(stmt) : nil
             sqlite3_finalize(stmt)
             return result
         }
     }
 
-    func searchGongbaoSfjs(query: String, limit: Int = 10) -> [GongbaoSfjs] {
-        queue.sync { _gongbaoSfjsDocs(query: query, limit: limit) }
+    func searchGazetteSfjs(query: String, limit: Int = 10) -> [GazetteSfjs] {
+        queue.sync { _gazetteSfjsDocs(query: query, limit: limit) }
     }
 
-    private func _gongbaoSfjsDocs(query: String, limit: Int) -> [GongbaoSfjs] {
+    private func _gazetteSfjsDocs(query: String, limit: Int) -> [GazetteSfjs] {
         guard let db = db else { return [] }
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         var stmt: OpaquePointer?
@@ -1476,16 +1476,16 @@ final class DatabaseManager {
             sqlite3_bind_text(stmt, 1, "%\(query)%", -1, t)
             sqlite3_bind_int(stmt, 2, Int32(limit))
         }
-        var results: [GongbaoSfjs] = []
+        var results: [GazetteSfjs] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(_rowToSfjs(stmt))
+            results.append(_rowToGazetteSfjs(stmt))
         }
         sqlite3_finalize(stmt)
         return results
     }
 
-    private func _rowToSfjs(_ stmt: OpaquePointer?) -> GongbaoSfjs {
-        GongbaoSfjs(
+    private func _rowToGazetteSfjs(_ stmt: OpaquePointer?) -> GazetteSfjs {
+        GazetteSfjs(
             id:            Int(sqlite3_column_int(stmt, 0)),
             title:         str(stmt, 1),
             docNumber:     str(stmt, 2),

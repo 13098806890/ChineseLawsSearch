@@ -228,6 +228,7 @@ struct BuiltinDeepSeekProvider: LLMProvider {
 
 // MARK: - Groq
 
+// Reserved for future use — not currently exposed in UI
 struct GroqProvider: LLMProvider {
     let id          = "groq"
     let displayName = "Groq（免费）"
@@ -265,6 +266,7 @@ struct GroqProvider: LLMProvider {
 
 // MARK: - Gemini (OpenAI-compatible endpoint)
 
+// Reserved for future use — not currently exposed in UI
 struct GeminiProvider: LLMProvider {
     let id          = "gemini"
     let displayName = "Gemini"

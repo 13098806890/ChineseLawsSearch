@@ -41,14 +41,14 @@ struct PersistedMessage: Codable {
     var citations: [PersistedCitation]
     var subQuestions: [String]
     var isClarifying: Bool
-    var gongbaoCitations: [GongbaoCitation]
+    var gazetteCitations: [GazetteCitation]
 
     init(role: String, text: String, thinkSteps: [PersistedThinkStep] = [],
          citations: [PersistedCitation] = [], subQuestions: [String] = [],
-         isClarifying: Bool = false, gongbaoCitations: [GongbaoCitation] = []) {
+         isClarifying: Bool = false, gazetteCitations: [GazetteCitation] = []) {
         self.role = role; self.text = text; self.thinkSteps = thinkSteps
         self.citations = citations; self.subQuestions = subQuestions
-        self.isClarifying = isClarifying; self.gongbaoCitations = gongbaoCitations
+        self.isClarifying = isClarifying; self.gazetteCitations = gazetteCitations
     }
 
     init(from decoder: Decoder) throws {
@@ -59,7 +59,7 @@ struct PersistedMessage: Codable {
         citations        = (try? c.decodeIfPresent([PersistedCitation].self, forKey: .citations)) ?? []
         subQuestions     = (try? c.decodeIfPresent([String].self, forKey: .subQuestions)) ?? []
         isClarifying     = (try? c.decodeIfPresent(Bool.self, forKey: .isClarifying)) ?? false
-        gongbaoCitations = (try? c.decodeIfPresent([GongbaoCitation].self, forKey: .gongbaoCitations)) ?? []
+        gazetteCitations = (try? c.decodeIfPresent([GazetteCitation].self, forKey: .gazetteCitations)) ?? []
     }
 }
 
