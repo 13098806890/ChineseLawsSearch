@@ -41,7 +41,6 @@ final class LegalChatViewModel: ObservableObject {
     var tokenBaseCompletion: Int = 0
 
     private var dotTask: Task<Void, Never>?
-    @AppStorage("maxFollowUpRounds") var maxFollowUpRounds: Int = 3
 
     @MainActor
     func toggleStep(messageId: UUID, stepId: UUID) {
@@ -220,8 +219,9 @@ final class LegalChatViewModel: ObservableObject {
         } catch {
             // Refund the quota consumed at the top of send() — the request never completed
             PurchaseManager.shared.refundIfNeeded()
-            // Remove the empty assistant bubble if present
-            if let last = messages.last, last.role == .assistant, last.text.isEmpty {
+            // Remove any partial/empty assistant bubble added during streaming (no citations = incomplete)
+            if let last = messages.last, last.role == .assistant,
+               last.citations.isEmpty && last.gazetteCitations.isEmpty {
                 messages.removeLast()
             }
             // Remove the user message and restore to input box for retry
@@ -289,7 +289,7 @@ final class LegalChatViewModel: ObservableObject {
                 pendingFacts = [:]
                 followUpRound = 0
             }
-            let maxRounds = isAwaitingClarification ? 0 : maxFollowUpRounds
+            let maxRounds = isAwaitingClarification ? 0 : UserDefaults.standard.integer(forKey: "maxFollowUpRounds")
             // Mod 6: pass preMode to skip redundant classifyQueryMode call
             let (c, mode) = try await LegalExpertService.shared.askLegalQuery(
                 question: q,
@@ -401,11 +401,18 @@ final class LegalChatViewModel: ObservableObject {
     private func buildConversationHistory() -> [(user: String, assistant: String)] {
         var pairs: [(user: String, assistant: String)] = []
         var i = 0
-        while i < messages.count - 1 {
-            if messages[i].role == .user && messages[i+1].role == .assistant {
-                pairs.append((user: messages[i].text, assistant: messages[i+1].text))
-                i += 2
-            } else { i += 1 }
+        while i < messages.count {
+            guard messages[i].role == .user else { i += 1; continue }
+            let userText = messages[i].text
+            // Find the next assistant message (not necessarily adjacent)
+            var j = i + 1
+            while j < messages.count && messages[j].role != .assistant { j += 1 }
+            if j < messages.count {
+                pairs.append((user: userText, assistant: messages[j].text))
+                i = j + 1
+            } else {
+                break
+            }
         }
         return pairs
     }

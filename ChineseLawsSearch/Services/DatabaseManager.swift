@@ -123,6 +123,7 @@ final class DatabaseManager {
     private var enhDb: OpaquePointer?
 
     /// 所有 SQLite 操作必须在此队列上执行，保证线程安全。
+    // TODO: upgrade to concurrent queue with barrier writes for better read throughput
     private let queue = DispatchQueue(label: "com.lushu.dbqueue", qos: .userInitiated)
 
     private init() {

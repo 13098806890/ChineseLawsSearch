@@ -259,6 +259,11 @@ struct ContentView: View {
     private func tabButton(title: String, icon: String, tab t: Tab) -> some View {
         Button {
             tab = t
+            // Clear gazette navigation flags when manually switching to/from gazette tab
+            if t == .gongbao {
+                gazetteNavigatedFromBrowse = false
+                gazetteNavigatedFromChat   = false
+            }
         } label: {
             VStack(spacing: 3) {
                 Image(systemName: icon)
@@ -326,8 +331,10 @@ struct ContentView: View {
         guard let prev = backStack.popLast() else { return }
         tab = prev.tab
         target = prev.target
-        // Only restore latest session if chat is blank — don't clobber an active conversation
-        if prev.tab == .chat, chatVM.messages.isEmpty, let latest = historyStore.sessions.first {
+        // Only restore latest session if chat is blank and no unsent text — don't clobber active conversation
+        if prev.tab == .chat, chatVM.messages.isEmpty,
+           chatVM.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let latest = historyStore.sessions.first {
             chatVM.loadSession(latest)
         }
         persistBackStack()

@@ -170,7 +170,8 @@ struct DeepSeekProvider: LLMProvider {
                                                             providerName: displayName, model: modelName,
                                                             messages: messages, temperature: temperature)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            var raw = Data(); for try await b in bytes { raw.append(b) }
+            var raw = Data()
+            for try await chunk in bytes.lines { raw.append(contentsOf: (chunk + "\n").utf8) }
             throw LLMError.fromHTTP(statusCode: http.statusCode, data: raw, provider: displayName)
         }
         try await consumeSSELines(bytes, onToken: onToken)
@@ -219,7 +220,8 @@ struct BuiltinDeepSeekProvider: LLMProvider {
                                                             providerName: displayName, model: modelName,
                                                             messages: messages, temperature: temperature)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            var raw = Data(); for try await b in bytes { raw.append(b) }
+            var raw = Data()
+            for try await chunk in bytes.lines { raw.append(contentsOf: (chunk + "\n").utf8) }
             throw LLMError.fromHTTP(statusCode: http.statusCode, data: raw, provider: displayName)
         }
         try await consumeSSELines(bytes, onToken: onToken)
@@ -257,7 +259,8 @@ struct GroqProvider: LLMProvider {
                                                             providerName: displayName, model: modelName,
                                                             messages: messages, temperature: temperature)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            var raw = Data(); for try await b in bytes { raw.append(b) }
+            var raw = Data()
+            for try await chunk in bytes.lines { raw.append(contentsOf: (chunk + "\n").utf8) }
             throw LLMError.fromHTTP(statusCode: http.statusCode, data: raw, provider: displayName)
         }
         try await consumeSSELines(bytes, onToken: onToken)
@@ -295,7 +298,8 @@ struct GeminiProvider: LLMProvider {
                                                             providerName: displayName, model: modelName,
                                                             messages: messages, temperature: temperature)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            var raw = Data(); for try await b in bytes { raw.append(b) }
+            var raw = Data()
+            for try await chunk in bytes.lines { raw.append(contentsOf: (chunk + "\n").utf8) }
             throw LLMError.fromHTTP(statusCode: http.statusCode, data: raw, provider: displayName)
         }
         try await consumeSSELines(bytes, onToken: onToken)

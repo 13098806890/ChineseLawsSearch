@@ -18,6 +18,8 @@ enum KeychainHelper {
         if status == errSecDuplicateItem {
             // Already exists — update in place (atomic, no delete+add gap)
             SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        } else if status != errSecSuccess {
+            print("[KeychainHelper] SecItemAdd failed for key '\(key)': OSStatus \(status)")
         }
     }
 

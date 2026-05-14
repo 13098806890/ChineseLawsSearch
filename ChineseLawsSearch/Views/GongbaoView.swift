@@ -93,6 +93,8 @@ struct GazetteView: View {
         }
         .onChange(of: selectedSource) {
             // 切换来源时清空搜索词，然后统一触发一次 reload
+            // Note: searchText = "" triggers onChange(of: searchText) → scheduleReload(),
+            // which cancels the first scheduleReload call here via the Task mechanism.
             searchText = ""
             scheduleReload(immediate: true)
         }

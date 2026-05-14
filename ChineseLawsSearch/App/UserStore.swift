@@ -82,11 +82,11 @@ final class UserStore: ObservableObject {
 
     var lastReadLawId: Int {
         get { Int(kv.longLong(forKey: "lastReadLawId")) }
-        set { kv.set(Int64(newValue), forKey: "lastReadLawId"); kv.synchronize() }
+        set { kv.set(Int64(newValue), forKey: "lastReadLawId") }
     }
     var lastReadArticleNum: Int {
         get { Int(kv.longLong(forKey: "lastReadArticleNum")) }
-        set { kv.set(Int64(newValue), forKey: "lastReadArticleNum"); kv.synchronize() }
+        set { kv.set(Int64(newValue), forKey: "lastReadArticleNum") }
     }
 
     // MARK: - 跳转链路（backStack）
@@ -96,7 +96,6 @@ final class UserStore: ObservableObject {
     func saveBackStack(_ items: [PersistedBackItem]) {
         guard let data = try? JSONEncoder().encode(items) else { return }
         kv.set(data, forKey: Self.backStackKey)
-        kv.synchronize()
     }
 
     func loadBackStack() -> [PersistedBackItem] {
@@ -108,7 +107,6 @@ final class UserStore: ObservableObject {
 
     func clearBackStack() {
         kv.removeObject(forKey: Self.backStackKey)
-        kv.synchronize()
     }
 
     // MARK: - 法律浏览偏好
@@ -186,6 +184,7 @@ final class UserStore: ObservableObject {
     // MARK: - iCloud KV 变更监听
 
     private var kvObserver: NSObjectProtocol?
+    private var pmCancellable: AnyCancellable?
 
     init() {
         kvObserver = NotificationCenter.default.addObserver(
@@ -198,7 +197,11 @@ final class UserStore: ObservableObject {
             self?.loadGazetteFavorites()
             self?.loadGazetteNotes()
         }
-        kv.synchronize()
+        // Propagate PurchaseManager changes so views observing UserStore re-evaluate
+        // effectiveQualityMode / maxFollowUpRounds which depend on PurchaseManager.access
+        pmCancellable = PurchaseManager.shared.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
         loadFavorites()
         loadGazetteFavorites()
         loadGazetteNotes()
@@ -206,6 +209,7 @@ final class UserStore: ObservableObject {
 
     deinit {
         if let obs = kvObserver { NotificationCenter.default.removeObserver(obs) }
+        pmCancellable?.cancel()
     }
 
     // MARK: - 阅读记录操作
@@ -257,7 +261,6 @@ final class UserStore: ObservableObject {
     private func persistFavorites() {
         guard let data = try? JSONEncoder().encode(favorites) else { return }
         kv.set(data, forKey: Self.favoritesKey)
-        kv.synchronize()
     }
 
     // MARK: - 收藏公报文书
@@ -296,7 +299,6 @@ final class UserStore: ObservableObject {
     private func persistGazetteFavorites() {
         guard let data = try? JSONEncoder().encode(favoriteGazetteDocs) else { return }
         kv.set(data, forKey: Self.gongbaoFavoritesKey)
-        kv.synchronize()
     }
 
     // MARK: - 公报笔记
@@ -327,6 +329,5 @@ final class UserStore: ObservableObject {
     private func persistGazetteNotes_() {
         guard let data = try? JSONEncoder().encode(gazetteNotes) else { return }
         kv.set(data, forKey: Self.gongbaoNotesKey)
-        kv.synchronize()
     }
 }

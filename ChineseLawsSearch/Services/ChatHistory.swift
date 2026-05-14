@@ -175,7 +175,19 @@ final class ChatHistoryStore: ObservableObject {
         Task.detached(priority: .userInitiated) {
             try? FileManager.default.startDownloadingUbiquitousItem(at: url)
             let data = await actor.read(from: url)
-            let decoded = data.flatMap { try? JSONDecoder().decode([ChatSession].self, from: $0) } ?? []
+            var decoded: [ChatSession] = []
+            if let d = data {
+                do {
+                    decoded = try JSONDecoder().decode([ChatSession].self, from: d)
+                } catch {
+                    print("[ChatHistory] JSON decode failed: \(error). Moving corrupted file to backup.")
+                    let backupURL = url.deletingLastPathComponent()
+                        .appendingPathComponent("sessions_backup.json")
+                    try? FileManager.default.removeItem(at: backupURL)
+                    try? FileManager.default.moveItem(at: url, to: backupURL)
+                    decoded = []
+                }
+            }
             await MainActor.run {
                 self.sessions = decoded
                 self.isLoading = false

@@ -20,7 +20,7 @@ final class LegalExpertService {
     static let shared = LegalExpertService()
 
     /// 用户公报笔记字典（docId字符串 → 笔记文本），由 ViewModel 在每次 send() 时从 MainActor 写入
-    @MainActor var gazetteNotes: [String: String] = [:]
+    var gazetteNotes: [String: String] = [:]
 
     // MARK: - Quality settings (mirrors UserStore computed properties)
     // Reads chatQualityMode from UserDefaults (the same key @AppStorage uses)
@@ -268,7 +268,12 @@ final class LegalExpertService {
         严禁使用Markdown格式。
         """
         return (try? await chat(system: systemPrompt,
-                                user: "相关法条：\n\(artText)\n\n问题：\(question)")) ?? ""
+                                user: "相关法条：\n\(artText)\n\n问题：\(question)")) ?? {
+            #if DEBUG
+            print("[LegalExpertService] analyzeWithExpertMode LLM error (expert: \(expert.name))")
+            #endif
+            return ""
+        }()
     }
 
     /// Coordinator system prompt tailored to query mode.
@@ -574,6 +579,7 @@ final class LegalExpertService {
                 let expertContext = factContext.isEmpty ? questionText : "\(factContext)\n\n\(questionText)"
                 let kf = knownFacts
                 group.addTask { [self] in
+                    guard !Task.isCancelled else { return (expert.name, [], "") }
                     // Mod 4: filterArticles removed; expert self-filters via prompt instruction
                     var articles = self.retrieveForExpert(expert: expert, question: expertContext, facts: kf)
                     articles = self.expandReferences(articles: articles)
@@ -810,8 +816,8 @@ final class LegalExpertService {
         onEvent: @escaping @MainActor (RAGEvent) -> Void
     ) async -> [GazetteCitation] {
         let db = DatabaseManager.shared
-        // Capture @MainActor property before entering background work
-        let notes = await MainActor.run { gazetteNotes }
+        // gazetteNotes is written from MainActor before async call begins; read directly
+        let notes = gazetteNotes
 
         // 合并检索词：扩展词优先，fallback 到本地提取词
         let searchTerms: [String] = expandedTerms.isEmpty ? extractTerms(from: question) : expandedTerms
@@ -1142,13 +1148,19 @@ final class LegalExpertService {
 
     // MARK: - Reference expansion
 
-    private let crossLawPattern = try! NSRegularExpression(
-        pattern: "《([^》]{4,30})》第([一二三四五六七八九十百千零\\d]+)条")
-    private let selfRefPattern  = try! NSRegularExpression(
-        pattern: "(?:本法|依照|适用|参照)第([一二三四五六七八九十百千零\\d]+)条")
-    private let numberedQRE     = try! NSRegularExpression(
-        pattern: #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
-    private let cjkKeywordRE   = try! NSRegularExpression(pattern: "[\\u4E00-\\u9FFF]{3,6}")
+    /// Compile a regex from a compile-time-constant pattern.
+    /// `try!` is intentional: failure indicates a programming error in the pattern literal.
+    private static func regex(_ pattern: String) -> NSRegularExpression {
+        return try! NSRegularExpression(pattern: pattern)
+    }
+
+    private let crossLawPattern = LegalExpertService.regex(
+        "《([^》]{4,30})》第([一二三四五六七八九十百千零\\d]+)条")
+    private let selfRefPattern  = LegalExpertService.regex(
+        "(?:本法|依照|适用|参照)第([一二三四五六七八九十百千零\\d]+)条")
+    private let numberedQRE     = LegalExpertService.regex(
+        #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
+    private let cjkKeywordRE   = LegalExpertService.regex("[\\u4E00-\\u9FFF]{3,6}")
 
     private func expandReferences(articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
