@@ -20,6 +20,8 @@ struct LawMeta: Identifiable, Hashable {
     let totalArticles: Int
     let subjectArea: String
     let aliases: [String]    // 法律别名，如 ["民诉法", "民事诉讼法"]
+    /// "flk"（主库）或 "gongbao"（最高人民法院公报）
+    var source: String = "flk"
 }
 
 struct LawNode: Identifiable {
@@ -40,6 +42,8 @@ struct SearchResult: Identifiable {
     let articleNumber: String
     let content: String
     let nodeArticleNum: Int?
+    /// "flk" or "gongbao"
+    var source: String = "flk"
 }
 
 struct GongbaoDoc: Identifiable {
@@ -87,8 +91,19 @@ struct GongbaoRef: Identifiable {
 }
 
 struct GongbaoDocLink: Identifiable {
-    let id: Int          // doc_id
+    let id: Int          // doc_id (negative for sfjs)
     let title: String
+    let isSfjs: Bool
+    let sfjsArticleNum: Int?  // sfjs 中的具体条文序号（可为 nil）
+}
+
+struct GongbaoSfjsArticle: Identifiable {
+    let id: Int
+    let sfjsId: Int
+    let articleNum: Int
+    let articleNumber: String
+    let content: String
+    let globalOrder: Int
 }
 
 struct GongbaoSfjs: Identifiable, Hashable {
@@ -139,20 +154,30 @@ final class DatabaseManager {
                 let bundleSize  = bundleAttrs?[.size] as? Int ?? 0
                 let destSize    = destAttrs?[.size]   as? Int ?? 0
                 var needsCopy   = bundleSize != destSize || bundleMod > destMod
-                // Extra check: verify gongbao_docs table exists (catches schema-only updates)
+                // Definitive check: compare user_version (YYYYMMDD) between bundle and Documents db
                 if !needsCopy && resource == "law_content" {
-                    var checkPtr: OpaquePointer?
-                    if sqlite3_open_v2(destURL.path, &checkPtr, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
-                        var checkStmt: OpaquePointer?
-                        let checkSQL = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='gongbao_docs'"
-                        if sqlite3_prepare_v2(checkPtr, checkSQL, -1, &checkStmt, nil) == SQLITE_OK {
-                            if sqlite3_step(checkStmt) == SQLITE_ROW {
-                                let count = sqlite3_column_int(checkStmt, 0)
-                                if count == 0 { needsCopy = true }
+                    let bundleVersion = DatabaseManager.readUserVersion(bundleURL.path)
+                    let destVersion   = DatabaseManager.readUserVersion(destURL.path)
+                    if bundleVersion > 0 && bundleVersion != destVersion {
+                        needsCopy = true
+                    } else if destVersion == 0 {
+                        // Fallback: check required tables
+                        var checkPtr: OpaquePointer?
+                        if sqlite3_open_v2(destURL.path, &checkPtr, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
+                            let requiredTables = ["gongbao_docs", "gongbao_case_law_links"]
+                            for tbl in requiredTables {
+                                var checkStmt: OpaquePointer?
+                                let checkSQL = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='\(tbl)'"
+                                if sqlite3_prepare_v2(checkPtr, checkSQL, -1, &checkStmt, nil) == SQLITE_OK {
+                                    if sqlite3_step(checkStmt) == SQLITE_ROW && sqlite3_column_int(checkStmt, 0) == 0 {
+                                        needsCopy = true
+                                    }
+                                    sqlite3_finalize(checkStmt)
+                                }
+                                if needsCopy { break }
                             }
-                            sqlite3_finalize(checkStmt)
+                            sqlite3_close(checkPtr)
                         }
-                        sqlite3_close(checkPtr)
                     }
                 }
                 if needsCopy { try fm.removeItem(at: destURL) }
@@ -169,6 +194,16 @@ final class DatabaseManager {
             return nil
         }
         return ptr
+    }
+
+    private static func readUserVersion(_ path: String) -> Int32 {
+        var ptr: OpaquePointer?
+        guard sqlite3_open_v2(path, &ptr, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_close(ptr) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(ptr, "PRAGMA user_version", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        return sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : 0
     }
 
     deinit {
@@ -279,7 +314,8 @@ final class DatabaseManager {
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
                    COALESCE(subject_area, '') AS subject_area,
-                   COALESCE(aliases, '') AS aliases
+                   COALESCE(aliases, '') AS aliases,
+                   COALESCE(source, 'flk') AS source
             FROM laws
             WHERE id = ?
             """
@@ -289,7 +325,7 @@ final class DatabaseManager {
         sqlite3_bind_int(stmt, 1, Int32(id))
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
         let aliasStr = str(stmt, 10)
-        return LawMeta(
+        var meta = LawMeta(
             id:            Int(sqlite3_column_int(stmt, 0)),
             title:         str(stmt, 1),
             category:      str(stmt, 2),
@@ -302,6 +338,8 @@ final class DatabaseManager {
             subjectArea:   str(stmt, 9),
             aliases:       aliasStr.isEmpty ? [] : aliasStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         )
+        meta.source = str(stmt, 11)
+        return meta
     }
 
     // MARK: 某部法律的全部出向引用（按条文分组用）
@@ -377,7 +415,7 @@ final class DatabaseManager {
                 FROM gongbao_case_law_links l
                 JOIN gongbao_docs d ON d.id = l.doc_id
                 WHERE l.law_id = ? AND l.article_num > 0
-                ORDER BY l.article_num, d.year DESC
+                ORDER BY l.article_num, d.title
                 """
             var stmt: OpaquePointer?
             var result: [Int: [GongbaoDocLink]] = [:]
@@ -388,7 +426,7 @@ final class DatabaseManager {
                 let artNum = Int(sqlite3_column_int(stmt, 0))
                 let docId  = Int(sqlite3_column_int(stmt, 1))
                 let title  = String(cString: sqlite3_column_text(stmt, 2))
-                result[artNum, default: []].append(GongbaoDocLink(id: docId, title: title))
+                result[artNum, default: []].append(GongbaoDocLink(id: docId, title: title, isSfjs: false, sfjsArticleNum: nil))
             }
             return result
         }
@@ -436,7 +474,8 @@ final class DatabaseManager {
             SELECT id, title, category, legal_domain, pub_date, effective_date,
                    issuing_org, doc_number, total_articles,
                    COALESCE(subject_area, '') AS subject_area,
-                   COALESCE(aliases, '') AS aliases
+                   COALESCE(aliases, '') AS aliases,
+                   COALESCE(source, 'flk') AS source
             FROM laws
             WHERE is_current = 1 AND (title LIKE ? OR aliases LIKE ?) \(catFilter) \(flkFilter)
             ORDER BY title
@@ -455,7 +494,7 @@ final class DatabaseManager {
 
         while sqlite3_step(stmt) == SQLITE_ROW {
             let aliasStr = str(stmt, 10)
-            result.append(LawMeta(
+            var meta = LawMeta(
                 id:            Int(sqlite3_column_int(stmt, 0)),
                 title:         str(stmt, 1),
                 category:      str(stmt, 2),
@@ -467,8 +506,11 @@ final class DatabaseManager {
                 totalArticles: Int(sqlite3_column_int(stmt, 8)),
                 subjectArea:   str(stmt, 9),
                 aliases:       aliasStr.isEmpty ? [] : aliasStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            ))
+            )
+            meta.source = str(stmt, 11)
+            result.append(meta)
         }
+
         return result
     }
 
@@ -551,6 +593,7 @@ final class DatabaseManager {
                 nodeArticleNum: artNum
             ))
         }
+
         return result
     }
 
@@ -1336,7 +1379,7 @@ final class DatabaseManager {
         return String(cString: cstr)
     }
 
-    // MARK: - 公报司法解释
+    // MARK: - 公报司法解释（现已迁移至 laws 表 source='gongbao'）
 
     func gongbaoSfjsDocs(query: String, limit: Int = 500) -> [GongbaoSfjs] {
         queue.sync { _gongbaoSfjsDocs(query: query, limit: limit) }
@@ -1349,10 +1392,10 @@ final class DatabaseManager {
             var stmt: OpaquePointer?
             let count: Int
             if query.isEmpty {
-                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM gongbao_sfjs", -1, &stmt, nil)
+                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1", -1, &stmt, nil)
             } else {
-                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM gongbao_sfjs_fts WHERE gongbao_sfjs_fts MATCH ?", -1, &stmt, nil)
-                sqlite3_bind_text(stmt, 1, query, -1, t)
+                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1 AND title LIKE ?", -1, &stmt, nil)
+                sqlite3_bind_text(stmt, 1, "%\(query)%", -1, t)
             }
             count = sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
             sqlite3_finalize(stmt)
@@ -1360,10 +1403,43 @@ final class DatabaseManager {
         }
     }
 
+    func gongbaoSfjsArticles(sfjsId: Int) -> [GongbaoSfjsArticle] {
+        queue.sync {
+            guard let db = db else { return [] }
+            let sql = """
+                SELECT id, law_id, article_num, article_number, content, global_order
+                FROM nodes
+                WHERE law_id = ? AND type = 'article'
+                ORDER BY global_order
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(sfjsId))
+            var results: [GongbaoSfjsArticle] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let artNumCol = sqlite3_column_type(stmt, 2)
+                let artNum = artNumCol == SQLITE_NULL ? 0 : Int(sqlite3_column_int(stmt, 2))
+                results.append(GongbaoSfjsArticle(
+                    id: Int(sqlite3_column_int(stmt, 0)),
+                    sfjsId: Int(sqlite3_column_int(stmt, 1)),
+                    articleNum: artNum,
+                    articleNumber: String(cString: sqlite3_column_text(stmt, 3)),
+                    content: String(cString: sqlite3_column_text(stmt, 4)),
+                    globalOrder: Int(sqlite3_column_int(stmt, 5))
+                ))
+            }
+            return results
+        }
+    }
+
     func gongbaoSfjsDoc(id: Int) -> GongbaoSfjs? {
         queue.sync {
             guard let db = db else { return nil }
-            let sql = "SELECT id, title, doc_number, pub_date, effective_date, url, full_text FROM gongbao_sfjs WHERE id = ?"
+            let sql = """
+                SELECT id, title, doc_number, pub_date, effective_date, '' as url, full_text
+                FROM laws WHERE id = ? AND source = 'gongbao'
+                """
             var stmt: OpaquePointer?
             sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
             sqlite3_bind_int(stmt, 1, Int32(id))
@@ -1383,20 +1459,21 @@ final class DatabaseManager {
         var stmt: OpaquePointer?
         let sql: String
         if query.isEmpty {
-            sql = "SELECT id, title, doc_number, pub_date, effective_date, url, full_text FROM gongbao_sfjs ORDER BY pub_date DESC LIMIT ?"
+            sql = """
+                SELECT id, title, doc_number, pub_date, effective_date, '' as url, full_text
+                FROM laws WHERE source='gongbao' AND is_current=1
+                ORDER BY pub_date DESC LIMIT ?
+                """
             sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
             sqlite3_bind_int(stmt, 1, Int32(limit))
         } else {
             sql = """
-            SELECT s.id, s.title, s.doc_number, s.pub_date, s.effective_date, s.url, s.full_text
-            FROM gongbao_sfjs_fts f
-            JOIN gongbao_sfjs s ON f.rowid = s.id
-            WHERE gongbao_sfjs_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """
+                SELECT id, title, doc_number, pub_date, effective_date, '' as url, full_text
+                FROM laws WHERE source='gongbao' AND is_current=1 AND title LIKE ?
+                ORDER BY pub_date DESC LIMIT ?
+                """
             sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-            sqlite3_bind_text(stmt, 1, query, -1, t)
+            sqlite3_bind_text(stmt, 1, "%\(query)%", -1, t)
             sqlite3_bind_int(stmt, 2, Int32(limit))
         }
         var results: [GongbaoSfjs] = []

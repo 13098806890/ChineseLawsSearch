@@ -128,8 +128,11 @@ struct TOCView: View {
                                 highlighted(law.title, query: searchQuery,
                                             baseFont: .subheadline)
                                     .foregroundStyle(.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                         }
                     }
                 }
@@ -154,8 +157,11 @@ struct TOCView: View {
                                         .lineLimit(3)
                                 }
                                 .padding(.vertical, 2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                         }
                     }
                 }
@@ -265,7 +271,6 @@ struct TOCView: View {
         if isExpanded {
             ForEach(sub.laws, id: \.id) { menuLaw in
                 lawRow(menuLaw)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 52, bottom: 4, trailing: 16))
             }
         }
     }
@@ -290,5 +295,6 @@ struct TOCView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 2, leading: 52, bottom: 2, trailing: 16))
     }
 }
