@@ -42,6 +42,10 @@ final class LegalChatViewModel: ObservableObject {
 
     private var dotTask: Task<Void, Never>?
 
+    deinit {
+        dotTask?.cancel()
+    }
+
     @MainActor
     func toggleStep(messageId: UUID, stepId: UUID) {
         guard let mi = messages.firstIndex(where: { $0.id == messageId }),
@@ -149,7 +153,6 @@ final class LegalChatViewModel: ObservableObject {
             return
         }
         kv.set(now, forKey: lastSendTimeKey)
-        kv.synchronize()
 
         LegalExpertService.shared.gazetteNotes = gazetteNotes
 

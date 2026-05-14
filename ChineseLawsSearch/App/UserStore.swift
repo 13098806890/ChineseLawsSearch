@@ -63,6 +63,8 @@ struct FavoriteGazetteDoc: Codable, Identifiable {
 
 final class UserStore: ObservableObject {
 
+    // Note: NSUbiquitousKeyValueStore silently fails when iCloud is unavailable;
+    // values fall back to the in-memory defaults set in init().
     private let kv = NSUbiquitousKeyValueStore.default
 
     // MARK: - API Key 状态（供跨视图响应）

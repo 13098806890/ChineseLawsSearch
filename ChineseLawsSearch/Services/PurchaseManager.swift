@@ -119,6 +119,7 @@ final class PurchaseManager: ObservableObject {
     private var lastConsumedPath: ConsumedPath = .none
 
     private var updateListenerTask: Task<Void, Never>?
+    private var kvObserver: NSObjectProtocol?
 
     init() {
         freeRemaining   = remainingFreeUses()
@@ -126,7 +127,7 @@ final class PurchaseManager: ObservableObject {
         updateListenerTask = listenForTransactions()
         Task { await loadProducts(); await refreshPurchaseStatus() }
         // iCloud 变更只影响周额度（免费次数已改为本地 UserDefaults）
-        NotificationCenter.default.addObserver(
+        kvObserver = NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: kv, queue: .main
         ) { [weak self] _ in
@@ -134,10 +135,12 @@ final class PurchaseManager: ObservableObject {
                 self?.weeklyRemaining = self?.remainingWeeklyUses() ?? 0
             }
         }
-        kv.synchronize()
     }
 
-    deinit { updateListenerTask?.cancel() }
+    deinit {
+        updateListenerTask?.cancel()
+        if let obs = kvObserver { NotificationCenter.default.removeObserver(obs) }
+    }
 
     // MARK: - Access control
 
@@ -198,7 +201,6 @@ final class PurchaseManager: ObservableObject {
             guard used < Self.proWeeklyTotal else { return false }
             let newUsed = used + 1
             kv.set(Int64(newUsed), forKey: weekUsedKey)
-            kv.synchronize()
             ud.set(newUsed, forKey: weekUsedUDKey)
             weeklyRemaining = Self.proWeeklyTotal - newUsed
             lastConsumedPath = .pro
@@ -221,7 +223,6 @@ final class PurchaseManager: ObservableObject {
             guard used > 0 else { break }
             let newUsed = used - 1
             kv.set(Int64(newUsed), forKey: weekUsedKey)
-            kv.synchronize()
             ud.set(newUsed, forKey: weekUsedUDKey)
             weeklyRemaining = Self.proWeeklyTotal - newUsed
         case .userKey, .none:
@@ -291,7 +292,6 @@ final class PurchaseManager: ObservableObject {
             // 新的一周，重置（同时写两处保持同步）
             kv.set(weekStart, forKey: weekStartKey)
             kv.set(Int64(0), forKey: weekUsedKey)
-            kv.synchronize()
             ud.set(weekStart, forKey: weekStartUDKey)
             ud.set(0, forKey: weekUsedUDKey)
             return 0
@@ -328,7 +328,6 @@ final class PurchaseManager: ObservableObject {
         if pro && !wasProBefore {
             kv.set(currentWeekStart().timeIntervalSince1970, forKey: weekStartKey)
             kv.set(Int64(0), forKey: weekUsedKey)
-            kv.synchronize()
         }
         weeklyRemaining = remainingWeeklyUses()
         freeRemaining   = remainingFreeUses()

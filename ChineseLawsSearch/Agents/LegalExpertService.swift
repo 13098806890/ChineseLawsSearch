@@ -19,8 +19,9 @@ private struct ArticleBag {
 final class LegalExpertService {
     static let shared = LegalExpertService()
 
-    /// 用户公报笔记字典（docId字符串 → 笔记文本），由 ViewModel 在每次 send() 时从 MainActor 写入
-    var gazetteNotes: [String: String] = [:]
+    /// 用户公报笔记字典（docId字符串 → 笔记文本），由 ViewModel 在每次 send() 时从 MainActor 写入。
+    /// Written once on MainActor before any async work begins, then only read from async task contexts.
+    nonisolated(unsafe) var gazetteNotes: [String: String] = [:]
 
     // MARK: - Quality settings (mirrors UserStore computed properties)
     // Reads chatQualityMode from UserDefaults (the same key @AppStorage uses)
@@ -267,13 +268,13 @@ final class LegalExpertService {
         如果提供的法条中只有部分与问题直接相关，只引用相关的，忽略无关条文，不要为了引用而引用。
         严禁使用Markdown格式。
         """
-        return (try? await chat(system: systemPrompt,
-                                user: "相关法条：\n\(artText)\n\n问题：\(question)")) ?? {
-            #if DEBUG
-            print("[LegalExpertService] analyzeWithExpertMode LLM error (expert: \(expert.name))")
-            #endif
+        do {
+            return try await chat(system: systemPrompt,
+                                  user: "相关法条：\n\(artText)\n\n问题：\(question)")
+        } catch {
+            print("[LegalExpertService] LLM error in analyzeWithExpertMode (expert: \(expert.name)): \(error.localizedDescription)")
             return ""
-        }()
+        }
     }
 
     /// Coordinator system prompt tailored to query mode.
@@ -1154,13 +1155,13 @@ final class LegalExpertService {
         return try! NSRegularExpression(pattern: pattern)
     }
 
-    private let crossLawPattern = LegalExpertService.regex(
+    private static let crossLawPattern = LegalExpertService.regex(
         "《([^》]{4,30})》第([一二三四五六七八九十百千零\\d]+)条")
-    private let selfRefPattern  = LegalExpertService.regex(
+    private static let selfRefPattern  = LegalExpertService.regex(
         "(?:本法|依照|适用|参照)第([一二三四五六七八九十百千零\\d]+)条")
-    private let numberedQRE     = LegalExpertService.regex(
+    private static let numberedQRE     = LegalExpertService.regex(
         #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
-    private let cjkKeywordRE   = LegalExpertService.regex("[\\u4E00-\\u9FFF]{3,6}")
+    private static let cjkKeywordRE   = LegalExpertService.regex("[\\u4E00-\\u9FFF]{3,6}")
 
     private func expandReferences(articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
@@ -1171,7 +1172,7 @@ final class LegalExpertService {
         for art in articles {
             let content = art.content as NSString
             let range = NSRange(location: 0, length: content.length)
-            for match in crossLawPattern.matches(in: art.content, range: range) {
+            for match in Self.crossLawPattern.matches(in: art.content, range: range) {
                 let lawFrag = content.substring(with: match.range(at: 1))
                 let artNum  = "第\(content.substring(with: match.range(at: 2)))条"
                 if let ref = db.articleByRef(lawTitleFragment: lawFrag, articleNumber: artNum),
@@ -1179,7 +1180,7 @@ final class LegalExpertService {
                     extra.append(ref)
                 }
             }
-            for match in selfRefPattern.matches(in: art.content, range: range) {
+            for match in Self.selfRefPattern.matches(in: art.content, range: range) {
                 let artNum = "第\(content.substring(with: match.range(at: 1)))条"
                 if let ref = db.articleByRef(lawTitleFragment: art.lawTitle, articleNumber: artNum),
                    seenIds.insert(ref.nodeId).inserted {
@@ -1301,6 +1302,12 @@ final class LegalExpertService {
 
     // MARK: - Citation extraction
 
+    // Static regex properties for citationsFromAnswer (compiled once at class load time)
+    private static let citationNamedPattern = LegalExpertService.regex(
+        #"《([^》]{2,30})》第([一二三四五六七八九十百千零\d]+)条"#)
+    private static let citationBarePattern  = LegalExpertService.regex(
+        #"第([一二三四五六七八九十百千零\d]+)条"#)
+
     // Extract articles cited in the answer text.
     // Strategy: parse《LawName》第X条 and bare 第X条; match against candidates first,
     // then fall back to DB lookup so citations always match what the LLM actually wrote.
@@ -1309,11 +1316,9 @@ final class LegalExpertService {
         let db = DatabaseManager.shared
 
         // Pattern 1: 《法律名》第X条
-        let namedPattern = try? NSRegularExpression(
-            pattern: #"《([^》]{2,30})》第([一二三四五六七八九十百千零\d]+)条"#)
+        let namedPattern = Self.citationNamedPattern
         // Pattern 2: bare 第X条
-        let barePattern  = try? NSRegularExpression(
-            pattern: #"第([一二三四五六七八九十百千零\d]+)条"#)
+        let barePattern  = Self.citationBarePattern
 
         let ns = answerText as NSString
         let range = NSRange(location: 0, length: ns.length)
@@ -1336,28 +1341,24 @@ final class LegalExpertService {
         // Named citations — only match against candidates actually shown to the LLM.
         // Do NOT fall back to DB lookup: if a named article isn't in candidates, the LLM
         // is drawing on training memory and the citation may be hallucinated or mismatched.
-        if let re = namedPattern {
-            for m in re.matches(in: answerText, range: range) {
-                let lawFrag = ns.substring(with: m.range(at: 1))
-                let numStr  = ns.substring(with: m.range(at: 2))
-                guard let num = chineseOrArabicToInt(numStr) else { continue }
-                if let a = candidateByNum[num], a.lawTitle.contains(lawFrag) {
-                    add(a)
-                }
+        for m in namedPattern.matches(in: answerText, range: range) {
+            let lawFrag = ns.substring(with: m.range(at: 1))
+            let numStr  = ns.substring(with: m.range(at: 2))
+            guard let num = chineseOrArabicToInt(numStr) else { continue }
+            if let a = candidateByNum[num], a.lawTitle.contains(lawFrag) {
+                add(a)
             }
         }
 
         // Bare citations — candidates first, then restrict to same law_ids (no cross-law guessing)
-        if let re = barePattern {
-            for m in re.matches(in: answerText, range: range) {
-                let numStr = ns.substring(with: m.range(at: 1))
-                guard let num = chineseOrArabicToInt(numStr) else { continue }
-                if let a = candidateByNum[num] {
-                    add(a)
-                } else if !candidateLawIds.isEmpty {
-                    let artNum = "第\(numStr)条"
-                    db.articlesByNumber(articleNumber: artNum, lawIds: candidateLawIds).forEach { add($0) }
-                }
+        for m in barePattern.matches(in: answerText, range: range) {
+            let numStr = ns.substring(with: m.range(at: 1))
+            guard let num = chineseOrArabicToInt(numStr) else { continue }
+            if let a = candidateByNum[num] {
+                add(a)
+            } else if !candidateLawIds.isEmpty {
+                let artNum = "第\(numStr)条"
+                db.articlesByNumber(articleNumber: artNum, lawIds: candidateLawIds).forEach { add($0) }
             }
         }
 
@@ -1387,7 +1388,7 @@ final class LegalExpertService {
         let none = DecomposedQuestion(preamble: "", questions: [])
         // Fast path: regex-split numbered questions (1. / 1、/ （1）/ 问题一 etc.)
         // Preamble = everything before the first numbered item; questions = each item alone.
-        let numberedRE = numberedQRE
+        let numberedRE = Self.numberedQRE
         let ns = question as NSString
         let fullRange = NSRange(location: 0, length: ns.length)
         let matches = numberedRE.matches(in: question, range: fullRange)
@@ -1459,7 +1460,7 @@ final class LegalExpertService {
                       "合同诈骗","行政处罚","侵权责任","财产保全",
                       "婚姻家庭","遗产继承","股东权利","产品责任"]
         var found = common.filter { text.contains($0) }
-        let pattern = cjkKeywordRE
+        let pattern = Self.cjkKeywordRE
         let ns = text as NSString
         let range = NSRange(location: 0, length: ns.length)
         for match in pattern.matches(in: text, range: range) {

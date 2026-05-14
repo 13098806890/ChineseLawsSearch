@@ -562,7 +562,6 @@ struct GazetteDetailView: View {
 
             let framesetter = CTFramesetterCreateWithAttributedString(full)
             var charIndex = 0
-            var pageY: CGFloat = margin
 
             while charIndex < full.length {
                 let frameRect = CGRect(x: margin, y: margin, width: maxWidth, height: pageRect.height - margin * 2)
@@ -583,7 +582,6 @@ struct GazetteDetailView: View {
                     ctx.beginPage()
                 }
             }
-            _ = pageY // suppress unused warning
         }
 
         let tmpURL = FileManager.default.temporaryDirectory

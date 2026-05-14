@@ -142,12 +142,20 @@ final class ChatHistoryStore: ObservableObject {
 
     private let persistActor = PersistActor()
     private var metadataQuery: NSMetadataQuery?
+    private var metadataObserver: NSObjectProtocol?
+    private var gatheringObserver: NSObjectProtocol?
     /// Debounce iCloud update notifications to avoid hammering disk on rapid sync events.
     private var reloadWorkItem: DispatchWorkItem?
 
     init() {
         startICloudQuery()
         loadAsync()
+    }
+
+    deinit {
+        metadataQuery?.stop()
+        if let obs = metadataObserver { NotificationCenter.default.removeObserver(obs) }
+        if let obs = gatheringObserver { NotificationCenter.default.removeObserver(obs) }
     }
 
     func save(_ session: ChatSession) {
@@ -211,7 +219,7 @@ final class ChatHistoryStore: ObservableObject {
         let q = NSMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
         q.predicate = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, Self.fileName)
-        NotificationCenter.default.addObserver(
+        metadataObserver = NotificationCenter.default.addObserver(
             forName: .NSMetadataQueryDidUpdate,
             object: q,
             queue: .main

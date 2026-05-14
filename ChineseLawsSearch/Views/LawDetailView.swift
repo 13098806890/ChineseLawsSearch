@@ -169,7 +169,7 @@ struct LawDetailView: View {
             // 节点 + 初始位置一次性写入，SwiftUI 批量处理为单帧，无需 sleep
             nodes = loadedNodes
             isLoadingNodes = false
-            scrollPosition = targetNodeId ?? -1
+            scrollPosition = targetNodeId
 
             // 引用关系并行加载（不阻塞渲染，加载完后静默更新）
             async let ogTask = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId, lawsExamOnly: flk)

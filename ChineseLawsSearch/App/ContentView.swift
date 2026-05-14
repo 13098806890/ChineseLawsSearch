@@ -111,7 +111,7 @@ struct ContentView: View {
             }
             let shouldShowWelcome = userStore.showWelcomeOnLaunch || isFirstLaunch
             if isCompact && shouldShowWelcome {
-                DispatchQueue.main.async { showWelcome = true }
+                Task { @MainActor in showWelcome = true }
             }
             restoreLastRead()
         }
@@ -202,7 +202,7 @@ struct ContentView: View {
                 NavigationStack {
                     GazetteView(selectedDoc: $selectedGazetteDoc,
                                 navigate: navigate,
-                                navigateToLaw: { selectedGazetteLaw = $0 })
+                                navigateToLaw: { selectedGazetteDoc = nil; selectedGazetteLaw = $0 })
                         .navigationDestination(item: $selectedGazetteDoc) { doc in
                             GazetteDetailView(
                                 doc: doc,
@@ -223,7 +223,7 @@ struct ContentView: View {
                 NavigationSplitView {
                     GazetteView(selectedDoc: $selectedGazetteDoc,
                                 navigate: navigate,
-                                navigateToLaw: { selectedGazetteLaw = $0 })
+                                navigateToLaw: { selectedGazetteDoc = nil; selectedGazetteLaw = $0 })
                 } detail: {
                     if let lawTarget = selectedGazetteLaw {
                         LawDetailView(target: lawTarget, navigate: navigate,
@@ -292,6 +292,7 @@ struct ContentView: View {
         gazetteNavigatedFromBrowse = (tab == .browse)
         gazetteNavigatedFromChat   = (tab == .chat)
         tab = .gongbao
+        selectedGazetteLaw = nil
         selectedGazetteDoc = doc
     }
 
