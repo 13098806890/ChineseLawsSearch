@@ -1220,9 +1220,9 @@ final class DatabaseManager {
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
+            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             for (i, term) in terms.enumerated() {
-                let pattern = "%\(term)%" as NSString
-                sqlite3_bind_text(stmt, Int32(i + 1), pattern.utf8String, -1, nil)
+                sqlite3_bind_text(stmt, Int32(i + 1), "%\(term)%", -1, t)
             }
             var docs: [GazetteDoc] = []
             while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToGazetteDoc(stmt)) }
@@ -1284,7 +1284,8 @@ final class DatabaseManager {
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_text(stmt, 1, (escaped as NSString).utf8String, -1, nil)
+            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(stmt, 1, escaped, -1, t)
             while sqlite3_step(stmt) == SQLITE_ROW {
                 docs.append(_rowToGazetteDoc(stmt))
             }
@@ -1307,10 +1308,10 @@ final class DatabaseManager {
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            let p = (pattern as NSString).utf8String
-            sqlite3_bind_text(stmt, 1, p, -1, nil)
-            sqlite3_bind_text(stmt, 2, p, -1, nil)
-            sqlite3_bind_text(stmt, 3, p, -1, nil)
+            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(stmt, 1, pattern, -1, t)
+            sqlite3_bind_text(stmt, 2, pattern, -1, t)
+            sqlite3_bind_text(stmt, 3, pattern, -1, t)
             while sqlite3_step(stmt) == SQLITE_ROW {
                 docs.append(_rowToGazetteDoc(stmt))
             }
@@ -1425,8 +1426,8 @@ final class DatabaseManager {
                     id: Int(sqlite3_column_int(stmt, 0)),
                     sfjsId: Int(sqlite3_column_int(stmt, 1)),
                     articleNum: artNum,
-                    articleNumber: String(cString: sqlite3_column_text(stmt, 3)),
-                    content: String(cString: sqlite3_column_text(stmt, 4)),
+                    articleNumber: sqlite3_column_type(stmt, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 3)) : "",
+                    content: sqlite3_column_type(stmt, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 4)) : "",
                     globalOrder: Int(sqlite3_column_int(stmt, 5))
                 ))
             }

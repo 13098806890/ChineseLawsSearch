@@ -120,6 +120,7 @@ struct SearchView: View {
             .onChange(of: resultLimit)       { _, _ in runSearch(query) }
             .onChange(of: includeLaws)       { _, _ in runSearch(query) }
             .onChange(of: includeInterp)     { _, _ in runSearch(query) }
+            .onDisappear { searchTask?.cancel() }
         }
     }
 
@@ -235,6 +236,7 @@ struct SearchView: View {
 
             var articles: [SearchResult] = []
             if !onlyTitle {
+                guard !Task.isCancelled else { return }
                 articles = db.searchContent(
                     query: q, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
                 if let v = variant {
