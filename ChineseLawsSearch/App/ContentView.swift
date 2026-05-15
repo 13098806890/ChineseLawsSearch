@@ -50,19 +50,13 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
-                browseView
-                    .opacity(tab == .browse ? 1 : 0)
-                    .allowsHitTesting(tab == .browse)
-                chatView
-                    .opacity(tab == .chat ? 1 : 0)
-                    .allowsHitTesting(tab == .chat)
-                favoritesView
-                    .opacity(tab == .favorites ? 1 : 0)
-                    .allowsHitTesting(tab == .favorites)
-                gazetteView
-                    .opacity(tab == .gongbao ? 1 : 0)
-                    .allowsHitTesting(tab == .gongbao)
+            Group {
+                switch tab {
+                case .browse:    browseView
+                case .chat:      chatView
+                case .favorites: favoritesView
+                case .gongbao:   gazetteView
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -115,7 +109,7 @@ struct ContentView: View {
                 userStore.hasLaunchedBefore = true
             }
             let shouldShowWelcome = userStore.showWelcomeOnLaunch || isFirstLaunch
-            if isCompact && shouldShowWelcome {
+            if shouldShowWelcome {
                 Task { @MainActor in showWelcome = true }
             }
             restoreLastRead()
@@ -248,15 +242,7 @@ struct ContentView: View {
                         )
                         .environmentObject(userStore)
                     } else {
-                        VStack(spacing: 8) {
-                            Image(systemName: "newspaper")
-                                .font(.system(size: 32, weight: .light))
-                                .foregroundStyle(.secondary)
-                            Text("选择条目")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        GazetteWelcomeView()
                     }
                 }
             }
@@ -287,6 +273,9 @@ struct ContentView: View {
 
     func navigate(to lawId: Int, articleNum: Int?) {
         if let law = DatabaseManager.shared.lawMeta(id: lawId) {
+            showSettings = false
+            showPaywall = false
+            showWelcome = false
             backStack.append(BackItem(tab: tab, target: target))
             if backStack.count > 20 { backStack.removeFirst() }
             tab = .browse
@@ -433,14 +422,8 @@ private struct SettingsSheet: View {
                         Text("100 条").tag(100)
                         Text("200 条").tag(200)
                     }
-                    Toggle("法律法规", isOn: $userStore.searchIncludeLaws)
-                    Toggle("司法解释", isOn: $userStore.searchIncludeInterp)
                 } header: {
                     Text("搜索")
-                } footer: {
-                    if !userStore.searchIncludeLaws && !userStore.searchIncludeInterp {
-                        Text("两项均关闭时，搜索将覆盖全部类型。")
-                    }
                 }
 
                 Section {

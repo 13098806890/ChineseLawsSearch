@@ -21,6 +21,7 @@ struct LawDetailView: View {
     @State private var incomingMap: [Int: [IncomingRef]] = [:]
     @State private var gazetteRefMap: [Int: [GazetteDocLink]] = [:]   // articleNum → docs
     @State private var highlightedArticle: Int? = nil
+    @State private var highlightTask: Task<Void, Never>?
     @State private var scrollPosition: Int? = nil
     @State private var isSearching = false
     @State private var searchQuery = ""
@@ -129,9 +130,11 @@ struct LawDetailView: View {
                 SideIndexBar(nodes: nodes) { nodeId, articleNum in
                     scrollPosition = nodeId
                     if let a = articleNum {
+                        highlightTask?.cancel()
                         withAnimation(.easeIn(duration: 0.2)) { highlightedArticle = a }
-                        Task {
+                        highlightTask = Task {
                             try? await Task.sleep(for: .seconds(1.5))
+                            guard !Task.isCancelled else { return }
                             withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
                         }
                     }
@@ -148,7 +151,7 @@ struct LawDetailView: View {
                 .ignoresSafeArea()
             }
         }
-        .task(id: "\(target.law.id)-\(userStore.lawsExamMode)") {
+        .task(id: "\(target.law.id)-\(target.scrollToArticle ?? 0)-\(userStore.lawsExamMode)") {
             // 仅在切换法律或法考模式变化时重新加载，同法律内跳条文走 onChange
             let lawId = law.id
             let flk   = userStore.lawsExamMode
@@ -183,8 +186,11 @@ struct LawDetailView: View {
             // 高亮动画（引用加载完后再做，不影响滚动）
             if let artNum = target.scrollToArticle {
                 withAnimation(.easeIn(duration: 0.2)) { highlightedArticle = artNum }
-                try? await Task.sleep(for: .seconds(1.5))
-                withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
+                highlightTask = Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
+                }
             }
         }
         .onChange(of: target.scrollToArticle) { _, artNum in
@@ -193,8 +199,10 @@ struct LawDetailView: View {
             if let targetNode = nodes.first(where: { $0.articleNum == artNum }) {
                 scrollPosition = targetNode.id
                 withAnimation(.easeIn(duration: 0.2)) { highlightedArticle = artNum }
-                Task {
+                highlightTask?.cancel()
+                highlightTask = Task {
                     try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
                     withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
                 }
             }
@@ -514,11 +522,11 @@ struct SideIndexBar: View {
     private func jump(locationY: CGFloat, firstCenter: CGFloat, rowH: CGFloat,
                       items: [(offset: Int, element: (label: String, idx: Int))]) {
         guard !items.isEmpty else { return }
-        let nearest = items.min(by: { a, b in
+        guard let nearest = items.min(by: { a, b in
             let yA = firstCenter + CGFloat(a.offset) * rowH * 2
             let yB = firstCenter + CGFloat(b.offset) * rowH * 2
             return abs(yA - locationY) < abs(yB - locationY)
-        })!
+        }) else { return }
         guard nearest.element.idx < articles.count else { return }
         let node = articles[nearest.element.idx]
         onSelect(node.id, node.articleNum)

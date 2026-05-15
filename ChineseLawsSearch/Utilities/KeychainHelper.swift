@@ -49,6 +49,13 @@ enum KeychainHelper {
            let data = result as? Data,
            let value = String(data: data, encoding: .utf8) {
             save(value, forKey: key)
+            // Delete the legacy non-synced item so it won't be stale on next lookup
+            let delQuery: [CFString: Any] = [
+                kSecClass:               kSecClassGenericPassword,
+                kSecAttrAccount:         key,
+                kSecAttrSynchronizable:  kCFBooleanFalse!
+            ]
+            SecItemDelete(delQuery as CFDictionary)
             return value
         }
 

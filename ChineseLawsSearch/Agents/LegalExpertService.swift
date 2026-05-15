@@ -898,6 +898,7 @@ final class LegalExpertService {
         addDocs(noteMatches, strategy: "note")
         addDocs(docsA, strategy: "fts")
         addDocs(docsB, strategy: "keywords")
+        addDocs(docsC, strategy: "node-link")
 
         guard !candidates.isEmpty else { return [] }
 
@@ -1055,12 +1056,12 @@ final class LegalExpertService {
 
         func add(_ a: DatabaseManager.RAGArticle, pinned: Bool = false) {
             guard seenIds.insert(a.nodeId).inserted else { return }
-            var copy = a; copy = DatabaseManager.RAGArticle(
+            let modified = DatabaseManager.RAGArticle(
                 nodeId: a.nodeId, lawId: a.lawId, lawTitle: a.lawTitle,
                 category: a.category, legalDomain: a.legalDomain,
                 articleNumber: a.articleNumber, articleNum: a.articleNum,
                 content: a.content, pinned: pinned || a.pinned)
-            results.append(copy)
+            results.append(modified)
         }
 
         // 1. Chapter navigation via hint ids

@@ -27,14 +27,12 @@ private func highlighted(_ text: String, query: String,
 
 struct TOCView: View {
     @Binding var target: LawTarget?
+    @Environment(\.dismissSearch) private var dismissSearch
 
     private var selectedLawId: Int? { target?.law.id }
 
     @AppStorage("searchExcludeArtNum") private var excludeArtNum: Bool = true
-    @AppStorage("searchTitleOnly")     private var titleOnly: Bool = false
     @AppStorage("searchResultLimit")   private var resultLimit: Int = 100
-    @AppStorage("searchIncludeLaws")   private var includeLaws: Bool = true
-    @AppStorage("searchIncludeInterp") private var includeInterp: Bool = true
     @AppStorage("flkMode")             private var lawsExamMode: Bool = false
 
     @EnvironmentObject private var userStore: UserStore
@@ -46,8 +44,14 @@ struct TOCView: View {
     @State private var searchQuery = ""
     @State private var titleResults:   [LawMeta]      = []
     @State private var articleResults: [SearchResult] = []
+    @State private var titleSectionExpanded:      Bool = true
+    @State private var lawArticleSectionExpanded: Bool = true
+    @State private var interpSectionExpanded:     Bool = true
     @State private var isRunning = false
     @State private var searchTask: Task<Void, Never>? = nil
+
+    private var lawArticleResults: [SearchResult]   { articleResults.filter { $0.lawCategory != "司法解释" } }
+    private var interpArticleResults: [SearchResult] { articleResults.filter { $0.lawCategory == "司法解释" } }
 
     var body: some View {
         List {
@@ -114,49 +118,50 @@ struct TOCView: View {
             } else {
                 // 搜索结果
                 if !titleResults.isEmpty {
-                    Section("法律名称") {
-                        ForEach(titleResults) { law in
-                            Button {
-                                target = LawTarget(law: law, scrollToArticle: nil)
-                            } label: {
-                                highlighted(law.title, query: searchQuery,
-                                            baseFont: .subheadline)
-                                    .foregroundStyle(.primary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
+                    Section {
+                        if titleSectionExpanded {
+                            ForEach(titleResults) { law in
+                                Button {
+                                    dismissSearch()
+                                    target = LawTarget(law: law, scrollToArticle: nil)
+                                } label: {
+                                    highlighted(law.title, query: searchQuery,
+                                                baseFont: .subheadline)
+                                        .foregroundStyle(.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                             }
-                            .buttonStyle(.plain)
-                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                         }
+                    } header: {
+                        collapsibleHeader(title: "法律名称", count: titleResults.count,
+                                          expanded: $titleSectionExpanded)
                     }
                 }
-                if !articleResults.isEmpty {
-                    Section("条文内容") {
-                        ForEach(articleResults) { result in
-                            Button {
-                                if let law = DatabaseManager.shared.lawMeta(id: result.lawId) {
-                                    target = LawTarget(law: law, scrollToArticle: result.nodeArticleNum)
-                                }
-                            } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    highlighted(result.lawTitle, query: searchQuery,
-                                                baseFont: .caption)
-                                        .foregroundStyle(.secondary)
-                                    Text(result.articleNumber)
-                                        .font(.caption.bold())
-                                        .foregroundStyle(.primary)
-                                    highlighted(result.content, query: searchQuery,
-                                                baseFont: .caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(3)
-                                }
-                                .padding(.vertical, 2)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
+                if !lawArticleResults.isEmpty {
+                    Section {
+                        if lawArticleSectionExpanded {
+                            ForEach(lawArticleResults) { result in
+                                articleResultRow(result)
                             }
-                            .buttonStyle(.plain)
-                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                         }
+                    } header: {
+                        collapsibleHeader(title: "法律法规条文", count: lawArticleResults.count,
+                                          expanded: $lawArticleSectionExpanded)
+                    }
+                }
+                if !interpArticleResults.isEmpty {
+                    Section {
+                        if interpSectionExpanded {
+                            ForEach(interpArticleResults) { result in
+                                articleResultRow(result)
+                            }
+                        }
+                    } header: {
+                        collapsibleHeader(title: "司法解释条文", count: interpArticleResults.count,
+                                          expanded: $interpSectionExpanded)
                     }
                 }
             }
@@ -166,13 +171,10 @@ struct TOCView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchQuery,
                     placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: titleOnly ? "搜索法律名称" : "搜索法律名称或条文内容")
+                    prompt: "搜索法律名称或条文内容")
         .onChange(of: searchQuery)    { _, q in runSearch(q) }
         .onChange(of: excludeArtNum)  { _, _ in runSearch(searchQuery) }
-        .onChange(of: titleOnly)      { _, _ in runSearch(searchQuery) }
         .onChange(of: resultLimit)    { _, _ in runSearch(searchQuery) }
-        .onChange(of: includeLaws)    { _, _ in runSearch(searchQuery) }
-        .onChange(of: includeInterp)  { _, _ in runSearch(searchQuery) }
         .onChange(of: lawsExamMode)        { _, _ in
             menu = lawsExamMode ? DatabaseManager.shared.loadLawsExamMenu() : DatabaseManager.shared.loadMenu()
             expandedGroups.removeAll()
@@ -182,6 +184,7 @@ struct TOCView: View {
         .task {
             menu = lawsExamMode ? DatabaseManager.shared.loadLawsExamMenu() : DatabaseManager.shared.loadMenu()
         }
+        .onDisappear { searchTask?.cancel() }
     }
 
     // MARK: - Search logic
@@ -194,8 +197,7 @@ struct TOCView: View {
         isRunning = true
         let excl      = excludeArtNum
         let limit     = resultLimit
-        let onlyTitle = titleOnly
-        let cats      = lawsExamMode ? [] : userStore.searchCategories
+        let cats: [String] = []  // 空数组 = 覆盖全部类型
         let flk       = lawsExamMode
         let variant   = DatabaseManager.numberVariant(of: q)
         let db = DatabaseManager.shared
@@ -207,13 +209,11 @@ struct TOCView: View {
                 titles += extra.filter { !seen.contains($0.id) }
             }
             var articles: [SearchResult] = []
-            if !onlyTitle {
-                articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
-                if let v = variant {
-                    let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
-                    let seen  = Set(articles.map(\.id))
-                    articles += extra.filter { !seen.contains($0.id) }
-                }
+            articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
+            if let v = variant {
+                let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
+                let seen  = Set(articles.map(\.id))
+                articles += extra.filter { !seen.contains($0.id) }
             }
             guard !Task.isCancelled else { return }
             let finalTitles   = titles
@@ -221,6 +221,9 @@ struct TOCView: View {
             await MainActor.run {
                 titleResults   = finalTitles
                 articleResults = finalArticles
+                titleSectionExpanded      = true
+                lawArticleSectionExpanded = true
+                interpSectionExpanded     = true
                 isRunning      = false
             }
         }
@@ -290,5 +293,50 @@ struct TOCView: View {
         }
         .buttonStyle(.plain)
         .listRowInsets(EdgeInsets(top: 2, leading: 52, bottom: 2, trailing: 16))
+    }
+
+    @ViewBuilder
+    private func articleResultRow(_ result: SearchResult) -> some View {
+        Button {
+            if let law = DatabaseManager.shared.lawMeta(id: result.lawId) {
+                dismissSearch()
+                target = LawTarget(law: law, scrollToArticle: result.nodeArticleNum)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                highlighted(result.lawTitle, query: searchQuery, baseFont: .caption)
+                    .foregroundStyle(.secondary)
+                Text(result.articleNumber)
+                    .font(.caption.bold())
+                    .foregroundStyle(.primary)
+                highlighted(result.content, query: searchQuery, baseFont: .caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+    }
+
+    @ViewBuilder
+    private func collapsibleHeader(title: String, count: Int, expanded: Binding<Bool>) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { expanded.wrappedValue.toggle() }
+        } label: {
+            HStack {
+                Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                    .frame(width: 14)
+                Text(title)
+                Spacer()
+                Text("\(count)")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
     }
 }

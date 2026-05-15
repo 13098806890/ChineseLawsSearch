@@ -12,7 +12,7 @@ import Combine
 // MARK: - 持久化跳转栈条目
 
 struct PersistedBackItem: Codable {
-    let tab: String          // "browse" | "chat"
+    let tab: String          // "browse" | "chat" | "gongbao" | "favorites"
     let lawId: Int?          // nil 表示该层没有打开的法律
     let articleNum: Int?
 }
@@ -144,72 +144,6 @@ final class UserStore: ObservableObject {
 
     @AppStorage("showThinking") var showThinking: Bool = true
 
-    /// 对话质量模式："economy" | "standard" | "detailed"
-    @AppStorage("chatQualityMode") var chatQualityMode: String = "standard"
-
-    /// 实际生效的质量模式：基础版（自备Key）尊重用户设置，其余锁定标准
-    private var effectiveQualityMode: String {
-        return "standard"
-    }
-
-    struct QualitySettings {
-        let maxFollowUpRounds: Int
-        let maxContextArticles: Int
-        let maxCitations: Int
-    }
-
-    private var effectiveQualitySettings: QualitySettings {
-        switch effectiveQualityMode {
-        case "economy":  return QualitySettings(maxFollowUpRounds: 1,  maxContextArticles: 15, maxCitations: 5)
-        case "detailed": return QualitySettings(maxFollowUpRounds: 5,  maxContextArticles: 0,  maxCitations: 0)
-        default:         return QualitySettings(maxFollowUpRounds: 3,  maxContextArticles: 40, maxCitations: 80)
-        }
-    }
-
-    var maxFollowUpRounds:  Int { effectiveQualitySettings.maxFollowUpRounds }
-    var maxContextArticles: Int { effectiveQualitySettings.maxContextArticles }
-    var maxCitations:       Int { effectiveQualitySettings.maxCitations }
-
-    func applyQualityMode(_ mode: String) {
-        chatQualityMode = mode
-        // maxContextArticles / maxCitations / maxFollowUpRounds 由计算属性实时计算，无需额外写入
-    }
-
-    // MARK: - 模型选择
-
-    @AppStorage("selected_llm_provider") var selectedProviderId: String = "deepseek"
-
-    // MARK: - iCloud KV 变更监听
-
-    private var kvObserver: NSObjectProtocol?
-    private var pmCancellable: AnyCancellable?
-
-    init() {
-        kvObserver = NotificationCenter.default.addObserver(
-            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: kv,
-            queue: .main
-        ) { [weak self] _ in
-            self?.objectWillChange.send()
-            self?.loadFavorites()
-            self?.loadGazetteFavorites()
-            self?.loadGazetteNotes()
-        }
-        // Propagate PurchaseManager changes so views observing UserStore re-evaluate
-        // effectiveQualityMode / maxFollowUpRounds which depend on PurchaseManager.access
-        pmCancellable = PurchaseManager.shared.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-        loadFavorites()
-        loadGazetteFavorites()
-        loadGazetteNotes()
-    }
-
-    deinit {
-        if let obs = kvObserver { NotificationCenter.default.removeObserver(obs) }
-        pmCancellable?.cancel()
-    }
-
     // MARK: - 阅读记录操作
 
     func recordRead(lawId: Int, articleNum: Int?) {
@@ -321,10 +255,10 @@ final class UserStore: ObservableObject {
         } else {
             gazetteNotes["\(docId)"] = text
         }
-        persistGazetteNotes_()
+        persistGazetteNotes()
     }
 
-    private func persistGazetteNotes_() {
+    private func persistGazetteNotes() {
         guard let data = try? JSONEncoder().encode(gazetteNotes) else { return }
         kv.set(data, forKey: Self.gongbaoNotesKey)
     }

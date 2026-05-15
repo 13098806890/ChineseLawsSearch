@@ -127,8 +127,8 @@ final class ChatHistoryStore: ObservableObject {
     /// Keep at most this many sessions to bound storage and memory.
     private static let maxSessions = 200
 
-    /// Resolves the storage URL lazily on first access (called from background thread in loadAsync).
-    private var fileURL: URL {
+    /// Resolved once and cached — avoids repeated FileManager calls on every read/write.
+    private lazy var fileURL: URL = {
         if let ubiq = FileManager.default.url(forUbiquityContainerIdentifier: nil)?
             .appendingPathComponent("Documents") {
             if !FileManager.default.fileExists(atPath: ubiq.path) {
@@ -138,12 +138,11 @@ final class ChatHistoryStore: ObservableObject {
         }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent(ChatHistoryStore.fileName)
-    }
+    }()
 
     private let persistActor = PersistActor()
     private var metadataQuery: NSMetadataQuery?
     private var metadataObserver: NSObjectProtocol?
-    private var gatheringObserver: NSObjectProtocol?
     /// Debounce iCloud update notifications to avoid hammering disk on rapid sync events.
     private var reloadWorkItem: DispatchWorkItem?
 
@@ -155,9 +154,9 @@ final class ChatHistoryStore: ObservableObject {
     deinit {
         metadataQuery?.stop()
         if let obs = metadataObserver { NotificationCenter.default.removeObserver(obs) }
-        if let obs = gatheringObserver { NotificationCenter.default.removeObserver(obs) }
     }
 
+    @MainActor
     func save(_ session: ChatSession) {
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[idx] = session

@@ -87,7 +87,7 @@ struct LegalChatView: View {
                     // Network error retry banner
                     if vm.lastFailedQuestion != nil {
                         HStack(spacing: 8) {
-                            Image(systemName: "wifi.exclamationmark")
+                            Image(systemName: vm.lastFailedIcon)
                                 .foregroundStyle(.orange)
                             Text("发送失败，问题已回填到输入框")
                                 .font(.caption)
@@ -118,6 +118,14 @@ struct LegalChatView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                             .disabled(vm.isThinking || !canUseAgent)
                             .focused($inputFocused)
+                            .submitLabel(.send)
+                            .onSubmit {
+                                guard canUseAgent,
+                                      !vm.isThinking,
+                                      !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                else { return }
+                                vm.sendTask = Task { await vm.send(historyStore: historyStore, gazetteNotes: userStore.gazetteNotes) }
+                            }
                             .onTapGesture {
                                 if !canUseAgent { showPaywall = true }
                             }
@@ -284,6 +292,14 @@ struct LegalChatView: View {
             }
         } message: {
             Text("当前对话的法律分析尚未完成，中止后无法恢复。确认切换？")
+        }
+        .alert("请求失败", isPresented: Binding(
+            get: { vm.errorMessage != nil },
+            set: { if !$0 { vm.errorMessage = nil } }
+        )) {
+            Button("好") { vm.errorMessage = nil }
+        } message: {
+            Text(vm.errorMessage ?? "")
         }
         .onChange(of: isActive) { _, active in
             // 用户首次切到对话 Tab 且无权限时弹 Paywall，避免每次 onAppear 重复弹
@@ -734,7 +750,7 @@ private struct ThinkStepRow: View {
                     }
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    ForEach(step.content.components(separatedBy: "\n").filter { !$0.isEmpty }, id: \.self) { line in
+                    ForEach(Array(step.content.components(separatedBy: "\n").filter { !$0.isEmpty }.enumerated()), id: \.offset) { _, line in
                         Text(verbatim: line)
                             .font(.footnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

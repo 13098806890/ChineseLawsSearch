@@ -66,6 +66,8 @@ struct GazetteView: View {
     @Environment(\.horizontalSizeClass) private var hSizeClass
     private var isCompact: Bool { hSizeClass == .compact }
 
+    @State private var showIntro: Bool = true
+
     var body: some View {
         VStack(spacing: 0) {
             sourcePickerBar
@@ -75,6 +77,10 @@ struct GazetteView: View {
             searchBar
                 .padding(.horizontal)
                 .padding(.vertical, 8)
+
+            if isCompact && searchText.isEmpty {
+                introBanner
+            }
 
             Divider()
 
@@ -93,6 +99,7 @@ struct GazetteView: View {
             hasLoaded = true
             scheduleReload(immediate: true)
         }
+        .onDisappear { searchTask?.cancel() }
         .onChange(of: selectedSource) {
             // 切换来源时清空搜索词，然后统一触发一次 reload
             // Note: searchText = "" triggers onChange(of: searchText) → scheduleReload(),
@@ -101,6 +108,62 @@ struct GazetteView: View {
             scheduleReload(immediate: true)
         }
         .onChange(of: searchText) { scheduleReload() }
+    }
+
+    // MARK: 介绍 Banner（compact 模式，可折叠）
+
+    private var introBanner: some View {
+        VStack(spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) { showIntro.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.caption)
+                    Text("关于最高人民法院公报")
+                        .font(.caption)
+                    Spacer()
+                    Image(systemName: showIntro ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color(.secondarySystemBackground))
+            }
+            .buttonStyle(.plain)
+
+            if showIntro {
+                VStack(alignment: .leading, spacing: 10) {
+                    bannerRow(icon: "star.circle.fill", color: .orange, title: "指导案例",
+                              desc: "最高人民法院发布的典型案例，确立裁判规则，对同类案件具有参考指导效力。")
+                    bannerRow(icon: "doc.text.fill", color: .blue, title: "裁判文书",
+                              desc: "公报收录的重要判决，代表最高人民法院对法律适用的权威立场。")
+                    bannerRow(icon: "book.closed.fill", color: .green, title: "司法解释",
+                              desc: "就具体法律适用问题发布的解释性文件，与法律条文具有同等适用效力。")
+                    bannerRow(icon: "megaphone.fill", color: .purple, title: "司法文件",
+                              desc: "通知、规定、批复等规范性文件，对下级法院审判工作具有约束力。")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color(.secondarySystemBackground))
+            }
+            Divider()
+        }
+    }
+
+    private func bannerRow(icon: String, color: Color, title: String, desc: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundStyle(color)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.caption.bold())
+                Text(desc).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: 来源选择栏
@@ -579,6 +642,7 @@ struct GazetteDetailView: View {
                 let path = CGPath(rect: frameRect, transform: nil)
                 let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(charIndex, 0), path, nil)
                 let range = CTFrameGetVisibleStringRange(frame)
+                if range.length == 0 { break }
 
                 // Flip coordinate for CoreText
                 let uiCtx = UIGraphicsGetCurrentContext()!
@@ -670,6 +734,83 @@ struct GazetteNoteSheet: View {
         }
         .onAppear { text = userStore.gazetteNote(docId: doc.id) }
         .presentationDetents([.medium, .large])
+    }
+}
+
+// MARK: - 公报介绍视图
+
+struct GazetteWelcomeView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 12) {
+                    Image(systemName: "newspaper.fill")
+                        .font(.system(size: 36, weight: .light))
+                        .foregroundStyle(AppColors.shared.searchHighlight)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("最高人民法院公报")
+                            .font(.title2.bold())
+                        Text("权威裁判规则与司法解释")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.bottom, 4)
+
+                infoBlock(
+                    icon: "star.circle.fill", color: .orange,
+                    title: "指导案例",
+                    body: "最高人民法院发布的典型案例，确立裁判规则，对同类案件具有参考指导效力。检索时可按案由、关键词快速定位相关裁判要旨。"
+                )
+
+                infoBlock(
+                    icon: "doc.text.fill", color: .blue,
+                    title: "裁判文书",
+                    body: "公报收录的重要二审、再审判决，代表最高人民法院对法律适用的权威立场，是研究疑难问题的第一手资料。"
+                )
+
+                infoBlock(
+                    icon: "book.closed.fill", color: .green,
+                    title: "司法解释",
+                    body: "最高人民法院就具体法律适用问题发布的解释性文件，与法律条文具有同等适用效力，是司法实践中引用最频繁的规范依据。"
+                )
+
+                infoBlock(
+                    icon: "megaphone.fill", color: .purple,
+                    title: "司法文件",
+                    body: "最高人民法院发布的通知、规定、批复等规范性文件，反映司法政策导向，对下级法院审判工作具有约束力。"
+                )
+
+                Text("点击左侧列表中的条目即可查看全文。")
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 8)
+            }
+            .padding(24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private func infoBlock(icon: String, color: Color, title: String, body: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 22))
+                .foregroundStyle(color)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.bold())
+                Text(body)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 

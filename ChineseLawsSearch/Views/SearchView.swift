@@ -272,6 +272,7 @@ struct SearchView: View {
                 let seen = Set(articles.map(\.id))
                 articles += extra.filter { !seen.contains($0.id) }
             }
+            articles = Array(articles.prefix(limit))
 
             guard !Task.isCancelled else { return }
             let finalTitles   = titles

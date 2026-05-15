@@ -104,6 +104,7 @@ struct PaywallView: View {
                         else { Text("恢复购买").font(.footnote).foregroundStyle(.secondary) }
                     }
                     .padding(.bottom, 4)
+                    .disabled(isRestoring || purchasing != nil)
 
                     Text("订阅将在当前周期结束前 24 小时自动续费，费用从 Apple ID 账户中扣除。可随时在 App Store「订阅」中取消，取消后当前周期结束前仍可使用。")
                         .font(.caption2)

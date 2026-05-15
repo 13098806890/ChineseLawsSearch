@@ -16,6 +16,13 @@
 	<string>$(BUILTIN_API_KEY_P3)</string>
 	<key>BKP4</key>
 	<string>$(BUILTIN_API_KEY_P4)</string>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIImageName</key>
+		<string>SealGlyph</string>
+		<key>UIImageRespectsSafeAreaInsets</key>
+		<true/>
+	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

@@ -39,6 +39,7 @@ struct SearchResult: Identifiable {
     let id: Int             // node id
     let lawId: Int
     let lawTitle: String
+    let lawCategory: String
     let articleNumber: String
     let content: String
     let nodeArticleNum: Int?
@@ -429,7 +430,7 @@ final class DatabaseManager {
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let artNum = Int(sqlite3_column_int(stmt, 0))
                 let docId  = Int(sqlite3_column_int(stmt, 1))
-                let title  = String(cString: sqlite3_column_text(stmt, 2))
+                let title  = str(stmt, 2)
                 result[artNum, default: []].append(GazetteDocLink(id: docId, title: title, isSfjs: false, sfjsArticleNum: nil))
             }
             return result
@@ -552,7 +553,7 @@ final class DatabaseManager {
             // 短词（1-2字）：LIKE '%keyword%' 全扫，准确可靠
             let col = excludeArticleNumber ? "n.content" : "(n.article_number || n.content)"
             sql = """
-                SELECT n.id, n.law_id, l.title, n.article_number, n.content, n.article_num
+                SELECT n.id, n.law_id, l.title, l.category, n.article_number, n.content, n.article_num
                 FROM nodes n
                 JOIN laws l ON n.law_id = l.id
                 WHERE \(col) LIKE ? AND n.type = 'article' AND l.is_current = 1 \(catFilter) \(lawsExamFilter)
@@ -564,7 +565,7 @@ final class DatabaseManager {
             // 屏蔽条号时搜 content_body 列，否则搜全文
             let col = excludeArticleNumber ? "content_body" : "nodes_fts"
             sql = """
-                SELECT n.id, n.law_id, l.title, n.article_number, n.content, n.article_num
+                SELECT n.id, n.law_id, l.title, l.category, n.article_number, n.content, n.article_num
                 FROM nodes_fts f
                 JOIN nodes n ON f.rowid = n.id
                 JOIN laws  l ON n.law_id = l.id
@@ -585,14 +586,15 @@ final class DatabaseManager {
         sqlite3_bind_int(stmt, bindCol, Int32(limit))
 
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let content = str(stmt, 4)
-            let artNumCol = sqlite3_column_type(stmt, 5)
-            let artNum: Int? = artNumCol == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 5))
+            let content = str(stmt, 5)
+            let artNumCol = sqlite3_column_type(stmt, 6)
+            let artNum: Int? = artNumCol == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 6))
             result.append(SearchResult(
                 id:             Int(sqlite3_column_int(stmt, 0)),
                 lawId:          Int(sqlite3_column_int(stmt, 1)),
                 lawTitle:       str(stmt, 2),
-                articleNumber:  str(stmt, 3),
+                lawCategory:    str(stmt, 3),
+                articleNumber:  str(stmt, 4),
                 content:        content,
                 nodeArticleNum: artNum
             ))
@@ -1286,77 +1288,116 @@ final class DatabaseManager {
     private func _gazetteDocs(source: String?, query: String, limit: Int) -> [GazetteDoc] {        guard let db = db else { return [] }
         var docs: [GazetteDoc] = []
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        let sourceFilter = source.map { "AND d.source = '\($0)'" } ?? ""
-        let sourceFilterPlain = source.map { "AND source = '\($0)'" } ?? ""
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
         if trimmed.count >= 3 {
-            // ≥3字：FTS trigram 精确搜索（title / ruling_gist / keywords / full_text）
-            // 转义 FTS5 特殊字符：双引号翻倍后用引号包裹，避免 MATCH 语法错误
             let escaped = "\"" + trimmed.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-            let sql = """
-                SELECT d.id, d.source, COALESCE(d.case_number,''), d.title,
-                       COALESCE(d.issue,''), COALESCE(d.year,0),
-                       COALESCE(d.pub_date,''), COALESCE(d.url,''),
-                       COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
-                       d.keywords_meta, COALESCE(d.full_text,''), d.case_brief
-                FROM gongbao_docs_fts f
-                JOIN gongbao_docs d ON f.rowid = d.id
-                WHERE gongbao_docs_fts MATCH ?
-                \(sourceFilter)
-                ORDER BY d.year DESC, d.issue_num DESC
-                LIMIT \(limit)
-                """
+            let sql: String
+            if let _ = source {
+                sql = """
+                    SELECT d.id, d.source, COALESCE(d.case_number,''), d.title,
+                           COALESCE(d.issue,''), COALESCE(d.year,0),
+                           COALESCE(d.pub_date,''), COALESCE(d.url,''),
+                           COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
+                           d.keywords_meta, COALESCE(d.full_text,''), d.case_brief
+                    FROM gongbao_docs_fts f
+                    JOIN gongbao_docs d ON f.rowid = d.id
+                    WHERE gongbao_docs_fts MATCH ? AND d.source = ?
+                    ORDER BY d.year DESC, d.issue_num DESC
+                    LIMIT \(limit)
+                    """
+            } else {
+                sql = """
+                    SELECT d.id, d.source, COALESCE(d.case_number,''), d.title,
+                           COALESCE(d.issue,''), COALESCE(d.year,0),
+                           COALESCE(d.pub_date,''), COALESCE(d.url,''),
+                           COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
+                           d.keywords_meta, COALESCE(d.full_text,''), d.case_brief
+                    FROM gongbao_docs_fts f
+                    JOIN gongbao_docs d ON f.rowid = d.id
+                    WHERE gongbao_docs_fts MATCH ?
+                    ORDER BY d.year DESC, d.issue_num DESC
+                    LIMIT \(limit)
+                    """
+            }
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             sqlite3_bind_text(stmt, 1, escaped, -1, t)
+            if let src = source { sqlite3_bind_text(stmt, 2, src, -1, t) }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 docs.append(_rowToGazetteDoc(stmt))
             }
 
         } else if trimmed.count >= 1 {
-            // 1-2字：LIKE 搜索标题、关键词、案例号
             let pattern = "%\(trimmed)%"
-            let sql = """
-                SELECT id, source, COALESCE(case_number,''), title,
-                       COALESCE(issue,''), COALESCE(year,0),
-                       COALESCE(pub_date,''), COALESCE(url,''),
-                       COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       keywords_meta, COALESCE(full_text,''), case_brief
-                FROM gongbao_docs
-                WHERE (title LIKE ? OR keywords LIKE ? OR case_number LIKE ?)
-                \(sourceFilterPlain)
-                ORDER BY year DESC, issue_num DESC
-                LIMIT \(limit)
-                """
+            let sql: String
+            if let _ = source {
+                sql = """
+                    SELECT id, source, COALESCE(case_number,''), title,
+                           COALESCE(issue,''), COALESCE(year,0),
+                           COALESCE(pub_date,''), COALESCE(url,''),
+                           COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                           keywords_meta, COALESCE(full_text,''), case_brief
+                    FROM gongbao_docs
+                    WHERE (title LIKE ? OR keywords LIKE ? OR case_number LIKE ?) AND source = ?
+                    ORDER BY year DESC, issue_num DESC
+                    LIMIT \(limit)
+                    """
+            } else {
+                sql = """
+                    SELECT id, source, COALESCE(case_number,''), title,
+                           COALESCE(issue,''), COALESCE(year,0),
+                           COALESCE(pub_date,''), COALESCE(url,''),
+                           COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                           keywords_meta, COALESCE(full_text,''), case_brief
+                    FROM gongbao_docs
+                    WHERE (title LIKE ? OR keywords LIKE ? OR case_number LIKE ?)
+                    ORDER BY year DESC, issue_num DESC
+                    LIMIT \(limit)
+                    """
+            }
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             sqlite3_bind_text(stmt, 1, pattern, -1, t)
             sqlite3_bind_text(stmt, 2, pattern, -1, t)
             sqlite3_bind_text(stmt, 3, pattern, -1, t)
+            if let src = source { sqlite3_bind_text(stmt, 4, src, -1, t) }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 docs.append(_rowToGazetteDoc(stmt))
             }
 
         } else {
-            // 无关键词：按来源浏览，按年份+期号降序（最新在前）
-            let sql = """
-                SELECT id, source, COALESCE(case_number,''), title,
-                       COALESCE(issue,''), COALESCE(year,0),
-                       COALESCE(pub_date,''), COALESCE(url,''),
-                       COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       keywords_meta, COALESCE(full_text,''), case_brief
-                FROM gongbao_docs
-                WHERE 1=1 \(sourceFilterPlain)
-                ORDER BY year DESC, issue_num DESC
-                LIMIT \(limit)
-                """
+            let sql: String
+            if let _ = source {
+                sql = """
+                    SELECT id, source, COALESCE(case_number,''), title,
+                           COALESCE(issue,''), COALESCE(year,0),
+                           COALESCE(pub_date,''), COALESCE(url,''),
+                           COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                           keywords_meta, COALESCE(full_text,''), case_brief
+                    FROM gongbao_docs
+                    WHERE source = ?
+                    ORDER BY year DESC, issue_num DESC
+                    LIMIT \(limit)
+                    """
+            } else {
+                sql = """
+                    SELECT id, source, COALESCE(case_number,''), title,
+                           COALESCE(issue,''), COALESCE(year,0),
+                           COALESCE(pub_date,''), COALESCE(url,''),
+                           COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                           keywords_meta, COALESCE(full_text,''), case_brief
+                    FROM gongbao_docs
+                    ORDER BY year DESC, issue_num DESC
+                    LIMIT \(limit)
+                    """
+            }
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
+            if let src = source { sqlite3_bind_text(stmt, 1, src, -1, t) }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 docs.append(_rowToGazetteDoc(stmt))
             }
@@ -1429,13 +1470,13 @@ final class DatabaseManager {
             var stmt: OpaquePointer?
             let count: Int
             if query.isEmpty {
-                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1", -1, &stmt, nil)
+                guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1", -1, &stmt, nil) == SQLITE_OK else { return 0 }
             } else {
-                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1 AND title LIKE ?", -1, &stmt, nil)
+                guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1 AND title LIKE ?", -1, &stmt, nil) == SQLITE_OK else { return 0 }
                 sqlite3_bind_text(stmt, 1, "%\(query)%", -1, t)
             }
+            defer { sqlite3_finalize(stmt) }
             count = sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
-            sqlite3_finalize(stmt)
             return count
         }
     }
@@ -1478,10 +1519,10 @@ final class DatabaseManager {
                 FROM laws WHERE id = ? AND source = 'gongbao'
                 """
             var stmt: OpaquePointer?
-            sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt, 1, Int32(id))
             let result: GazetteSfjs? = sqlite3_step(stmt) == SQLITE_ROW ? self._rowToGazetteSfjs(stmt) : nil
-            sqlite3_finalize(stmt)
             return result
         }
     }
@@ -1501,7 +1542,7 @@ final class DatabaseManager {
                 FROM laws WHERE source='gongbao' AND is_current=1
                 ORDER BY pub_date DESC LIMIT ?
                 """
-            sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             sqlite3_bind_int(stmt, 1, Int32(limit))
         } else {
             sql = """
@@ -1509,15 +1550,15 @@ final class DatabaseManager {
                 FROM laws WHERE source='gongbao' AND is_current=1 AND title LIKE ?
                 ORDER BY pub_date DESC LIMIT ?
                 """
-            sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             sqlite3_bind_text(stmt, 1, "%\(query)%", -1, t)
             sqlite3_bind_int(stmt, 2, Int32(limit))
         }
+        defer { sqlite3_finalize(stmt) }
         var results: [GazetteSfjs] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             results.append(_rowToGazetteSfjs(stmt))
         }
-        sqlite3_finalize(stmt)
         return results
     }
 

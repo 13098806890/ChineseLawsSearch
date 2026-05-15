@@ -17,6 +17,8 @@ final class LegalChatViewModel: ObservableObject {
     @Published var scrollToken = 0
     @Published var mode: ChatMode = .expert
     @Published var lastFailedQuestion: String? = nil  // set on network error, cleared on retry
+    @Published var lastFailedIcon: String = "wifi.exclamationmark"
+    @Published var errorMessage: String? = nil         // shown as alert; cleared after dismissal
     @Published var showTimeManipulationAlert = false
     @Published var needsPaywall = false  // consumeIfAllowed 拦截时触发，View 层弹 Paywall
 
@@ -164,7 +166,7 @@ final class LegalChatViewModel: ObservableObject {
     @MainActor
     func send(historyStore: ChatHistoryStore, gazetteNotes: [String: String] = [:]) async {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty, !isThinking else { return }
+        guard !q.isEmpty, q.count >= 2, !isThinking else { return }
 
         // 准入检查：
         // - 免费次数 > 0 → 消耗一次，用内置 key
@@ -265,6 +267,25 @@ final class LegalChatViewModel: ObservableObject {
             }
             inputText = q
             lastFailedQuestion = q
+            lastFailedIcon = {
+                switch error as? LLMError {
+                case .apiKeyMissing:       return "key.slash"
+                case .apiKeyInvalid:       return "key.slash"
+                case .insufficientBalance: return "creditcard.trianglebadge.exclamationmark"
+                case .rateLimited:         return "clock.badge.exclamationmark"
+                case .serverError:         return "exclamationmark.icloud"
+                case .none:
+                    if (error as? URLError) != nil { return "wifi.exclamationmark" }
+                    return "exclamationmark.triangle"
+                }
+            }()
+            errorMessage = (error as? LLMError)?.errorDescription
+                ?? (error as? URLError).map { "网络错误：\($0.localizedDescription)" }
+                ?? error.localizedDescription
+            // Reset multi-turn state so next send starts fresh
+            conversationHistory.removeAll()
+            isAwaitingClarification = false
+            followUpRound = 0
             // 保存已有内容（如有部分回复已展示，保留历史）
             if !messages.isEmpty {
                 autoSave(historyStore: historyStore)
@@ -286,7 +307,8 @@ final class LegalChatViewModel: ObservableObject {
         let citations: [RAGCitation]
 
         switch intent {
-        case .offTopic: citations = []  // never reached
+        case .offTopic:
+            fatalError("handleLLMIntent called with .offTopic — should never happen")
 
         case .followUp:
             if lastSelectedExperts.isEmpty {
@@ -385,11 +407,13 @@ final class LegalChatViewModel: ObservableObject {
         autoSave(historyStore: historyStore)
     }
 
+    @MainActor
     private func autoSave(historyStore: ChatHistoryStore) {
         guard !messages.isEmpty else { return }
-        let title = messages.first(where: { $0.role == .user })?.text
+        let rawTitle = messages.first(where: { $0.role == .user })?.text
             .prefix(40)
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "新对话"
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let title = rawTitle.isEmpty ? "新对话" : rawTitle
         let session = ChatSession(
             id: sessionId,
             title: String(title),
@@ -476,7 +500,7 @@ final class LegalChatViewModel: ObservableObject {
         dotTask = nil
     }
 
-    /// 将当前对话导出为纯文本格式字符串
+    @MainActor
     func exportMarkdown() -> String {
         var lines: [String] = ["法律咨询记录\n"]
         for msg in messages {
@@ -569,7 +593,18 @@ struct ShareSheet: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
     }
 
-    func updateUIViewController(_ uvc: UIActivityViewController, context: Context) {}
+    func updateUIViewController(_ uvc: UIActivityViewController, context: Context) {
+        // Required on iPad/Mac: provide a source for the popover anchor.
+        // Without this, UIActivityViewController crashes on iPad.
+        if let popover = uvc.popoverPresentationController {
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = scene.windows.first {
+                popover.sourceView = window
+                popover.sourceRect = CGRect(x: window.bounds.midX, y: window.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+        }
+    }
 }
 
 // MARK: - SessionRowView (shared by Sidebar + Sheet)
