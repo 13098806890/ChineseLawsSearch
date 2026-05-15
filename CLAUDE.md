@@ -2,7 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build & Run
+## Test Accounts
+
+| 用途 | 账号 |
+|------|------|
+| App Store 沙盒测试 | doxielaws@test.com |
+
+
 
 Open `ChineseLawsSearch.xcodeproj` in Xcode and build with `Cmd+B`, or run via `Cmd+R`. Tests run with `Cmd+U`.
 
