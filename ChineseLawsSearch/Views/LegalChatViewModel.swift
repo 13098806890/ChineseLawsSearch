@@ -20,6 +20,10 @@ final class LegalChatViewModel: ObservableObject {
     @Published var showTimeManipulationAlert = false
     @Published var needsPaywall = false  // consumeIfAllowed 拦截时触发，View 层弹 Paywall
 
+    // 切换 session 时的中断确认
+    @Published var showAbortAlert = false
+    var pendingSwitchAction: (() -> Void)?   // 用户确认后执行的切换动作
+
     private let kv = NSUbiquitousKeyValueStore.default
     private let lastSendTimeKey = "lastChatSendTime"
 
@@ -41,9 +45,11 @@ final class LegalChatViewModel: ObservableObject {
     var tokenBaseCompletion: Int = 0
 
     private var dotTask: Task<Void, Never>?
+    var sendTask: Task<Void, Never>?
 
     deinit {
         dotTask?.cancel()
+        sendTask?.cancel()
     }
 
     @MainActor
@@ -70,6 +76,30 @@ final class LegalChatViewModel: ObservableObject {
     func toggleGazetteCitations(messageId: UUID) {
         guard let mi = messages.firstIndex(where: { $0.id == messageId }) else { return }
         messages[mi].showGazetteCitations.toggle()
+    }
+
+    /// agent 运行中时拦截切换：弹 alert 让用户确认；否则直接执行。
+    @MainActor
+    func requestSwitch(historyStore: ChatHistoryStore, action: @escaping () -> Void) {
+        if isThinking {
+            pendingSwitchAction = action
+            showAbortAlert = true
+        } else {
+            autoSavePublic(historyStore: historyStore)
+            action()
+        }
+    }
+
+    /// 用户确认中断后调用：取消当前任务并执行切换。
+    @MainActor
+    func confirmAbortAndSwitch(historyStore: ChatHistoryStore) {
+        sendTask?.cancel()
+        sendTask = nil
+        thinkingSessions.remove(sessionId)
+        autoSavePublic(historyStore: historyStore)
+        pendingSwitchAction?()
+        pendingSwitchAction = nil
+        showAbortAlert = false
     }
 
     @MainActor
@@ -160,6 +190,8 @@ final class LegalChatViewModel: ObservableObject {
         lastFailedQuestion = nil
         inputText = ""
         messages.append(ChatMessage(role: .user, text: q))
+        // 立即保存用户消息，确保切换对话时不丢失
+        autoSave(historyStore: historyStore)
 
         thinkingSessions.insert(currentSessionId)
         defer {
@@ -349,6 +381,10 @@ final class LegalChatViewModel: ObservableObject {
     }
 
     @MainActor
+    func autoSavePublic(historyStore: ChatHistoryStore) {
+        autoSave(historyStore: historyStore)
+    }
+
     private func autoSave(historyStore: ChatHistoryStore) {
         guard !messages.isEmpty else { return }
         let title = messages.first(where: { $0.role == .user })?.text
@@ -561,9 +597,14 @@ struct SessionRowView: View {
                 .lineLimit(2)
             HStack(spacing: 8) {
                 Text("\(session.messages.count / 2) 轮对话")
-                if session.totalPromptTokens + session.totalCompletionTokens > 0 {
+                let totalP = session.totalPromptTokens
+                let totalC = session.totalCompletionTokens
+                if totalP + totalC > 0 {
                     Text("·")
-                    Text("\(formatTokens(session.totalPromptTokens + session.totalCompletionTokens)) tokens")
+                    Text("\(formatTokens(totalP + totalC)) tokens")
+                    let cost = Double(totalP) / 1_000_000 * 0.27
+                             + Double(totalC) / 1_000_000 * 1.10
+                    Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
                 }
             }
             .font(.caption)

@@ -142,7 +142,7 @@ struct LegalChatView: View {
                                 }
                             }
                         Button {
-                            Task { await vm.send(historyStore: historyStore, gazetteNotes: userStore.gazetteNotes) }
+                            vm.sendTask = Task { await vm.send(historyStore: historyStore, gazetteNotes: userStore.gazetteNotes) }
                         } label: {
                             Image(systemName: vm.isThinking ? "stop.circle.fill" : "arrow.up.circle.fill")
                                 .font(.system(size: 26))
@@ -291,7 +291,9 @@ struct LegalChatView: View {
                                 Image(systemName: "clock")
                             }
                         }
-                        Button { vm.newSession() } label: {
+                        Button {
+                            vm.requestSwitch(historyStore: historyStore) { vm.newSession() }
+                        } label: {
                             Image(systemName: "plus.circle")
                         }
                     }
@@ -300,10 +302,15 @@ struct LegalChatView: View {
         }
         .sheet(isPresented: $showHistory) {
             ChatHistorySheet(historyStore: historyStore, onSelect: { session in
-                vm.loadSession(session)
                 showHistory = false
+                vm.requestSwitch(historyStore: historyStore) {
+                    vm.loadSession(session)
+                }
             }, onNewSession: {
-                vm.newSession()
+                showHistory = false
+                vm.requestSwitch(historyStore: historyStore) {
+                    vm.newSession()
+                }
             }, isThinking: vm.isThinking)
         }
         .sheet(isPresented: Binding(
@@ -330,6 +337,16 @@ struct LegalChatView: View {
             Button("确定", role: .cancel) {}
         } message: {
             Text("检测到设备时间异常，请恢复正确时间后再使用。")
+        }
+        .alert("分析正在进行中", isPresented: $vm.showAbortAlert) {
+            Button("继续等待", role: .cancel) {
+                vm.pendingSwitchAction = nil
+            }
+            Button("中止并切换", role: .destructive) {
+                vm.confirmAbortAndSwitch(historyStore: historyStore)
+            }
+        } message: {
+            Text("当前对话的法律分析尚未完成，中止后无法恢复。确认切换？")
         }
         .onChange(of: isActive) { _, active in
             // 用户首次切到对话 Tab 且无权限时弹 Paywall，避免每次 onAppear 重复弹
@@ -407,8 +424,8 @@ struct LegalChatView: View {
                            body: "内置 4000 余部法律法规、司法解释全文，回答时直接标注条文出处，不靠\"印象\"作答。点击引用法条可跳转原文查看。")
 
                     tipRow(icon: "newspaper",
-                           title: "关联公报案例",
-                           body: "自动检索人民法院公报指导案例与裁判文书，以卡片形式展示于回答末尾，点击直接查看完整文书，了解同类纠纷的实际裁判结果。")
+                           title: "公报案例引用",
+                           body: "回答结束后自动检索人民法院公报指导案例与裁判文书。如有相关案例，答案末尾会以【参考案例】写明案例名称及与本问题的具体关联，下方卡片可点击查看完整文书。")
 
                     tipRow(icon: "note.text",
                            title: "案例笔记辅助检索",
@@ -959,10 +976,10 @@ private struct GazetteCitationCards: View {
                                 .lineLimit(2)
                         }
                         if !cite.relevanceReason.isEmpty {
-                            Text(cite.relevanceReason)
+                            Text("引用说明：\(cite.relevanceReason)")
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
                         }
                     }
                     .padding(10)
@@ -1019,7 +1036,9 @@ struct ChatHistorySidebar: View {
                     get: { vm.sessionId },
                     set: { id in
                         if let id, let session = historyStore.sessions.first(where: { $0.id == id }) {
-                            vm.loadSession(session)
+                            vm.requestSwitch(historyStore: historyStore) {
+                                vm.loadSession(session)
+                            }
                         }
                     }
                 )) {

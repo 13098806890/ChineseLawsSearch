@@ -130,6 +130,7 @@ struct ContentView: View {
         if isCompact {
             NavigationStack {
                 TOCView(target: $target)
+                    .environmentObject(userStore)
                     .navigationDestination(item: $target) { t in
                         LawDetailView(target: t, navigate: navigate,
                                       navigateToGazette: navigateToGazette,
@@ -140,6 +141,7 @@ struct ContentView: View {
         } else {
             NavigationSplitView {
                 TOCView(target: $target)
+                    .environmentObject(userStore)
             } detail: {
                 if let t = target {
                     NavigationStack {

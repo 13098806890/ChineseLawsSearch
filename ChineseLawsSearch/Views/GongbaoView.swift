@@ -104,19 +104,20 @@ struct GazetteView: View {
     // MARK: 来源选择栏
 
     private var sourcePickerBar: some View {
-        HStack(spacing: 6) {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 6) {
             ForEach(GazetteSource.allCases) { src in
                 Button {
                     selectedSource = src
                 } label: {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2) {
                         Image(systemName: src.icon)
-                            .font(.caption2)
+                            .font(.system(size: 10))
                         Text(src.displayName)
-                            .font(.caption)
+                            .font(.system(size: 11))
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                     .background(
                         selectedSource == src
                             ? AppColors.shared.searchHighlight
@@ -126,8 +127,10 @@ struct GazetteView: View {
                     .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .fixedSize()
             }
             Spacer()
+          }
         }
     }
 

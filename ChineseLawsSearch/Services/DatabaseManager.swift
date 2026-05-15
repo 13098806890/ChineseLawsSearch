@@ -61,6 +61,9 @@ struct GazetteDoc: Identifiable {
     /// 例：["法律类型": ["民事"], "审级": ["二审"], "地区": ["浙江省"], ...]
     let keywordsMeta: [String: [String]]
     let fullText: String
+    /// 结构化案情概括，key = 维度名（legal_relationship/parties/core_dispute/key_facts/
+    /// special_circumstances/outcome/region/dispute_amount/procedure_stage）
+    let caseBrief: [String: String]
 }
 
 // 某条文引用的其他法条（出向）
@@ -1168,16 +1171,34 @@ final class DatabaseManager {
                        COALESCE(issue,''), COALESCE(year,0),
                        COALESCE(pub_date,''), COALESCE(url,''),
                        COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       keywords_meta, COALESCE(full_text,'')
+                       keywords_meta, COALESCE(full_text,''), case_brief
                 FROM gongbao_docs WHERE id = ?
                 """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt, 1, Int32(id))
-            if sqlite3_step(stmt) == SQLITE_ROW {
-                return _rowToGazetteDoc(stmt)
-            }
+            if sqlite3_step(stmt) == SQLITE_ROW { return _rowToGazetteDoc(stmt) }
+            return nil
+        }
+    }
+
+    func gazetteDocByTitle(_ title: String) -> GazetteDoc? {
+        queue.sync {
+            guard let db = db else { return nil }
+            let sql = """
+                SELECT id, source, COALESCE(case_number,''), title,
+                       COALESCE(issue,''), COALESCE(year,0),
+                       COALESCE(pub_date,''), COALESCE(url,''),
+                       COALESCE(ruling_gist,''), COALESCE(keywords,''),
+                       keywords_meta, COALESCE(full_text,''), case_brief
+                FROM gongbao_docs WHERE title = ? LIMIT 1
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, (title as NSString).utf8String, -1, nil)
+            if sqlite3_step(stmt) == SQLITE_ROW { return _rowToGazetteDoc(stmt) }
             return nil
         }
     }
@@ -1204,17 +1225,18 @@ final class DatabaseManager {
     }
 
     /// 策略 B：按 keywords 平铺字段 LIKE 检索（多词 OR）
-    func searchGazetteByKeywords(terms: [String], limit: Int = 10) -> [GazetteDoc] {
+    func searchGazetteByKeywords(terms: [String], sourceFilter: String? = nil, limit: Int = 10) -> [GazetteDoc] {
         queue.sync {
             guard let db = db, !terms.isEmpty else { return [] }
             let clauses = terms.map { _ in "keywords LIKE ?" }.joined(separator: " OR ")
+            let sourceClause = sourceFilter != nil ? " AND source = ?" : ""
             let sql = """
                 SELECT id, source, COALESCE(case_number,''), title,
                        COALESCE(issue,''), COALESCE(year,0),
                        COALESCE(pub_date,''), COALESCE(url,''),
                        COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       keywords_meta, COALESCE(full_text,'')
-                FROM gongbao_docs WHERE \(clauses)
+                       keywords_meta, COALESCE(full_text,''), case_brief
+                FROM gongbao_docs WHERE (\(clauses))\(sourceClause)
                 ORDER BY year DESC, issue_num DESC LIMIT \(limit)
                 """
             var stmt: OpaquePointer?
@@ -1224,33 +1246,36 @@ final class DatabaseManager {
             for (i, term) in terms.enumerated() {
                 sqlite3_bind_text(stmt, Int32(i + 1), "%\(term)%", -1, t)
             }
+            if let sf = sourceFilter {
+                sqlite3_bind_text(stmt, Int32(terms.count + 1), sf, -1, t)
+            }
             var docs: [GazetteDoc] = []
             while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToGazetteDoc(stmt)) }
             return docs
         }
     }
 
-    /// 策略 C：通过 gongbao_case_law_links 反查引用了指定法律的公报文书
-    func searchGazetteByLawIds(_ lawIds: [Int], limit: Int = 10) -> [GazetteDoc] {
+    /// 策略 C：通过 gongbao_case_law_links 反查引用了指定条文节点的公报文书
+    func searchGazetteByNodeIds(_ nodeIds: [Int], limit: Int = 10) -> [GazetteDoc] {
         queue.sync {
-            guard let db = db, !lawIds.isEmpty else { return [] }
-            let placeholders = lawIds.map { _ in "?" }.joined(separator: ",")
+            guard let db = db, !nodeIds.isEmpty else { return [] }
+            let placeholders = nodeIds.map { _ in "?" }.joined(separator: ",")
             let sql = """
                 SELECT DISTINCT d.id, d.source, COALESCE(d.case_number,''), d.title,
                        COALESCE(d.issue,''), COALESCE(d.year,0),
                        COALESCE(d.pub_date,''), COALESCE(d.url,''),
                        COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
-                       d.keywords_meta, COALESCE(d.full_text,'')
+                       d.keywords_meta, COALESCE(d.full_text,''), d.case_brief
                 FROM gongbao_case_law_links l
                 JOIN gongbao_docs d ON l.doc_id = d.id
-                WHERE l.law_id IN (\(placeholders))
+                WHERE l.node_id IN (\(placeholders))
                 ORDER BY d.year DESC, d.issue_num DESC LIMIT \(limit)
                 """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            for (i, lid) in lawIds.enumerated() {
-                sqlite3_bind_int(stmt, Int32(i + 1), Int32(lid))
+            for (i, nid) in nodeIds.enumerated() {
+                sqlite3_bind_int(stmt, Int32(i + 1), Int32(nid))
             }
             var docs: [GazetteDoc] = []
             while sqlite3_step(stmt) == SQLITE_ROW { docs.append(_rowToGazetteDoc(stmt)) }
@@ -1273,7 +1298,7 @@ final class DatabaseManager {
                        COALESCE(d.issue,''), COALESCE(d.year,0),
                        COALESCE(d.pub_date,''), COALESCE(d.url,''),
                        COALESCE(d.ruling_gist,''), COALESCE(d.keywords,''),
-                       d.keywords_meta, COALESCE(d.full_text,'')
+                       d.keywords_meta, COALESCE(d.full_text,''), d.case_brief
                 FROM gongbao_docs_fts f
                 JOIN gongbao_docs d ON f.rowid = d.id
                 WHERE gongbao_docs_fts MATCH ?
@@ -1298,7 +1323,7 @@ final class DatabaseManager {
                        COALESCE(issue,''), COALESCE(year,0),
                        COALESCE(pub_date,''), COALESCE(url,''),
                        COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       keywords_meta, COALESCE(full_text,'')
+                       keywords_meta, COALESCE(full_text,''), case_brief
                 FROM gongbao_docs
                 WHERE (title LIKE ? OR keywords LIKE ? OR case_number LIKE ?)
                 \(sourceFilterPlain)
@@ -1323,7 +1348,7 @@ final class DatabaseManager {
                        COALESCE(issue,''), COALESCE(year,0),
                        COALESCE(pub_date,''), COALESCE(url,''),
                        COALESCE(ruling_gist,''), COALESCE(keywords,''),
-                       keywords_meta, COALESCE(full_text,'')
+                       keywords_meta, COALESCE(full_text,''), case_brief
                 FROM gongbao_docs
                 WHERE 1=1 \(sourceFilterPlain)
                 ORDER BY year DESC, issue_num DESC
@@ -1340,7 +1365,7 @@ final class DatabaseManager {
     }
 
     private func _rowToGazetteDoc(_ stmt: OpaquePointer?) -> GazetteDoc {
-        // col 10 = keywords_meta (JSON), col 11 = full_text
+        // col 10 = keywords_meta (JSON), col 11 = full_text, col 12 = case_brief (JSON)
         let metaJson = str(stmt, 10)
         let keywordsMeta: [String: [String]]
         if !metaJson.isEmpty,
@@ -1358,6 +1383,15 @@ final class DatabaseManager {
         } else {
             keywordsMeta = [:]
         }
+        let briefJson = str(stmt, 12)
+        let caseBrief: [String: String]
+        if !briefJson.isEmpty,
+           let data = briefJson.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+            caseBrief = parsed
+        } else {
+            caseBrief = [:]
+        }
         return GazetteDoc(
             id: Int(sqlite3_column_int(stmt, 0)),
             source: str(stmt, 1),
@@ -1370,7 +1404,8 @@ final class DatabaseManager {
             rulingGist: str(stmt, 8),
             keywords: str(stmt, 9),
             keywordsMeta: keywordsMeta,
-            fullText: str(stmt, 11)
+            fullText: str(stmt, 11),
+            caseBrief: caseBrief
         )
     }
 

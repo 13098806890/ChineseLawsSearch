@@ -222,7 +222,7 @@ final class LegalExpertService {
         // Coordinator 最终回答 + 引用提取（共用函数）
         let allArticlesFlat = deduplicateArticles(expertArticles)
         return try await runCoordinatorStage(
-            question: question, subQs: [],
+            question: question, searchQuestion: question, subQs: [],
             groupAnswers: expertAnswers, allArticlesFlat: allArticlesFlat,
             systemPrompt: coordinatorSystemPromptForMode(mode), onEvent: onEvent)
     }
@@ -572,27 +572,42 @@ final class LegalExpertService {
         // Step 3: 每个专家检索并分析其负责的子问题（Mod 3: 并发执行）
         var expertArticles: [String: [DatabaseManager.RAGArticle]] = [:]
         var expertAnswers:  [String: String] = [:]
+        var expertCaseTitles: [String] = []  // 所有专家自报的案例标题（去重后转 GazetteCitation）
 
-        try await withThrowingTaskGroup(of: (String, [DatabaseManager.RAGArticle], String).self) { group in
+        try await withThrowingTaskGroup(of: (String, [DatabaseManager.RAGArticle], String, [String]).self) { group in
             for expert in allSelectedExperts {
                 let assignedQs   = expertToQuestions[expert.name] ?? [question]
                 let questionText = assignedQs.count == 1 ? assignedQs[0] : assignedQs.joined(separator: "\n")
                 let expertContext = factContext.isEmpty ? questionText : "\(factContext)\n\n\(questionText)"
                 let kf = knownFacts
                 group.addTask { [self] in
-                    guard !Task.isCancelled else { return (expert.name, [], "") }
+                    guard !Task.isCancelled else { return (expert.name, [], "", []) }
                     // Mod 4: filterArticles removed; expert self-filters via prompt instruction
                     var articles = self.retrieveForExpert(expert: expert, question: expertContext, facts: kf)
                     articles = self.expandReferences(articles: articles)
-                    let answer = try await self.analyzeWithExpert(expert: expert, question: expertContext,
-                                                                  facts: kf, articles: articles)
-                    return (expert.name, articles, answer)
+                    let raw = try await self.analyzeWithExpert(expert: expert, question: expertContext,
+                                                               facts: kf, articles: articles)
+                    let (body, caseTitles) = self.parseExpertCitations(raw)
+                    return (expert.name, articles, body, caseTitles)
                 }
             }
-            for try await (name, arts, ans) in group {
+            for try await (name, arts, ans, titles) in group {
                 expertArticles[name] = arts
                 expertAnswers[name] = ans
+                expertCaseTitles.append(contentsOf: titles)
             }
+        }
+
+        // Deduplicate case titles and look up GazetteDocs from DB
+        var seenTitles = Set<String>()
+        let uniqueTitles = expertCaseTitles.filter { seenTitles.insert($0).inserted }
+        let db = DatabaseManager.shared
+        let expertGazetteCites: [GazetteCitation] = uniqueTitles.compactMap { title in
+            guard let doc = db.gazetteDocByTitle(title) else { return nil }
+            let label = doc.source == "al" ? "指导案例" : "裁判文书"
+            return GazetteCitation(docId: doc.id, source: doc.source,
+                                   title: doc.title, rulingGist: doc.rulingGist,
+                                   strategy: "expert-cited", relevanceReason: "专家在分析中直接引用（\(label)）")
         }
 
         let totalArticleCount = expertArticles.values.map { $0.count }.reduce(0, +)
@@ -650,8 +665,9 @@ final class LegalExpertService {
         // Step 5+6: Coordinator 最终回答 + 引用提取（共用函数）
         let allArticlesFlat = deduplicateArticles(expertArticles)
         return try await runCoordinatorStage(
-            question: question, subQs: subQs,
+            question: question, searchQuestion: allUserText, subQs: subQs,
             groupAnswers: groupAnswers, allArticlesFlat: allArticlesFlat,
+            expertGazetteCites: expertGazetteCites,
             systemPrompt: coordinatorSystemPrompt, onEvent: onEvent)
     }
 
@@ -660,19 +676,24 @@ final class LegalExpertService {
     /// Streams the final Coordinator answer and extracts citations from the response text.
     /// Used by both runExpertStages (caseAnalysis) and runPipelineWithMode (advisory/statute).
     private func runCoordinatorStage(question: String,
+                                      searchQuestion: String,
                                       subQs: [String],
                                       groupAnswers: [String: String],
                                       allArticlesFlat: [DatabaseManager.RAGArticle],
+                                      expertGazetteCites: [GazetteCitation] = [],
                                       systemPrompt: String,
                                       onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
         // 公报案例检索在 coordinator 生成之前完成，结果注入 context
-        let lawIds = Array(Set(allArticlesFlat.map { $0.lawId }))
+        // 用 searchQuestion（含历史上下文）而非 question（追问时可能只是"无"）
+        // LLM 扩词确保无标点长句也能提取语义关键词（如"交强险"、"追偿权"）
+        let expansion = await expandSearchTerms(question: searchQuestion)
+        let nodeIds = Array(Set(allArticlesFlat.compactMap { $0.nodeId > 0 ? $0.nodeId : nil }))
         let gazetteCites = await retrieveGazetteCases(
-            question: question,
-            expandedTerms: [],
+            question: searchQuestion,
+            expandedTerms: expansion.terms,
             sourceFilter: nil,
-            candidateLawIds: lawIds,
+            candidateNodeIds: nodeIds,
             onEvent: onEvent)
 
         let context = buildGroupContext(groupAnswers: groupAnswers, articles: allArticlesFlat,
@@ -697,8 +718,11 @@ final class LegalExpertService {
         onEvent(.thinkStep(name: "参考法条筛选",
                            content: "从答案正文引用中提取 \(cited.count) 条直接引用的法条"))
 
-        if !gazetteCites.isEmpty {
-            onEvent(.gazetteCitations(gazetteCites))
+        // 从答案里解析 【参考案例】 段，只展示 coordinator 实际写入的案例
+        let allCandidates = (gazetteCites + expertGazetteCites)
+        let citedGazette = parseCoordinatorGazetteCitations(answerText: answerText, candidates: allCandidates)
+        if !citedGazette.isEmpty {
+            onEvent(.gazetteCitations(citedGazette))
         }
 
         return cited.map {
@@ -727,7 +751,7 @@ final class LegalExpertService {
             question: question,
             expandedTerms: expansion.terms,
             sourceFilter: expansion.sourceFilter,
-            candidateLawIds: [],
+            candidateNodeIds: [],
             onEvent: onEvent
         )
 
@@ -813,7 +837,7 @@ final class LegalExpertService {
         question: String,
         expandedTerms: [String] = [],
         sourceFilter: String? = nil,
-        candidateLawIds: [Int],
+        candidateNodeIds: [Int],
         onEvent: @escaping @MainActor (RAGEvent) -> Void
     ) async -> [GazetteCitation] {
         let db = DatabaseManager.shared
@@ -833,11 +857,11 @@ final class LegalExpertService {
             db.searchGazetteByKeywords(terms: searchTerms, limit: 10)
         }.value
 
-        // 策略 C：法条关联（仅普通查询路径有 candidateLawIds）
+        // 策略 C：条文节点关联（精确匹配引用了相同条文的公报案例）
         let docsC: [GazetteDoc]
-        if !candidateLawIds.isEmpty {
+        if !candidateNodeIds.isEmpty {
             docsC = await Task.detached(priority: .userInitiated) {
-                db.searchGazetteByLawIds(candidateLawIds, limit: 10)
+                db.searchGazetteByNodeIds(candidateNodeIds, limit: 10)
             }.value
         } else {
             docsC = []
@@ -873,32 +897,24 @@ final class LegalExpertService {
 
         addDocs(noteMatches, strategy: "note")
         addDocs(docsA, strategy: "fts")
-        addDocs(docsC, strategy: "lawlinks")
         addDocs(docsB, strategy: "keywords")
 
         guard !candidates.isEmpty else { return [] }
 
-        // LLM 筛选：超过 5 条时
-        let filtered: [(doc: GazetteDoc, strategy: String, reason: String)]
-        if candidates.count > 5 {
-            filtered = await llmFilterGazetteCases(question: question, candidates: candidates)
-        } else {
-            filtered = candidates.map { ($0.doc, $0.strategy, "") }
-        }
-
-        let result = filtered.map { item in
+        let result = candidates.map { item in
             GazetteCitation(docId: item.doc.id, source: item.doc.source,
                             title: item.doc.title, rulingGist: item.doc.rulingGist,
-                            strategy: item.strategy, relevanceReason: item.reason)
+                            strategy: item.strategy, relevanceReason: "")
         }
 
         let summary = result.map { "• \($0.title)" }.joined(separator: "\n")
-        onEvent(.thinkStep(name: "相关公报案例", content: summary.isEmpty ? "未找到相关案例" : summary))
+        onEvent(.thinkStep(name: "候选公报案例", content: "检索到 \(result.count) 条候选（由 coordinator 决定引用）\n\(summary)"))
 
         return result
     }
 
     /// 从问题文本中提取 2-6 字汉字词语（去除常见停用词）
+    /// 仅在无 LLM 扩词结果时作为 fallback 使用
     private func extractTerms(from text: String) -> [String] {
         let stopWords: Set<String> = ["的", "了", "是", "在", "我", "有", "和", "就", "不", "人",
                                        "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去",
@@ -916,53 +932,6 @@ final class LegalExpertService {
                 return !stopWords.contains(s)
             }
         return Array(Set(tokens)).prefix(8).map { $0 }
-    }
-
-    /// 用 LLM 从候选列表中筛选最相关的前 5 条
-    private func llmFilterGazetteCases(
-        question: String,
-        candidates: [(doc: GazetteDoc, strategy: String)]
-    ) async -> [(doc: GazetteDoc, strategy: String, reason: String)] {
-        let listText = candidates.enumerated().map { i, item in
-            "[\(item.doc.id)] 标题：\(item.doc.title)\n裁判要点：\(item.doc.rulingGist.prefix(100))"
-        }.joined(separator: "\n\n")
-
-        let prompt = """
-            用户问题：\(question)
-
-            以下是候选公报文书，请从中选出最相关的最多5条，只输出 JSON 数组，格式：
-            [{"id":123,"reason":"一句话原因"}]
-            不要输出任何其他内容。
-
-            候选列表：
-            \(listText)
-            """
-
-        var responseText = ""
-        try? await LLMProviderRegistry.agentProvider.streamChat(
-            messages: [["role": "user", "content": prompt]],
-            temperature: 0.1,
-            onToken: { responseText += $0 }
-        )
-
-        // 解析 JSON
-        let jsonStr = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = jsonStr.data(using: .utf8),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        else {
-            // fallback: return first 5
-            return candidates.prefix(5).map { ($0.doc, $0.strategy, "") }
-        }
-
-        var result: [(doc: GazetteDoc, strategy: String, reason: String)] = []
-        let candidateMap = Dictionary(uniqueKeysWithValues: candidates.map { ($0.doc.id, $0) })
-        for item in arr.prefix(5) {
-            guard let id = item["id"] as? Int,
-                  let candidate = candidateMap[id] else { continue }
-            let reason = (item["reason"] as? String) ?? ""
-            result.append((candidate.doc, candidate.strategy, reason))
-        }
-        return result.isEmpty ? candidates.prefix(5).map { ($0.doc, $0.strategy, "") } : result
     }
 
     // MARK: - 法律定性 + 递进路由
@@ -1206,6 +1175,80 @@ final class LegalExpertService {
 
     // MARK: - Step 4b: Expert analysis
 
+    // Round 1: ask expert to produce search terms for gazette case lookup (fast, small output)
+    private static let expertCaseQuerySystem = """
+    你是一个中国法律专家，正在分析一个法律问题。
+    根据提供的法条和问题，判断是否需要查阅人民法院公报中的指导案例或裁判文书来辅助分析。
+    如果需要，输出 1-4 个精准的中文检索词（案由、争议焦点、核心法律概念），用于在公报数据库中检索相关案例。
+    如果不需要（问题属于纯法条查询、无争议事实问题），输出空数组。
+    只输出 JSON，格式：{"terms": ["检索词1", "检索词2"]}
+    不要输出任何其他内容。
+    """
+
+    private struct CaseQueryResult {
+        let terms: [String]
+    }
+
+    private func queryExpertCaseTerms(articlesSummary: String, question: String) async -> CaseQueryResult {
+        let userMsg = "法条摘要：\n\(articlesSummary)\n\n用户问题：\(question)"
+        guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
+            messages: [
+                ["role": "system", "content": Self.expertCaseQuerySystem],
+                ["role": "user",   "content": userMsg],
+            ],
+            temperature: 0
+        ) else { return CaseQueryResult(terms: []) }
+        let extracted = extractJSON(raw, open: "{", close: "}")
+        guard let data = extracted.data(using: .utf8),
+              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr  = obj["terms"] as? [String] else { return CaseQueryResult(terms: []) }
+        let terms = arr.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return CaseQueryResult(terms: terms)
+    }
+
+    // Round 1.5: show case_brief summaries to expert, ask which cases need full text
+    private static let needFullTextSystem = """
+    你是中国法律专家。根据用户问题和以下案例的案情概括，判断哪些案例与用户情况高度吻合（事实层面，非仅规则层面），需要查阅完整案情全文来辅助分析。
+    只输出 JSON，格式：{"need_full": [case_id1, case_id2]}（填需要全文的案例 id，不需要则返回空数组）
+    不要输出任何其他内容。
+    """
+
+    private func queryNeedFullText(cases: [GazetteDoc], question: String) async -> Set<Int> {
+        let summaries = cases.map { doc -> String in
+            var s = "id:\(doc.id) 《\(doc.title)》"
+            s += formatCaseBrief(doc.caseBrief)
+            return s
+        }.joined(separator: "\n\n")
+        let userMsg = "用户问题：\(question)\n\n案例概括：\n\(summaries)"
+        guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
+            messages: [
+                ["role": "system", "content": Self.needFullTextSystem],
+                ["role": "user",   "content": userMsg],
+            ],
+            temperature: 0
+        ) else { return [] }
+        let extracted = extractJSON(raw, open: "{", close: "}")
+        guard let data = extracted.data(using: .utf8),
+              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr  = obj["need_full"] as? [Int] else { return [] }
+        return Set(arr)
+    }
+
+    private func formatCaseBrief(_ brief: [String: String]) -> String {
+        guard !brief.isEmpty else { return "" }
+        var parts: [String] = []
+        if let v = brief["legal_relationship"], !v.isEmpty { parts.append("法律关系：\(v)") }
+        if let v = brief["parties"],            !v.isEmpty { parts.append("当事人：\(v)") }
+        if let v = brief["core_dispute"],       !v.isEmpty { parts.append("争议焦点：\(v)") }
+        if let v = brief["key_facts"],          !v.isEmpty { parts.append("关键事实：\(v)") }
+        if let v = brief["special_circumstances"], !v.isEmpty { parts.append("特殊情节：\(v)") }
+        if let v = brief["outcome"],            !v.isEmpty { parts.append("裁判结果：\(v)") }
+        if let v = brief["region"],             !v.isEmpty { parts.append("地区：\(v)") }
+        if let v = brief["dispute_amount"],     !v.isEmpty { parts.append("争议金额：\(v)") }
+        if let v = brief["procedure_stage"],    !v.isEmpty { parts.append("程序阶段：\(v)") }
+        return parts.isEmpty ? "" : "\n  " + parts.joined(separator: "；")
+    }
+
     private func analyzeWithExpert(expert: SubExpert, question: String,
                                    facts: [String: String],
                                    articles: [DatabaseManager.RAGArticle]) async throws -> String {
@@ -1230,15 +1273,58 @@ final class LegalExpertService {
         if !facts.isEmpty {
             factsText = "\n\n【已知情况】\n" + facts.map { "- \($0.key)：\($0.value)" }.joined(separator: "\n")
         }
-        let userMsg = "法条：\n\(parts.joined(separator: "\n"))\(factsText)\n\n用户问题：\(question)"
-        // Mod 4: added self-filter instruction
+
+        // Round 1: LLM generates search terms for gazette case lookup
+        let articlesSummary = parts.prefix(6).joined(separator: "\n")
+        let caseQuery = await queryExpertCaseTerms(articlesSummary: articlesSummary, question: question)
+
+        // DB retrieval using LLM-generated terms (limit 5, al first)
+        var gazetteCasesText = ""
+        if !caseQuery.terms.isEmpty {
+            let db = DatabaseManager.shared
+            var docs = db.searchGazetteDocsMultiTerm(terms: caseQuery.terms, sourceFilter: nil, limit: 5)
+            docs.sort { a, b in
+                if a.source == "al" && b.source != "al" { return true }
+                if a.source != "al" && b.source == "al" { return false }
+                return a.year > b.year
+            }
+            let selected = Array(docs.prefix(5))
+            if !selected.isEmpty {
+                // Round 1.5: show case_brief to expert, ask which cases need full text
+                let needFullTextIds = await queryNeedFullText(cases: selected, question: question)
+                let lines = selected.map { doc -> String in
+                    let sourceLabel = doc.source == "al" ? "指导案例" : "裁判文书"
+                    var entry = "• [\(sourceLabel)]《\(doc.title)》(id:\(doc.id))"
+                    entry += formatCaseBrief(doc.caseBrief)
+                    if !doc.rulingGist.isEmpty {
+                        entry += "\n  裁判要旨：\(doc.rulingGist)"
+                    }
+                    if needFullTextIds.contains(doc.id) && !doc.fullText.isEmpty {
+                        entry += "\n  案情全文：\(doc.fullText)"
+                    }
+                    return entry
+                }.joined(separator: "\n")
+                gazetteCasesText = "\n\n【相关公报案例】（人民法院公报，LLM检索，仅供参考）\n\(lines)"
+            }
+        }
+
+        // Round 2: Full analysis with law articles + gazette cases
+        let userMsg = "法条：\n\(parts.joined(separator: "\n"))\(factsText)\(gazetteCasesText)\n\n用户问题：\(question)"
         let systemWithConstraint = expert.answerTemplate + """
 
 【严格限制】只能引用上方提供的法条，不得引用任何未在法条列表中出现的法律法规。
 【重要】如果提供的法条与用户问题不直接相关，请明确说明"现有检索到的法条不足以回答此问题"，并说明需要什么信息或应查阅哪类法规，不得凭记忆编造法条内容或条文编号。
 如果提供的法条中只有部分与问题直接相关，只引用相关的，忽略无关条文，不要为了引用而引用。
+【公报案例】如果【相关公报案例】中有与问题直接相关的案例：
+1. 裁判规则高度相关时，引用裁判要旨作为法律依据，格式：《案例标题》确立的裁判规则……
+2. 案情事实与用户情况高度吻合时，可引用事实作类比论证，格式：与《案例标题》类似，该案中……本案亦……
+不得捏造或扩大解释案例内容。
+【输出格式要求】在分析正文结束后，另起两行输出以下引用汇总（仅列实际在正文中引用过的内容，未引用则省略该行）：
+【引用法条】《法律名称》第X条、《法律名称》第Y条（用顿号分隔，格式严格为《》第X条）
+【引用案例】《案例标题1》、《案例标题2》（用顿号分隔，仅填标题，不含括号注释）
 """
-        return try await chat(system: systemWithConstraint, user: userMsg)
+        let raw = try await chat(system: systemWithConstraint, user: userMsg)
+        return raw
     }
 
     // MARK: - Step 5: Group synthesis
@@ -1267,13 +1353,13 @@ final class LegalExpertService {
     - 法律判断（谁违约、谁承担责任、行为是否合法）由你独立作出，不要推给提问者判断
     - 【严格限制】只能引用"检索到的法条"中出现的条文。不得引用任何未在检索结果中列出的法律法规，即使你知道相关规定存在。
     - 【重要】如果检索到的法条不足以完整回答问题，明确说明哪部分无法回答及原因，不得编造条文编号或内容。
-    - 【公报案例】如果上下文中提供了"人民法院公报相关案例"，可在回答中自然引用，格式：《案例标题》中确立的裁判规则……
+    - 【公报案例】如果上下文提供了"人民法院公报相关案例"，必须在回答最后单独写一段【参考案例】，格式：【参考案例】《案例标题》：一句话说明该案确立的裁判规则及与本问题的关联（不超过50字）。每个案例单独一行，不要合并。
     格式要求：
     1. 若只有一个问题：开头用一句话复述用户问题（如"关于XXX的问题："），再给出核心结论。
     2. 若有多个子问题：用中文序号（一、二、三）分段，每段开头复述该子问题（如"一、关于彩礼返还："），再给出该问题的结论和分析。
     3. 在分析中直接引用条文编号（如"依据第X条"），不要在末尾单独列出"引用法条"清单。
     4. 如涉及诉讼，注明应去哪个法院。
-    5. 总长度400-800字。
+    5. 总长度400-800字（不含【参考案例】段落）。
     严禁使用任何Markdown格式：不得使用**加粗**、#标题、-列表符号、---分隔线等。用中文序号（一、二、三）、顿号、书名号代替。
     不要说"根据以上"、"综上所述"等空话。直接给结论。
     """ }
@@ -1293,14 +1379,81 @@ final class LegalExpertService {
         var result = "各专家组分析：\n\(groupText)\n\n检索到的法条（供引用）：\n\(citeLines.joined(separator: "\n"))"
         if !gazetteCites.isEmpty {
             let caseSummary = gazetteCites.map { cite in
-                "• 《\(cite.title)》裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : String(cite.rulingGist.prefix(100)))"
+                "• 《\(cite.title)》\n  裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : String(cite.rulingGist.prefix(150)))"
             }.joined(separator: "\n")
-            result += "\n\n人民法院公报相关案例（可在回答中引用）：\n\(caseSummary)"
+            result += "\n\n人民法院公报候选案例（从中选取真正相关的，在回答末尾以【参考案例】格式引用，无相关案例则不写）：\n\(caseSummary)"
         }
         return result
     }
 
     // MARK: - Citation extraction
+
+    /// Parse expert answer for 【引用法条】 and 【引用案例】 marker lines.
+    /// Returns (body without marker lines, [case titles]).
+    /// The law citation line is preserved for citationsFromAnswer to process via regex.
+    /// 从 coordinator 答案里解析 【参考案例】 段，
+    /// 匹配候选列表，返回实际被引用的案例（附上 coordinator 写的说明作为 relevanceReason）
+    private func parseCoordinatorGazetteCitations(
+        answerText: String,
+        candidates: [GazetteCitation]
+    ) -> [GazetteCitation] {
+        var candidateMap: [String: GazetteCitation] = [:]
+        for c in candidates { candidateMap[c.title] = c }
+        var result: [GazetteCitation] = []
+        var seenIds = Set<Int>()
+
+        // 匹配 【参考案例】《标题》：说明 格式
+        let pattern = "【参考案例】《([^》]+)》[：:](.*?)(?=\n【参考案例】|\n\n|$)"
+        if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) {
+            let ns = answerText as NSString
+            let matches = regex.matches(in: answerText, range: NSRange(location: 0, length: ns.length))
+            for m in matches {
+                let title = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+                let reason = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                if let cand = candidateMap[title], seenIds.insert(cand.docId).inserted {
+                    result.append(GazetteCitation(
+                        docId: cand.docId, source: cand.source,
+                        title: cand.title, rulingGist: cand.rulingGist,
+                        strategy: cand.strategy, relevanceReason: reason))
+                }
+            }
+        }
+
+        // fallback：扫描全文中出现的候选案例标题（处理 coordinator 未严格遵守格式的情况）
+        if result.isEmpty {
+            for cand in candidates where answerText.contains(cand.title) {
+                if seenIds.insert(cand.docId).inserted {
+                    result.append(cand)
+                }
+            }
+        }
+
+        return result
+    }
+
+    private func parseExpertCitations(_ raw: String) -> (body: String, caseTitles: [String]) {
+        var caseTitles: [String] = []
+        var bodyLines: [String] = []
+        for line in raw.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("【引用案例】") {
+                let content = trimmed.dropFirst("【引用案例】".count)
+                let titles = content.components(separatedBy: "、")
+                    .map { $0.trimmingCharacters(in: .init(charactersIn: "《》 \t")) }
+                    .filter { !$0.isEmpty }
+                caseTitles = titles
+            } else if trimmed.hasPrefix("【引用法条】") {
+                // Keep in body so citationsFromAnswer can regex-match it
+                bodyLines.append(line)
+            } else {
+                bodyLines.append(line)
+            }
+        }
+        let body = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // 只保留实际在正文中出现过的案例标题
+        let verified = caseTitles.filter { body.contains($0) }
+        return (body, verified)
+    }
 
     // Static regex properties for citationsFromAnswer (compiled once at class load time)
     private static let citationNamedPattern = LegalExpertService.regex(
