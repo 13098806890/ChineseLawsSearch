@@ -59,13 +59,14 @@ struct PaywallView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             planCard(
                                 id: AgentProductID.proYearly,
-                                badge: "推荐 · 省 45%",
+                                badge: "推荐 · 省 35%",
                                 icon: "crown.fill",
                                 title: "年度订阅",
                                 bullets: [
-                                    "¥198/年，折合 ¥16.5/月",
-                                    "无限使用法律顾问与高院公报",
-                                    "无次数限制，随时取消"
+                                    "¥298/年，折合 ¥24.8/月",
+                                    "每月 150 次法律顾问，每月 1 日重置",
+                                    "无限访问高院公报全文",
+                                    "随时取消"
                                 ]
                             )
                             planCard(
@@ -74,8 +75,9 @@ struct PaywallView: View {
                                 icon: "calendar",
                                 title: "月度订阅",
                                 bullets: [
-                                    "¥30/月，按月续费",
-                                    "无限使用法律顾问与高院公报",
+                                    "¥38/月，按月续费",
+                                    "每月 150 次法律顾问，每月 1 日重置",
+                                    "无限访问高院公报全文",
                                     "随时取消"
                                 ]
                             )

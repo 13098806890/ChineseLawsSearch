@@ -9,17 +9,17 @@
 //  ┌──────────────────────────────────────────────────────────────────┐
 //  │ 套餐          Product ID                      类型    建议价格   │
 //  │ ─────────────────────────────────────────────────────────────── │
-//  │ 订阅版月订阅   com.doxie.laws.pro.monthly      月订阅   ¥30/月   │
-//  │ 订阅版年订阅   com.doxie.laws.pro.yearly       年订阅   ¥198/年  │
-//  │   包含内置 Key，解锁法律顾问与公报详情，无次数限制                 │
+//  │ 订阅版月订阅   com.doxie.laws.pro.monthly      月订阅   ¥38/月   │
+//  │ 订阅版年订阅   com.doxie.laws.pro.yearly       年订阅   ¥298/年  │
+//  │   包含内置 Key，每月 150 次，每月 1 日自动重置                    │
 //  └──────────────────────────────────────────────────────────────────┘
 //
 //  权限模型：
-//    .free(remaining)  — 新用户 5 次免费体验，可用法律顾问和公报内容
-//    .pro              — 订阅用户，无限制
-//    .noAccess         — 免费用完且未订阅，法律顾问和公报内容均锁定
+//    .free(remaining)       — 新用户 5 次免费体验，可用法律顾问和公报内容
+//    .pro(remaining: Int)   — 订阅用户，本月剩余次数（满 150 次/月）
+//    .noAccess              — 免费用完且未订阅，法律顾问和公报内容均锁定
 //
-//  免费体验次数存于 UserDefaults（本地），防止 iCloud 不可用时无限重置。
+//  免费体验次数和月度配额均存于 UserDefaults（本地）。
 //  追问回答不消耗次数。
 //
 
@@ -43,8 +43,8 @@ enum AgentProductID {
 enum AgentAccess {
     /// 免费体验次数尚有剩余
     case free(remaining: Int)
-    /// 订阅用户，无限制
-    case pro
+    /// 订阅用户，本月剩余次数
+    case pro(remaining: Int)
     /// 无权限（免费用完且未订阅）
     case noAccess
 }
@@ -60,30 +60,34 @@ final class PurchaseManager: ObservableObject {
     // MARK: - 调试开关（上线前务必确认所有开关状态）
     //
     // paymentEnabled = false → 完全绕过付费，mockAccess 生效
-    // freeTotal 改为 0      → 免费次数用完，强制展示 Paywall
     //
     // mockAccess：paymentEnabled = false 时模拟的权限状态
     //   .free(remaining: 5)   → 模拟有免费次数
-    //   .pro                  → 模拟订阅用户
+    //   .pro(remaining: 150)  → 模拟订阅用户
     //   .noAccess             → 模拟未订阅且免费用完
     // ---------------------------------------------------------------
     static let paymentEnabled: Bool      = false
     #if DEBUG
-    static let mockAccess: AgentAccess   = .pro
+    static let mockAccess: AgentAccess   = .pro(remaining: 150)
     #else
     static let mockAccess: AgentAccess   = .noAccess
     #endif
+    static let proMonthlyTotal: Int      = 150   // 订阅用户每月额度
+
     private let freeTotal: Int           = 5
 
-    // MARK: - UserDefaults keys（免费次数本地存储）
+    // MARK: - UserDefaults keys
     private let ud = UserDefaults.standard
-    private let freeCountKey  = "agent_free_uses_remaining"
-    private let freeInitedKey = "agent_free_inited"
+    private let freeCountKey    = "agent_free_uses_remaining"
+    private let freeInitedKey   = "agent_free_inited"
+    private let proCountKey     = "agent_pro_uses_remaining"
+    private let proMonthKey     = "agent_pro_quota_month"   // "YYYY-MM"
 
     // MARK: - Published state
     @Published private(set) var products:      [Product] = []
     @Published private(set) var hasPRO:        Bool = false
     @Published private(set) var freeRemaining: Int  = 0
+    @Published private(set) var proRemaining:  Int  = 0
 
     private enum ConsumedPath { case free, pro, none }
     private var lastConsumedPath: ConsumedPath = .none
@@ -92,6 +96,7 @@ final class PurchaseManager: ObservableObject {
 
     init() {
         freeRemaining = remainingFreeUses()
+        proRemaining  = remainingProUses()
         updateListenerTask = listenForTransactions()
         Task { await loadProducts(); await refreshPurchaseStatus() }
     }
@@ -106,7 +111,7 @@ final class PurchaseManager: ObservableObject {
         if !Self.paymentEnabled { return Self.mockAccess }
         let free = freeRemaining
         if free > 0 { return .free(remaining: free) }
-        if hasPRO   { return .pro }
+        if hasPRO   { return .pro(remaining: proRemaining) }
         return .noAccess
     }
 
@@ -127,7 +132,6 @@ final class PurchaseManager: ObservableObject {
             default:        return true
             }
         }
-        // 追问不消耗次数
         if isFollowUp {
             switch access {
             case .free, .pro: return true
@@ -143,8 +147,16 @@ final class PurchaseManager: ObservableObject {
             return true
         }
         if hasPRO {
-            lastConsumedPath = .pro
-            return true
+            let pro = remainingProUses()
+            if pro > 0 {
+                let newVal = pro - 1
+                ud.set(newVal, forKey: proCountKey)
+                proRemaining = max(0, newVal)
+                lastConsumedPath = .pro
+                return true
+            }
+            // 月度配额用完
+            return false
         }
         return false
     }
@@ -152,11 +164,19 @@ final class PurchaseManager: ObservableObject {
     /// 网络失败等不可控错误时退还已消耗的计数。
     func refundIfNeeded() {
         if !Self.paymentEnabled { return }
-        if case .free = lastConsumedPath {
-            let current = ud.integer(forKey: freeCountKey)
+        switch lastConsumedPath {
+        case .free:
+            let current  = ud.integer(forKey: freeCountKey)
             let restored = min(current + 1, freeTotal)
             ud.set(restored, forKey: freeCountKey)
             freeRemaining = restored
+        case .pro:
+            let current  = ud.integer(forKey: proCountKey)
+            let restored = min(current + 1, Self.proMonthlyTotal)
+            ud.set(restored, forKey: proCountKey)
+            proRemaining = restored
+        case .none:
+            break
         }
         lastConsumedPath = .none
     }
@@ -205,6 +225,23 @@ final class PurchaseManager: ObservableObject {
         return ud.integer(forKey: freeCountKey)
     }
 
+    private func remainingProUses() -> Int {
+        let currentMonth = Self.currentMonthString()
+        if ud.string(forKey: proMonthKey) != currentMonth {
+            ud.set(Self.proMonthlyTotal, forKey: proCountKey)
+            ud.set(currentMonth, forKey: proMonthKey)
+        }
+        return ud.integer(forKey: proCountKey)
+    }
+
+    private static func currentMonthString() -> String {
+        let cal = Calendar.current
+        let now = Date()
+        let y   = cal.component(.year, from: now)
+        let m   = cal.component(.month, from: now)
+        return String(format: "%04d-%02d", y, m)
+    }
+
     func refreshPurchaseStatus() async {
         var pro = false
         for await result in Transaction.currentEntitlements {
@@ -213,6 +250,7 @@ final class PurchaseManager: ObservableObject {
         }
         hasPRO        = pro
         freeRemaining = remainingFreeUses()
+        proRemaining  = remainingProUses()
     }
 
     private func listenForTransactions() -> Task<Void, Never> {

@@ -150,10 +150,10 @@ struct LegalChatView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
-                    case .pro:
+                    case .pro(let remaining):
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(.secondary)
-                            Text("已订阅 · 无限使用")
+                            Text("已订阅 · 本月剩余 \(remaining) 次")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 16)

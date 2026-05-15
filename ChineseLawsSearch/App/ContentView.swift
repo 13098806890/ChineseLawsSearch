@@ -365,16 +365,18 @@ private struct SettingsSheet: View {
                 // MARK: Agent 解锁状态
                 Section {
                     switch pm.access {
-                    case .pro:
+                    case .pro(let remaining):
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("已订阅 · 无限使用", systemImage: "checkmark.seal.fill")
+                            Label("已订阅", systemImage: "checkmark.seal.fill")
                                 .foregroundStyle(.green)
+                            Text("本月剩余 \(remaining) 次 · 每月 1 日自动重置")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     case .free(let remaining):
                         HStack {
                             Label("免费剩余 \(remaining) 次", systemImage: "gift")
                             Spacer()
-                            Button("解锁无限使用") { showPaywall = true }
+                            Button("订阅解锁") { showPaywall = true }
                                 .font(.footnote)
                                 .foregroundStyle(AppColors.shared.searchHighlight)
                         }
@@ -393,11 +395,11 @@ private struct SettingsSheet: View {
                 } footer: {
                     switch pm.access {
                     case .pro:
-                        Text("订阅版：无限使用法律顾问与高院公报全文。")
+                        Text("订阅版：每月 150 次法律顾问，每月 1 日重置，无限访问高院公报全文。")
                     case .free(let remaining):
-                        Text("每位新用户赠送 5 次免费体验，剩余 \(remaining) 次。订阅后可无限使用。")
+                        Text("每位新用户赠送 5 次免费体验，剩余 \(remaining) 次。订阅后每月 150 次。")
                     case .noAccess:
-                        Text("免费体验已用完，订阅后即可无限使用法律顾问与高院公报全文。")
+                        Text("免费体验已用完，订阅后每月 150 次法律顾问，同时解锁高院公报全文。")
                     }
                 }
 
