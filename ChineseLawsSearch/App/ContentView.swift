@@ -416,7 +416,6 @@ private struct SettingsSheet: View {
                 }
 
                 Section {
-                    Toggle("仅搜索法律标题", isOn: $userStore.searchTitleOnly)
                     Toggle("搜索时忽略条号匹配", isOn: $userStore.searchExcludeArtNum)
                     Picker("搜索结果上限", selection: $userStore.searchResultLimit) {
                         Text("50 条").tag(50)
