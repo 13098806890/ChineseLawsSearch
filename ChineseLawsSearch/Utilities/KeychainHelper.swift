@@ -16,7 +16,6 @@ enum KeychainHelper {
         ]
         let status = SecItemAdd(query.merging([kSecValueData: data]) { _, new in new } as CFDictionary, nil)
         if status == errSecDuplicateItem {
-            // Already exists — update in place (atomic, no delete+add gap)
             SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
         } else if status != errSecSuccess {
             print("[KeychainHelper] SecItemAdd failed for key '\(key)': OSStatus \(status)")
@@ -24,7 +23,6 @@ enum KeychainHelper {
     }
 
     static func load(forKey key: String) -> String? {
-        // Try synchronizable item first (current format)
         let syncQuery: [CFString: Any] = [
             kSecClass:                kSecClassGenericPassword,
             kSecAttrAccount:          key,
@@ -39,7 +37,6 @@ enum KeychainHelper {
             return value
         }
 
-        // Fall back to legacy non-synchronizable item and migrate it
         let legacyQuery: [CFString: Any] = [
             kSecClass:                kSecClassGenericPassword,
             kSecAttrAccount:          key,
@@ -51,7 +48,7 @@ enum KeychainHelper {
         if SecItemCopyMatching(legacyQuery as CFDictionary, &result) == errSecSuccess,
            let data = result as? Data,
            let value = String(data: data, encoding: .utf8) {
-            save(value, forKey: key)   // migrate to synchronizable format
+            save(value, forKey: key)
             return value
         }
 
@@ -59,12 +56,48 @@ enum KeychainHelper {
     }
 
     static func delete(forKey key: String) {
-        // Delete both synchronizable and legacy (non-synchronizable) items
         let base: [CFString: Any] = [
             kSecClass:       kSecClassGenericPassword,
             kSecAttrAccount: key
         ]
         SecItemDelete(base.merging([kSecAttrSynchronizable: kCFBooleanTrue!]) { _, new in new } as CFDictionary)
         SecItemDelete(base.merging([kSecAttrSynchronizable: kSecAttrSynchronizableAny]) { _, new in new } as CFDictionary)
+    }
+
+    // MARK: - Device-local data storage (not synced to iCloud)
+
+    static func saveLocalData(_ data: Data, forKey key: String) {
+        let query: [CFString: Any] = [
+            kSecClass:               kSecClassGenericPassword,
+            kSecAttrAccount:         key,
+            kSecAttrSynchronizable:  kCFBooleanFalse!,
+            kSecAttrAccessible:      kSecAttrAccessibleAfterFirstUnlock
+        ]
+        let status = SecItemAdd(query.merging([kSecValueData: data]) { _, new in new } as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        }
+    }
+
+    static func loadLocalData(forKey key: String) -> Data? {
+        let query: [CFString: Any] = [
+            kSecClass:               kSecClassGenericPassword,
+            kSecAttrAccount:         key,
+            kSecAttrSynchronizable:  kCFBooleanFalse!,
+            kSecReturnData:          true,
+            kSecMatchLimit:          kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+        return result as? Data
+    }
+
+    static func deleteLocalData(forKey key: String) {
+        let query: [CFString: Any] = [
+            kSecClass:              kSecClassGenericPassword,
+            kSecAttrAccount:        key,
+            kSecAttrSynchronizable: kCFBooleanFalse!
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 }
