@@ -209,7 +209,8 @@ struct ContentView: View {
                 NavigationStack {
                     GazetteView(selectedDoc: $selectedGazetteDoc,
                                 navigate: navigate,
-                                navigateToLaw: { selectedGazetteDoc = nil; selectedGazetteLaw = $0 })
+                                navigateToLaw: { selectedGazetteDoc = nil; selectedGazetteLaw = $0 },
+                                onSelectDoc: selectGazetteDoc)
                         .navigationDestination(item: $selectedGazetteDoc) { doc in
                             GazetteDetailView(
                                 doc: doc,
@@ -230,7 +231,8 @@ struct ContentView: View {
                 NavigationSplitView {
                     GazetteView(selectedDoc: $selectedGazetteDoc,
                                 navigate: navigate,
-                                navigateToLaw: { selectedGazetteDoc = nil; selectedGazetteLaw = $0 })
+                                navigateToLaw: { selectedGazetteDoc = nil; selectedGazetteLaw = $0 },
+                                onSelectDoc: selectGazetteDoc)
                 } detail: {
                     if let lawTarget = selectedGazetteLaw {
                         LawDetailView(target: lawTarget, navigate: navigate,
@@ -300,6 +302,13 @@ struct ContentView: View {
         gazetteNavigatedFromBrowse = (tab == .browse)
         gazetteNavigatedFromChat   = (tab == .chat)
         tab = .gongbao
+        selectedGazetteLaw = nil
+        selectedGazetteDoc = doc
+    }
+
+    /// Used by GazetteView's own list — gates access before setting selectedDoc.
+    func selectGazetteDoc(_ doc: GazetteDoc) {
+        guard pm.canViewGazetteDetail else { showPaywall = true; return }
         selectedGazetteLaw = nil
         selectedGazetteDoc = doc
     }

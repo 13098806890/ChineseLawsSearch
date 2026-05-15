@@ -51,6 +51,8 @@ struct GazetteView: View {
     @Binding var selectedDoc: GazetteDoc?
     var navigate: (Int, Int?) -> Void = { _, _ in }
     var navigateToLaw: (LawTarget) -> Void = { _ in }
+    /// Called when the user taps a doc row — ContentView gates access before setting selectedDoc.
+    var onSelectDoc: (GazetteDoc) -> Void = { _ in }
 
     @State private var selectedSource: GazetteSource = .guidingCase
     @State private var searchText: String = ""
@@ -178,15 +180,21 @@ struct GazetteView: View {
             List(docs, selection: isCompact ? nil : $selectedDoc) { doc in
                 if isCompact {
                     Button {
-                        selectedDoc = doc
+                        onSelectDoc(doc)
                     } label: {
                         GazetteDocRow(doc: doc)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 } else {
-                    GazetteDocRow(doc: doc)
-                        .tag(doc)
+                    Button {
+                        onSelectDoc(doc)
+                    } label: {
+                        GazetteDocRow(doc: doc)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .tag(doc)
                 }
             }
             .listStyle(.plain)
