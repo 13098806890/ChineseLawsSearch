@@ -29,11 +29,13 @@ struct ContentView: View {
     @State private var selectedGazetteLaw: LawTarget?
     @State private var showSettings = false
     @State private var showWelcome = false
+    @State private var showPaywall = false
     @State private var backStack: [BackItem] = []
 
     @StateObject private var userStore    = UserStore()
     @StateObject private var chatVM       = LegalChatViewModel()
     @StateObject private var historyStore = ChatHistoryStore()
+    @ObservedObject private var pm = PurchaseManager.shared
 
     enum Tab { case browse, chat, favorites, gongbao }
 
@@ -90,6 +92,9 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             SettingsSheet()
                 .environmentObject(userStore)
+        }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView(pm: pm)
         }
         .sheet(isPresented: $showWelcome) {
             NavigationStack {
@@ -291,6 +296,7 @@ struct ContentView: View {
     @State private var gazetteNavigatedFromChat   = false
 
     func navigateToGazette(_ doc: GazetteDoc) {
+        guard pm.canViewGazetteDetail else { showPaywall = true; return }
         gazetteNavigatedFromBrowse = (tab == .browse)
         gazetteNavigatedFromChat   = (tab == .chat)
         tab = .gongbao
@@ -351,22 +357,7 @@ private struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var pm = PurchaseManager.shared
     @State private var showPaywall = false
-    @State private var savedKeys: [String: String] = {
-        var d: [String: String] = [:]
-        for p in LLMProviderRegistry.all where !p.keychainKey.isEmpty {
-            d[p.id] = KeychainHelper.load(forKey: p.keychainKey) ?? ""
-        }
-        return d
-    }()
-    @State private var savedFeedback: String? = nil
     @State private var showWelcome = false
-    @State private var showDeleteKeyConfirm = false
-    @State private var testStatus: TestStatus = .idle
-
-    enum TestStatus {
-        case idle, testing, success, failure(String)
-        var isLoading: Bool { if case .testing = self { return true }; return false }
-    }
 
     var body: some View {
         NavigationStack {
@@ -374,22 +365,10 @@ private struct SettingsSheet: View {
                 // MARK: Agent 解锁状态
                 Section {
                     switch pm.access {
-                    case .pro(let remaining):
+                    case .pro:
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("畅用版已激活", systemImage: "checkmark.seal.fill")
+                            Label("已订阅 · 无限使用", systemImage: "checkmark.seal.fill")
                                 .foregroundStyle(.green)
-                            Text("本周剩余 \(remaining) 次 · 每周一自动重置")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    case .basic:
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label(pm.hasPRO ? "畅用版已激活 · 自备 Key 优先" : "基础版已激活",
-                                  systemImage: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
-                            if pm.hasPRO {
-                                Text("您的 API Key 优先使用，不消耗每周额度")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
                         }
                     case .free(let remaining):
                         HStack {
@@ -404,7 +383,7 @@ private struct SettingsSheet: View {
                             Label("免费次数已用完", systemImage: "exclamationmark.circle")
                                 .foregroundStyle(.orange)
                             Spacer()
-                            Button("购买解锁") { showPaywall = true }
+                            Button("订阅解锁") { showPaywall = true }
                                 .font(.footnote)
                                 .foregroundStyle(AppColors.shared.searchHighlight)
                         }
@@ -414,15 +393,11 @@ private struct SettingsSheet: View {
                 } footer: {
                     switch pm.access {
                     case .pro:
-                        Text("畅用版：内置 Key 已为您配置，每周 \(PurchaseManager.proWeeklyTotal) 次额度，每周一重置。")
-                    case .basic:
-                        Text(userStore.apiKeyConfigured
-                             ? "基础版：使用您自己的 API Key，无次数限制。"
-                             : "基础版已激活。请在下方配置 DeepSeek API Key 以开始使用。")
+                        Text("订阅版：无限使用法律顾问与高院公报全文。")
                     case .free(let remaining):
-                        Text("每位用户免费赠送 5 次体验，剩余 \(remaining) 次。\n畅用版包含内置 Key 每周 \(PurchaseManager.proWeeklyTotal) 次；基础版需自备 Key 但无次数限制。")
+                        Text("每位新用户赠送 5 次免费体验，剩余 \(remaining) 次。订阅后可无限使用。")
                     case .noAccess:
-                        Text("免费体验已用完。\n· 畅用版：内置 Key，每周 \(PurchaseManager.proWeeklyTotal) 次，无需配置\n· 基础版：需自备 DeepSeek API Key，无次数限制")
+                        Text("免费体验已用完，订阅后即可无限使用法律顾问与高院公报全文。")
                     }
                 }
 
@@ -460,124 +435,9 @@ private struct SettingsSheet: View {
 
                 Section {
                     Toggle("显示思考过程", isOn: $userStore.showThinking)
-
-                    if case .basic = pm.access {
-                        Picker("分析模式", selection: $userStore.chatQualityMode) {
-                            Text("节省").tag("economy")
-                            Text("标准").tag("standard")
-                            Text("详细").tag("detailed")
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: userStore.chatQualityMode) {
-                            userStore.applyQualityMode(userStore.chatQualityMode)
-                        }
-                    }
                 } header: {
                     Text("对话")
-                } footer: {
-                    if case .basic = pm.access {
-                        switch userStore.chatQualityMode {
-                        case "economy":
-                            Text("节省模式：追问 1 轮，上下文法条 15 条，参考法条 5 条。回答更简洁，消耗 token 最少。")
-                        case "detailed":
-                            Text("详细模式：追问 5 轮，法条上下文与引用数量不设上限。分析最全面，消耗 token 最多。")
-                        default:
-                            Text("标准模式：追问 3 轮，上下文法条 40 条，参考法条 80 条。兼顾质量与成本。")
-                        }
-                    } else {
-                        Text("畅用版使用标准分析模式。")
-                    }
                 }
-
-                // AI 模型与 API Key — 始终显示（pro+自备Key 优先走自备Key，不消耗额度）
-                Section {
-                    let deepseek = LLMProviderRegistry.provider(id: "deepseek")!
-                    HStack {
-                        Label(deepseek.displayName, systemImage: "cpu")
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(AppColors.shared.searchHighlight)
-                            .font(.footnote.bold())
-                    }
-                } header: {
-                    Text("AI 模型")
-                } footer: {
-                    Text("当前使用 DeepSeek，需在下方填入您的 API Key。DeepSeek 新用户注册即有免费额度，价格低廉，国内可直连。")
-                }
-
-                let provider = LLMProviderRegistry.provider(id: "deepseek")!
-                let currentKey = KeychainHelper.load(forKey: provider.keychainKey) ?? ""
-                Section {
-                        HStack {
-                            SecureField("粘贴 DeepSeek API Key…", text: Binding(
-                                get: { savedKeys[provider.id] ?? "" },
-                                set: { savedKeys[provider.id] = $0 }
-                            ))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            switch testStatus {
-                            case .testing:
-                                ProgressView().scaleEffect(0.8)
-                            case .success:
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            case .failure:
-                                Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-                            case .idle:
-                                EmptyView()
-                            }
-                        }
-                        Button {
-                            Task { await saveKeyWithTest(provider: provider) }
-                        } label: {
-                            if testStatus.isLoading {
-                                HStack(spacing: 6) {
-                                    ProgressView().scaleEffect(0.8)
-                                    Text("验证中…")
-                                }
-                            } else {
-                                Text("验证并保存")
-                            }
-                        }
-                        .disabled((savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || testStatus.isLoading)
-                        if case .failure(let msg) = testStatus {
-                            Label(msg, systemImage: "xmark.circle.fill")
-                                .foregroundStyle(.red).font(.footnote)
-                        }
-                        if !currentKey.isEmpty {
-                            Button(role: .destructive) {
-                                showDeleteKeyConfirm = true
-                            } label: {
-                                Label { Text("删除已保存的 Key") } icon: {
-                                    Image(systemName: "trash")
-                                        .font(.footnote)
-                                        .foregroundStyle(.red)
-                                }
-                            }
-                            .confirmationDialog("确认删除 API Key？", isPresented: $showDeleteKeyConfirm, titleVisibility: .visible) {
-                                Button("删除", role: .destructive) {
-                                    KeychainHelper.delete(forKey: provider.keychainKey)
-                                    savedKeys[provider.id] = ""
-                                    userStore.refreshAPIKeyState()
-                                    testStatus = .idle
-                                }
-                                Button("取消", role: .cancel) {}
-                            } message: {
-                                Text("删除后法律顾问功能将无法使用，需重新填入 Key。")
-                            }
-                        }
-                        if let url = provider.keyURL {
-                            Link("前往 DeepSeek 获取 API Key →", destination: url)
-                                .font(.footnote)
-                        }
-                    } header: {
-                        Text("DeepSeek API Key")
-                    } footer: {
-                        Text(currentKey.isEmpty
-                             ? "尚未配置 API Key，法律顾问功能暂不可用。"
-                             : "Key 加密存储在系统 Keychain 中，不会上传至任何服务器。")
-                            .font(.caption)
-                    }
                 let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
                 let build   = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
                 Section {
@@ -608,38 +468,6 @@ private struct SettingsSheet: View {
             .sheet(isPresented: $showPaywall) {
                 PaywallView(pm: pm)
             }
-        }
-    }
-
-    @MainActor
-    private func saveKeyWithTest(provider: any LLMProvider) async {
-        let trimmed = (savedKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        testStatus = .testing
-        KeychainHelper.save(trimmed, forKey: provider.keychainKey)
-        do {
-            _ = try await provider.chat(
-                messages: [["role": "user", "content": "hi"]],
-                temperature: 0
-            )
-            testStatus = .success
-            userStore.refreshAPIKeyState()
-            savedFeedback = provider.id
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if case .success = testStatus { testStatus = .idle }
-        } catch LLMError.apiKeyMissing {
-            KeychainHelper.delete(forKey: provider.keychainKey)
-            userStore.refreshAPIKeyState()
-            testStatus = .failure("Key 未配置")
-        } catch LLMError.apiKeyInvalid {
-            KeychainHelper.delete(forKey: provider.keychainKey)
-            userStore.refreshAPIKeyState()
-            testStatus = .failure("Key 无效，请检查后重试")
-        } catch {
-            // Network error — keep key saved (could be temporary)
-            testStatus = .failure("网络错误，Key 已保存")
-            userStore.refreshAPIKeyState()
-            savedFeedback = provider.id
         }
     }
 }

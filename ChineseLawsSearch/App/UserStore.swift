@@ -77,7 +77,6 @@ final class UserStore: ObservableObject {
     func refreshAPIKeyState() {
         let k = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
         apiKeyConfigured = !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        PurchaseManager.shared.notifyKeyChanged()
     }
 
     // MARK: - 阅读记录（当前 target）
@@ -150,10 +149,7 @@ final class UserStore: ObservableObject {
 
     /// 实际生效的质量模式：基础版（自备Key）尊重用户设置，其余锁定标准
     private var effectiveQualityMode: String {
-        switch PurchaseManager.shared.access {
-        case .basic: return chatQualityMode
-        default:     return "standard"
-        }
+        return "standard"
     }
 
     struct QualitySettings {

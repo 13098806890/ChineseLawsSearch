@@ -24,9 +24,9 @@ struct PaywallView: View {
                         Image(systemName: "scale.3d")
                             .font(.system(size: 52))
                             .foregroundStyle(AppColors.shared.searchHighlight)
-                        Text("法律顾问")
+                        Text("解锁完整功能")
                             .font(.title.bold())
-                        Text("AI 多专家协作分析，精准引用相关法条，\n帮您梳理法律关系、明确维权路径。")
+                        Text("订阅后可无限使用法律顾问与高院公报全文，\n享受 AI 多专家协作分析与精准法条引用。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -35,9 +35,9 @@ struct PaywallView: View {
 
                     // MARK: Features
                     VStack(alignment: .leading, spacing: 10) {
-                        featureRow("案情分析", "多专家并发分析，拆分复杂纠纷")
-                        featureRow("法条检索", "精准引用相关条文，一键跳转原文")
-                        featureRow("法律咨询", "知识问答，流式实时输出")
+                        featureRow("法律顾问", "多专家并发分析，精准引用相关法条")
+                        featureRow("高院公报全文", "指导案例、裁判文书、司法文件完整阅读")
+                        featureRow("公报案例引用", "回答中自动关联同类指导案例与裁判规则")
                         featureRow("对话历史", "自动保存，iCloud 多设备同步")
                     }
                     .padding(.horizontal)
@@ -48,7 +48,6 @@ struct PaywallView: View {
                     if pm.products.isEmpty {
                         VStack(spacing: 12) {
                             ProgressView("加载中…").padding()
-                            // Allow manual retry in case StoreKit failed silently
                             Button("重试") {
                                 Task { await pm.loadProducts() }
                             }
@@ -58,52 +57,26 @@ struct PaywallView: View {
                         .padding()
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
-
-                            // ── 畅用版 ──────────────────────────────────
-                            Text("畅用版")
-                                .font(.footnote.bold())
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal)
-
                             planCard(
                                 id: AgentProductID.proYearly,
-                                badge: "推荐",
-                                icon: "key.fill",
-                                title: "畅用版 · 年度订阅",
+                                badge: "推荐 · 省 45%",
+                                icon: "crown.fill",
+                                title: "年度订阅",
                                 bullets: [
-                                    "内置 Key，无需自备，开箱即用",
-                                    "每周 \(PurchaseManager.proWeeklyTotal) 次额度，每周一自动重置",
-                                    "月均折合更优惠，按年续费"
+                                    "¥198/年，折合 ¥16.5/月",
+                                    "无限使用法律顾问与高院公报",
+                                    "无次数限制，随时取消"
                                 ]
                             )
                             planCard(
                                 id: AgentProductID.proMonthly,
                                 badge: nil,
-                                icon: "key.fill",
-                                title: "畅用版 · 月度订阅",
+                                icon: "calendar",
+                                title: "月度订阅",
                                 bullets: [
-                                    "内置 Key，无需自备，开箱即用",
-                                    "每周 \(PurchaseManager.proWeeklyTotal) 次额度，每周一自动重置",
-                                    "按月续费，随时取消"
-                                ]
-                            )
-
-                            // ── 基础版 ──────────────────────────────────
-                            Text("基础版")
-                                .font(.footnote.bold())
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal)
-                                .padding(.top, 8)
-
-                            planCard(
-                                id: AgentProductID.basic,
-                                badge: nil,
-                                icon: "wrench.and.screwdriver",
-                                title: "基础版 · 买断",
-                                bullets: [
-                                    "解锁 Agent 功能，一次付费永久可用",
-                                    "需自备 DeepSeek API Key（注册即有免费额度）",
-                                    "自备 Key 无次数限制"
+                                    "¥30/月，按月续费",
+                                    "无限使用法律顾问与高院公报",
+                                    "随时取消"
                                 ]
                             )
                         }
@@ -122,7 +95,7 @@ struct PaywallView: View {
                             isRestoring = true
                             await pm.restorePurchases()
                             isRestoring = false
-                            if pm.hasBASIC || pm.hasPRO { dismiss() }
+                            if pm.hasPRO { dismiss() }
                         }
                     } label: {
                         if isRestoring { ProgressView() }
@@ -130,8 +103,7 @@ struct PaywallView: View {
                     }
                     .padding(.bottom, 4)
 
-                    // App Store 自动续费披露（Guideline 3.1.2 要求）
-                    Text("畅用版为自动续费订阅。订阅将在当前周期结束前 24 小时自动续费，费用从 Apple ID 账户中扣除。可随时在 App Store「订阅」中取消，取消后当前周期结束前仍可使用。")
+                    Text("订阅将在当前周期结束前 24 小时自动续费，费用从 Apple ID 账户中扣除。可随时在 App Store「订阅」中取消，取消后当前周期结束前仍可使用。")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center)
@@ -139,7 +111,7 @@ struct PaywallView: View {
                         .padding(.bottom, 16)
                 }
             }
-            .navigationTitle("解锁完整功能")
+            .navigationTitle("订阅律疏")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -159,7 +131,7 @@ struct PaywallView: View {
         title: String,
         bullets: [String]
     ) -> some View {
-        let product    = pm.products.first { $0.id == id }
+        let product     = pm.products.first { $0.id == id }
         let isHighlight = badge != nil
         let isBuying    = purchasing == id
 
@@ -178,7 +150,6 @@ struct PaywallView: View {
             }
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                // Title row
                 HStack(spacing: 6) {
                     Image(systemName: icon)
                         .font(.subheadline)
@@ -203,7 +174,6 @@ struct PaywallView: View {
                         ProgressView().scaleEffect(0.7)
                     }
                 }
-                // Bullets
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(bullets, id: \.self) { b in
                         HStack(alignment: .top, spacing: 6) {

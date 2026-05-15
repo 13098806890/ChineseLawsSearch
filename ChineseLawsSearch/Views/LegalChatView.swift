@@ -38,19 +38,11 @@ struct LegalChatView: View {
     @FocusState private var inputFocused: Bool
     @EnvironmentObject private var userStore: UserStore
 
-    private var hasAPIKey: Bool { userStore.apiKeyConfigured }
-
-    /// 是否允许使用 Agent：
-    /// - .free  → 内置 Key，直接可用
-    /// - .basic → 需自备 Key
-    /// - .pro   → 内置 Key，有每周额度，额度为 0 时不可用
-    /// - .noAccess → 不可用
+    /// 是否允许使用 Agent：免费次数剩余或已订阅
     private var canUseAgent: Bool {
         switch pm.access {
-        case .free:                       return true
-        case .basic:                      return hasAPIKey
-        case .pro(let remaining):         return remaining > 0
-        case .noAccess:                   return false
+        case .free, .pro: return true
+        case .noAccess:   return false
         }
     }
 
@@ -115,16 +107,9 @@ struct LegalChatView: View {
                     }
                     // Input bar
                     HStack(alignment: .center, spacing: 8) {
-                        TextField({
-                            if !canUseAgent {
-                                switch pm.access {
-                                case .basic:                  return "请在设置中配置 API Key…"
-                                case .pro(let r) where r == 0: return "本周额度已用完，下周一恢复…"
-                                default:                       return "购买后即可使用法律顾问…"
-                                }
-                            }
-                            return vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…"
-                        }(),
+                        TextField(canUseAgent
+                                  ? (vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…")
+                                  : "订阅后即可使用法律顾问…",
                                   text: $vm.inputText, axis: .vertical)
                             .lineLimit(1...5)
                             .padding(.horizontal, 12)
@@ -134,12 +119,7 @@ struct LegalChatView: View {
                             .disabled(vm.isThinking || !canUseAgent)
                             .focused($inputFocused)
                             .onTapGesture {
-                                if !canUseAgent {
-                                    switch pm.access {
-                                    case .basic:  onOpenSettings?()
-                                    default:      showPaywall = true
-                                    }
-                                }
+                                if !canUseAgent { showPaywall = true }
                             }
                         Button {
                             vm.sendTask = Task { await vm.send(historyStore: historyStore, gazetteNotes: userStore.gazetteNotes) }
@@ -170,33 +150,10 @@ struct LegalChatView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
-                    case .basic:
-                        if !hasAPIKey {
-                            HStack(spacing: 4) {
-                                Image(systemName: "key.slash").font(.caption2).foregroundStyle(.orange)
-                                Text("请在设置中配置 API Key 以继续使用")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                Button { onOpenSettings?() } label: {
-                                    Text("前往设置")
-                                        .font(.caption2)
-                                        .foregroundStyle(AppColors.shared.searchHighlight)
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 6)
-                        } else {
-                            let isPro = pm.hasPRO
-                            HStack(spacing: 4) {
-                                Image(systemName: "key.fill").font(.caption2).foregroundStyle(.secondary)
-                                Text(isPro ? "畅用版 · 自备 Key 优先，无次数限制" : "基础版 · 自备 Key，无次数限制")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 6)
-                        }
-                    case .pro(let remaining):
+                    case .pro:
                         HStack(spacing: 4) {
-                            Text("畅用版 · 本周剩余 \(remaining) 次")
+                            Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(.secondary)
+                            Text("已订阅 · 无限使用")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 16)
@@ -208,7 +165,7 @@ struct LegalChatView: View {
                             Text("·")
                                 .font(.caption2).foregroundStyle(.secondary)
                             Button { showPaywall = true } label: {
-                                Text("购买解锁")
+                                Text("订阅解锁")
                                     .font(.caption2)
                                     .foregroundStyle(AppColors.shared.searchHighlight)
                             }
@@ -240,27 +197,7 @@ struct LegalChatView: View {
                         Spacer().frame(height: 8)
                     }
                     #else
-                    if case .basic = pm.access {
-                        if totalTokens > 0 {
-                            HStack(spacing: 12) {
-                                Spacer()
-                                Label("\(formatTokens(totalPrompt))", systemImage: "arrow.up")
-                                Label("\(formatTokens(totalCompletion))", systemImage: "arrow.down")
-                                Text("共 \(formatTokens(totalTokens)) tokens")
-                                let cost = Double(totalPrompt)     / 1_000_000 * 0.27
-                                         + Double(totalCompletion) / 1_000_000 * 1.10
-                                Text("≈ ¥\(String(format: cost < 0.01 ? "%.4f" : "%.3f", cost))")
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 4)
-                        } else {
-                            Spacer().frame(height: 8)
-                        }
-                    } else {
-                        Spacer().frame(height: 8)
-                    }
+                    Spacer().frame(height: 8)
                     #endif
                 }
                 .background(.bar)

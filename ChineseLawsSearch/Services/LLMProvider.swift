@@ -324,20 +324,9 @@ enum LLMProviderRegistry {
         return provider(id: saved) ?? DeepSeekProvider()
     }
 
-    /// Agent 功能专用 provider：
-    ///
-    /// 选 key 优先级：
-    ///   1. 用户自备 Key（任何套餐均可用）
-    ///   2. 内置 Key（仅 .free / .pro 可用，.basic 不可回退到内置 Key）
-    ///
-    /// 调用方须先通过 `PurchaseManager.shared.consumeIfAllowed()` 确认有权限，
-    /// 再调用本属性；此处不做二次权限校验。
+    /// Agent 功能专用 provider：始终使用内置 Key，不暴露给用户。
     static var agentProvider: any LLMProvider {
-        if PurchaseManager.shared.hasUserKey {
-            return DeepSeekProvider()
-        }
-        // 无用户 Key → 只有 free / pro 可以使用内置 Key
-        return BuiltinDeepSeekProvider()
+        BuiltinDeepSeekProvider()
     }
 }
 
