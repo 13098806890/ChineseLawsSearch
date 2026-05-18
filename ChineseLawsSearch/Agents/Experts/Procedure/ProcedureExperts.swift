@@ -12,8 +12,6 @@ let civilProcedureExpert = SubExpert(
     name: "民事诉讼专家",
     domain: "管辖、起诉、诉讼代理、证据、审判、执行、保全、案外人救济、民刑交叉",
     requiredInfo: [
-        RequiredInfo(field: "纠纷类型",       question: "属于哪类民事纠纷（合同/侵权/婚姻/劳动/房屋/执行异议）？",
-                     regexHint: "合同|侵权|婚姻|劳动|房屋|租赁|借款|离婚|继承|执行异议|案外人"),
         RequiredInfo(field: "是否有保全需求", question: "是否需要财产保全（防止被告转移财产）？",
                      regexHint: "保全|查封|冻结|扣押|转移财产|跑路"),
     ],

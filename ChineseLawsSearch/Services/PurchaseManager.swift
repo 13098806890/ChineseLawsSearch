@@ -62,17 +62,8 @@ final class PurchaseManager: ObservableObject {
     static let shared = PurchaseManager()
 
     // ---------------------------------------------------------------
-    // MARK: - 编译条件控制（不留运行时开关在生产包中）
-    //
-    // DEBUG 构建：绕过付费，mockAccess 生效
-    // Release 构建：强制走 StoreKit 真实逻辑
+    // MARK: - 编译条件控制
     // ---------------------------------------------------------------
-    #if DEBUG
-    private static let paymentEnabled = false
-    private static let mockAccess: AgentAccess = .pro(remaining: 150)
-    #else
-    private static let paymentEnabled = true
-    #endif
 
     static let proMonthlyTotal: Int = 150
 
@@ -108,9 +99,6 @@ final class PurchaseManager: ObservableObject {
     // MARK: - Access control
 
     var access: AgentAccess {
-        #if DEBUG
-        if !Self.paymentEnabled { return Self.mockAccess }
-        #endif
         let free = freeRemaining
         if free > 0 { return .free(remaining: free) }
         if hasPRO   { return .pro(remaining: proRemaining) }
@@ -119,8 +107,8 @@ final class PurchaseManager: ObservableObject {
 
     var canViewGazetteDetail: Bool {
         switch access {
-        case .free, .pro: return true
-        case .noAccess:   return false
+        case .pro: return true
+        case .free, .noAccess: return false
         }
     }
 
@@ -128,12 +116,6 @@ final class PurchaseManager: ObservableObject {
     /// 追问传 isFollowUp=true 不消耗次数。
     func consumeIfAllowed(isFollowUp: Bool = false) -> Bool {
         lastConsumedPath = .none
-        #if DEBUG
-        if !Self.paymentEnabled {
-            if case .noAccess = Self.mockAccess { return false }
-            return true
-        }
-        #endif
         if isFollowUp {
             switch access {
             case .free, .pro: return true
@@ -166,9 +148,6 @@ final class PurchaseManager: ObservableObject {
 
     /// 网络失败等不可控错误时退还已消耗的计数。
     func refundIfNeeded() {
-        #if DEBUG
-        if !Self.paymentEnabled { return }
-        #endif
         switch lastConsumedPath {
         case .free:
             let restored = min(ud.integer(forKey: freeCountKey) + 1, freeTotal)
@@ -285,7 +264,7 @@ final class PurchaseManager: ObservableObject {
     }
 }
 
-private func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
+private nonisolated func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
     switch result {
     case .unverified: throw StoreError.failedVerification
     case .verified(let safe): return safe

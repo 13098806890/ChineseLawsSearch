@@ -403,7 +403,6 @@ private struct SettingsSheet: View {
 
                 Section {
                     Toggle("显示右侧条文索引", isOn: $userStore.showSideIndex)
-                    Toggle("每次启动显示使用说明", isOn: $userStore.showWelcomeOnLaunch)
                     Button("查看使用说明") { showWelcome = true }
                     Picker("条文字号", selection: $userStore.articleFontSize) {
                         Text("小").tag("small")

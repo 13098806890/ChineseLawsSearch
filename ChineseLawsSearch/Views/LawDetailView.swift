@@ -159,7 +159,7 @@ struct LawDetailView: View {
             isLoadingNodes = true
 
             // 先加载节点，与目标滚动位置一起提交（单次渲染，不产生跳动）
-            let loadedNodes = await DatabaseManager.shared.nodes(lawId: lawId)
+            let loadedNodes = DatabaseManager.shared.nodes(lawId: lawId)
 
             // 确定初始滚动位置：有目标条文则定位，否则回顶
             let targetNodeId: Int?

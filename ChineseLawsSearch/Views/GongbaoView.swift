@@ -78,10 +78,6 @@ struct GazetteView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
-            if isCompact && searchText.isEmpty {
-                introBanner
-            }
-
             Divider()
 
             if isLoading {
@@ -135,13 +131,13 @@ struct GazetteView: View {
 
             if showIntro {
                 VStack(alignment: .leading, spacing: 10) {
-                    bannerRow(icon: "star.circle.fill", color: .orange, title: "指导案例",
+                    bannerRow(icon: "star.circle.fill", color: AppColors.shared.searchHighlight, title: "指导案例",
                               desc: "最高人民法院发布的典型案例，确立裁判规则，对同类案件具有参考指导效力。")
-                    bannerRow(icon: "doc.text.fill", color: .blue, title: "裁判文书",
+                    bannerRow(icon: "doc.text.fill", color: AppColors.shared.searchHighlight, title: "裁判文书",
                               desc: "公报收录的重要判决，代表最高人民法院对法律适用的权威立场。")
-                    bannerRow(icon: "book.closed.fill", color: .green, title: "司法解释",
+                    bannerRow(icon: "book.closed.fill", color: AppColors.shared.searchHighlight, title: "司法解释",
                               desc: "就具体法律适用问题发布的解释性文件，与法律条文具有同等适用效力。")
-                    bannerRow(icon: "megaphone.fill", color: .purple, title: "司法文件",
+                    bannerRow(icon: "megaphone.fill", color: AppColors.shared.searchHighlight, title: "司法文件",
                               desc: "通知、规定、批复等规范性文件，对下级法院审判工作具有约束力。")
                 }
                 .padding(.horizontal, 16)
@@ -271,6 +267,7 @@ struct GazetteView: View {
         let delay: UInt64 = immediate ? 0 : 300_000_000
         let src = selectedSource
         let q = searchText
+        let db = DatabaseManager.shared
         searchTask = Task {
             if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
             guard !Task.isCancelled else { return }
@@ -278,14 +275,14 @@ struct GazetteView: View {
 
             if src == .interpretation {
                 async let sfjsResult = Task.detached(priority: .userInitiated) {
-                    DatabaseManager.shared.searchByTitle(query: q.isEmpty ? "" : q, limit: 500,
+                    db.searchByTitle(query: q.isEmpty ? "" : q, limit: 500,
                                                          categories: ["司法解释"])
                         .filter { $0.source == "gongbao" }
                 }.value
                 async let allCounts = Task.detached(priority: .userInitiated) {
                     var result: [GazetteSource: Int] = [:]
                     for source in GazetteSource.allCases where source != .interpretation {
-                        result[source] = DatabaseManager.shared.gazetteCount(source: source.rawValue, query: q)
+                        result[source] = db.gazetteCount(source: source.rawValue, query: q)
                     }
                     return result
                 }.value
@@ -296,14 +293,14 @@ struct GazetteView: View {
                 await MainActor.run { sfjsDocs = sfjs; counts = updatedCounts; isLoading = false }
             } else {
                 async let mainDocs = Task.detached(priority: .userInitiated) {
-                    DatabaseManager.shared.gazetteDocs(source: src.rawValue, query: q)
+                    db.gazetteDocs(source: src.rawValue, query: q)
                 }.value
                 async let allCounts = Task.detached(priority: .userInitiated) {
                     var result: [GazetteSource: Int] = [:]
                     for source in GazetteSource.allCases where source != .interpretation {
-                        result[source] = DatabaseManager.shared.gazetteCount(source: source.rawValue, query: q)
+                        result[source] = db.gazetteCount(source: source.rawValue, query: q)
                     }
-                    result[.interpretation] = DatabaseManager.shared.searchByTitle(query: q, limit: 1000, categories: ["司法解释"])
+                    result[.interpretation] = db.searchByTitle(query: q, limit: 1000, categories: ["司法解释"])
                         .filter { $0.source == "gongbao" }.count
                     return result
                 }.value
@@ -758,25 +755,25 @@ struct GazetteWelcomeView: View {
                 .padding(.bottom, 4)
 
                 infoBlock(
-                    icon: "star.circle.fill", color: .orange,
+                    icon: "star.circle.fill", color: AppColors.shared.searchHighlight,
                     title: "指导案例",
                     body: "最高人民法院发布的典型案例，确立裁判规则，对同类案件具有参考指导效力。检索时可按案由、关键词快速定位相关裁判要旨。"
                 )
 
                 infoBlock(
-                    icon: "doc.text.fill", color: .blue,
+                    icon: "doc.text.fill", color: AppColors.shared.searchHighlight,
                     title: "裁判文书",
                     body: "公报收录的重要二审、再审判决，代表最高人民法院对法律适用的权威立场，是研究疑难问题的第一手资料。"
                 )
 
                 infoBlock(
-                    icon: "book.closed.fill", color: .green,
+                    icon: "book.closed.fill", color: AppColors.shared.searchHighlight,
                     title: "司法解释",
                     body: "最高人民法院就具体法律适用问题发布的解释性文件，与法律条文具有同等适用效力，是司法实践中引用最频繁的规范依据。"
                 )
 
                 infoBlock(
-                    icon: "megaphone.fill", color: .purple,
+                    icon: "megaphone.fill", color: AppColors.shared.searchHighlight,
                     title: "司法文件",
                     body: "最高人民法院发布的通知、规定、批复等规范性文件，反映司法政策导向，对下级法院审判工作具有约束力。"
                 )

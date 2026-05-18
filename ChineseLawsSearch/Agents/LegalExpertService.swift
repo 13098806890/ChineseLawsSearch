@@ -486,12 +486,24 @@ final class LegalExpertService {
                 : a.characterization
         }.joined(separator: "\n\n")
         onEvent(.thinkStep(name: "法律定性", content: charSummary))
+
+        // Emit structured case summary if extracted
+        let caseSummaries = questionAnalyses.compactMap { $0.caseSummary.isEmpty ? nil : $0.caseSummary }
+        let combinedCaseSummary = caseSummaries.joined(separator: "\n\n")
+        if !combinedCaseSummary.isEmpty {
+            onEvent(.thinkStep(name: "案情梳理", content: combinedCaseSummary))
+        }
+
         onEvent(.thinkStep(name: "细分专家",
                            content: allSelectedExperts.map { $0.name }.joined(separator: "、")))
         onEvent(.expertsSelected(allSelectedExperts))
 
+        // Merge case summary into factContext for downstream stages
+        let enrichedFactContext = combinedCaseSummary.isEmpty ? factContext
+            : (factContext.isEmpty ? combinedCaseSummary : "\(factContext)\n\n【案情摘要】\n\(combinedCaseSummary)")
+
         return try await runExpertStages(
-            question: question, factContext: factContext, subQs: subQs,
+            question: question, factContext: enrichedFactContext, subQs: subQs,
             allSelectedExperts: allSelectedExperts,
             expertToQuestions: expertToQuestions,
             conversationHistory: conversationHistory,
@@ -941,6 +953,7 @@ final class LegalExpertService {
         let question: String
         let characterization: String   // 多层定性描述
         let experts: [SubExpert]
+        let caseSummary: String        // 结构化案情摘要（当事人/争议焦点/证据/法律关系），空串表示无
     }
 
     /// Mod 5: characterizeAndRoute now accepts conversationHistory for context.
@@ -956,17 +969,27 @@ final class LegalExpertService {
             .sorted().joined(separator: "\n")
 
         let system = """
-        你是中国法律问题定性专家。对法律问题进行递进式定性分析，然后选出需要的细分专家。
+        你是中国法律问题定性专家。对法律问题进行递进式定性分析，提取案情要素，然后选出需要的细分专家。
 
         定性步骤（递进，每步基于上一步结论）：
         1. 法律关系性质：违约 / 侵权 / 行政 / 刑事 / 混合 / 公司法律关系 / 劳动关系 等
         2. 具体类型：基于第1步细化（如违约→买卖合同；侵权→名誉权；混合→违约侵权竞合）
         3. 程序问题：是否涉及诉讼管辖/仲裁/证据/执行（如有，加入程序专家）
 
+        案情要素提取（仅在问题包含具体事实陈述时填写，否则对应字段留空字符串）：
+        - 当事人：原告/申请方是谁，被告/相对方是谁（无信息则留空）
+        - 争议焦点：核心争议是什么（一句话）
+        - 关键证据线索：用户已提到的或可能需要的证据（简要列举，逗号分隔）
+        - 法律关系摘要：一句话总结本案法律关系（用于专家分析上下文）
+
         输出 JSON（严格格式，不要其他内容）：
         {
           "layers": ["第1步：...", "第2步：...", "第3步：...（无则省略）"],
-          "experts": ["细分专家名1", "细分专家名2"]
+          "experts": ["细分专家名1", "细分专家名2"],
+          "case_parties": "原告：xxx；被告：xxx",
+          "dispute_focus": "争议焦点一句话",
+          "evidence_hints": "证据线索1，证据线索2",
+          "legal_summary": "法律关系一句话摘要"
         }
 
         可用细分专家：
@@ -1004,10 +1027,23 @@ final class LegalExpertService {
         let charText    = layers.isEmpty ? "（定性失败）" : layers.joined(separator: "\n")
         let selected    = expertNames.compactMap { nameToExpert[$0] }
 
+        // Build structured case summary from extracted fields
+        let parties  = (obj["case_parties"] as? String) ?? ""
+        let focus    = (obj["dispute_focus"] as? String) ?? ""
+        let evidence = (obj["evidence_hints"] as? String) ?? ""
+        let legalSum = (obj["legal_summary"] as? String) ?? ""
+        var summaryParts: [String] = []
+        if !parties.isEmpty  { summaryParts.append("当事人：\(parties)") }
+        if !focus.isEmpty    { summaryParts.append("争议焦点：\(focus)") }
+        if !evidence.isEmpty { summaryParts.append("证据线索：\(evidence)") }
+        if !legalSum.isEmpty { summaryParts.append("法律关系：\(legalSum)") }
+        let caseSummary = summaryParts.joined(separator: "\n")
+
         return QuestionAnalysis(
             question: question,
             characterization: charText,
-            experts: selected.isEmpty ? fallbackAnalysis(question: question).experts : selected
+            experts: selected.isEmpty ? fallbackAnalysis(question: question).experts : selected,
+            caseSummary: caseSummary
         )
     }
 
@@ -1024,7 +1060,8 @@ final class LegalExpertService {
         return QuestionAnalysis(
             question: question,
             characterization: "（关键词兜底路由）",
-            experts: matched.isEmpty ? [contractGeneralExpert] : matched
+            experts: matched.isEmpty ? [contractGeneralExpert] : matched,
+            caseSummary: ""
         )
     }
 
@@ -1048,7 +1085,7 @@ final class LegalExpertService {
 
     // MARK: - Step 4: Retrieval
 
-    private func retrieveForExpert(expert: SubExpert, question: String,
+    private nonisolated func retrieveForExpert(expert: SubExpert, question: String,
                                    facts: [String: String]) -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
         var seenIds = Set<Int>()
@@ -1133,7 +1170,7 @@ final class LegalExpertService {
         #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
     private static let cjkKeywordRE   = LegalExpertService.regex("[\\u4E00-\\u9FFF]{3,6}")
 
-    private func expandReferences(articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
+    private nonisolated func expandReferences(articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
         var seenIds = Set(articles.map { $0.nodeId })
         var extra: [DatabaseManager.RAGArticle] = []
@@ -1316,9 +1353,11 @@ final class LegalExpertService {
 【严格限制】只能引用上方提供的法条，不得引用任何未在法条列表中出现的法律法规。
 【重要】如果提供的法条与用户问题不直接相关，请明确说明"现有检索到的法条不足以回答此问题"，并说明需要什么信息或应查阅哪类法规，不得凭记忆编造法条内容或条文编号。
 如果提供的法条中只有部分与问题直接相关，只引用相关的，忽略无关条文，不要为了引用而引用。
+【法条引用逻辑要求】每次引用法条，必须在正文中明确说明该条款与本案事实的具体关联：该条款规定了什么，用户的情况符合该条款的哪个构成要件，因此得出什么结论。不得仅列出条文编号而不说明推理过程，不得引用与结论无逻辑联系的条款。
 【公报案例】如果【相关公报案例】中有与问题直接相关的案例：
 1. 裁判规则高度相关时，引用裁判要旨作为法律依据，格式：《案例标题》确立的裁判规则……
-2. 案情事实与用户情况高度吻合时，可引用事实作类比论证，格式：与《案例标题》类似，该案中……本案亦……
+2. 案情事实与用户情况吻合时，详细说明该案的案情事实（当事人情况、争议焦点、法院认定），再与用户案情类比，格式：与《案例标题》类似，该案中……（详述案情）……法院认定……本案中用户……同样……
+3. 案例引用要有实质内容，不能只写案例名称，必须结合案情说明为何与本案相关、对本案有何参考价值。
 不得捏造或扩大解释案例内容。
 【输出格式要求】在分析正文结束后，另起两行输出以下引用汇总（仅列实际在正文中引用过的内容，未引用则省略该行）：
 【引用法条】《法律名称》第X条、《法律名称》第Y条（用顿号分隔，格式严格为《》第X条）
@@ -1432,7 +1471,7 @@ final class LegalExpertService {
         return result
     }
 
-    private func parseExpertCitations(_ raw: String) -> (body: String, caseTitles: [String]) {
+    private nonisolated func parseExpertCitations(_ raw: String) -> (body: String, caseTitles: [String]) {
         var caseTitles: [String] = []
         var bodyLines: [String] = []
         for line in raw.components(separatedBy: "\n") {

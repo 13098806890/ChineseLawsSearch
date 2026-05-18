@@ -472,7 +472,7 @@ final class DatabaseManager {
         queue.sync { _searchByTitle(query: query, limit: limit, categories: categories, lawsExamOnly: lawsExamOnly) }
     }
 
-    private func _searchByTitle(query: String, limit: Int = 50, categories: [String] = [], lawsExamOnly: Bool = false) -> [LawMeta] {
+    private nonisolated func _searchByTitle(query: String, limit: Int = 50, categories: [String] = [], lawsExamOnly: Bool = false) -> [LawMeta] {
         let catFilter = categories.isEmpty ? "" : "AND category IN (\(categories.map { _ in "?" }.joined(separator: ",")))"
         let lawsExamFilter = lawsExamOnly ? "AND is_flk = 1" : ""
         let sql = """
@@ -533,7 +533,7 @@ final class DatabaseManager {
                                     lawsExamOnly: lawsExamOnly) }
     }
 
-    private func _searchContent(query: String, limit: Int = 100,
+    private nonisolated func _searchContent(query: String, limit: Int = 100,
                        excludeArticleNumber: Bool = false,
                        categories: [String] = [],
                        lawsExamOnly: Bool = false) -> [SearchResult] {
@@ -1131,11 +1131,11 @@ final class DatabaseManager {
 
     // MARK: - 公报查询
 
-    func gazetteDocs(source: String?, query: String, limit: Int = 500) -> [GazetteDoc] {
+    nonisolated func gazetteDocs(source: String?, query: String, limit: Int = 500) -> [GazetteDoc] {
         queue.sync { _gazetteDocs(source: source, query: query, limit: limit) }
     }
 
-    func gazetteCount(source: String, query: String) -> Int {
+    nonisolated func gazetteCount(source: String, query: String) -> Int {
         queue.sync {
             guard let db = db else { return 0 }
             let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -1185,7 +1185,7 @@ final class DatabaseManager {
         }
     }
 
-    func gazetteDocByTitle(_ title: String) -> GazetteDoc? {
+    nonisolated func gazetteDocByTitle(_ title: String) -> GazetteDoc? {
         queue.sync {
             guard let db = db else { return nil }
             let sql = """
@@ -1211,7 +1211,7 @@ final class DatabaseManager {
     }
 
     /// 策略 A 多词版：对多个扩展词分别搜索后合并去重（绕过 FTS 短词限制）
-    func searchGazetteDocsMultiTerm(terms: [String], sourceFilter: String? = nil, limit: Int = 20) -> [GazetteDoc] {
+    nonisolated func searchGazetteDocsMultiTerm(terms: [String], sourceFilter: String? = nil, limit: Int = 20) -> [GazetteDoc] {
         queue.sync {
             var seen = Set<Int>()
             var results: [GazetteDoc] = []
@@ -1227,7 +1227,7 @@ final class DatabaseManager {
     }
 
     /// 策略 B：按 keywords 平铺字段 LIKE 检索（多词 OR）
-    func searchGazetteByKeywords(terms: [String], sourceFilter: String? = nil, limit: Int = 10) -> [GazetteDoc] {
+    nonisolated func searchGazetteByKeywords(terms: [String], sourceFilter: String? = nil, limit: Int = 10) -> [GazetteDoc] {
         queue.sync {
             guard let db = db, !terms.isEmpty else { return [] }
             let clauses = terms.map { _ in "keywords LIKE ?" }.joined(separator: " OR ")
@@ -1258,7 +1258,7 @@ final class DatabaseManager {
     }
 
     /// 策略 C：通过 gongbao_case_law_links 反查引用了指定条文节点的公报文书
-    func searchGazetteByNodeIds(_ nodeIds: [Int], limit: Int = 10) -> [GazetteDoc] {
+    nonisolated func searchGazetteByNodeIds(_ nodeIds: [Int], limit: Int = 10) -> [GazetteDoc] {
         queue.sync {
             guard let db = db, !nodeIds.isEmpty else { return [] }
             let placeholders = nodeIds.map { _ in "?" }.joined(separator: ",")

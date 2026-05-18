@@ -195,8 +195,9 @@ final class ChatHistoryStore: ObservableObject {
                     decoded = []
                 }
             }
+            let result = decoded
             await MainActor.run {
-                self.sessions = decoded
+                self.sessions = result
                 self.isLoading = false
             }
         }

@@ -172,7 +172,7 @@ final class LegalChatViewModel: ObservableObject {
         // - 免费次数 > 0 → 消耗一次，用内置 key
         // - 免费用完 + 已购买 + 有 key → 直接放行
         // - 其他 → 拦截（canUseAgent 已 disabled，此处兜底）
-        if !PurchaseManager.shared.consumeIfAllowed() {
+        if !PurchaseManager.shared.consumeIfAllowed(isFollowUp: isAwaitingClarification) {
             needsPaywall = true
             return
         }
@@ -529,6 +529,9 @@ final class LegalChatViewModel: ObservableObject {
                         }
                         var entry = "\(i + 1). 《\(c.title)》（\(sourceLabel)）"
                         if !c.rulingGist.isEmpty { entry += "\n   裁判要点：\(c.rulingGist)" }
+                        if let doc = DatabaseManager.shared.gazetteDoc(id: c.docId), !doc.fullText.isEmpty {
+                            entry += "\n   正文：\(doc.fullText)"
+                        }
                         lines.append(entry + "\n")
                     }
                 }
