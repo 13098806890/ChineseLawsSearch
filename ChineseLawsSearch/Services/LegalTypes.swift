@@ -39,6 +39,7 @@ struct ThinkStep: Identifiable, Equatable {
     let name:    String
     let content: String
     var articles: [RAGCitation] = []
+    var gazetteCitations: [GazetteCitation] = []
     var isExpanded: Bool = false
 }
 
@@ -72,6 +73,7 @@ struct GazetteCitation: Identifiable, Codable, Equatable {
 enum RAGEvent {
     case thinkStep(name: String, content: String)
     case thinkStepWithArticles(name: String, content: String, articles: [RAGCitation])
+    case thinkStepWithGazette(name: String, content: String, gazetteCitations: [GazetteCitation])
     case subQuestions([String])
     case token(String)
     case clarifyingQuestion(String)

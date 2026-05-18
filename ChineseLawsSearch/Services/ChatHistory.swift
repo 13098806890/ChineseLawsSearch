@@ -12,16 +12,18 @@ struct PersistedThinkStep: Codable {
     let name: String
     let content: String
     var articles: [PersistedCitation]
+    var gazetteCitations: [GazetteCitation]
 
-    init(name: String, content: String, articles: [PersistedCitation] = []) {
-        self.name = name; self.content = content; self.articles = articles
+    init(name: String, content: String, articles: [PersistedCitation] = [], gazetteCitations: [GazetteCitation] = []) {
+        self.name = name; self.content = content; self.articles = articles; self.gazetteCitations = gazetteCitations
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        name     = try c.decode(String.self, forKey: .name)
-        content  = try c.decode(String.self, forKey: .content)
-        articles = (try? c.decodeIfPresent([PersistedCitation].self, forKey: .articles)) ?? []
+        name             = try c.decode(String.self, forKey: .name)
+        content          = try c.decode(String.self, forKey: .content)
+        articles         = (try? c.decodeIfPresent([PersistedCitation].self, forKey: .articles)) ?? []
+        gazetteCitations = (try? c.decodeIfPresent([GazetteCitation].self, forKey: .gazetteCitations)) ?? []
     }
 }
 

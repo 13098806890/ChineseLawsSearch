@@ -140,6 +140,7 @@ final class LegalChatViewModel: ObservableObject {
                                 articleNumber: $0.articleNumber, articleNum: $0.articleNum,
                                 category: $0.category, content: $0.content)
                 }
+                step.gazetteCitations = ts.gazetteCitations
                 return step
             }
             msg.citations   = pm.citations.map {
@@ -383,6 +384,8 @@ final class LegalChatViewModel: ObservableObject {
             messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content))
         case .thinkStepWithArticles(let name, let content, let articles):
             messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content, articles: articles))
+        case .thinkStepWithGazette(let name, let content, let gazetteCitations):
+            messages[replyIdx].thinkSteps.append(ThinkStep(name: name, content: content, gazetteCitations: gazetteCitations))
         case .subQuestions(let qs):
             messages[replyIdx].subQuestions = qs
         case .token(let t):
@@ -431,7 +434,8 @@ final class LegalChatViewModel: ObservableObject {
                                 PersistedCitation(lawId: $0.lawId, lawTitle: $0.lawTitle,
                                                   articleNumber: $0.articleNumber, articleNum: $0.articleNum,
                                                   category: $0.category, content: $0.content)
-                            }
+                            },
+                            gazetteCitations: ts.gazetteCitations
                         )
                     },
                     citations: msg.citations.map {

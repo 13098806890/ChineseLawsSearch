@@ -217,7 +217,7 @@ final class LegalExpertService {
             RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
                         articleNum: $0.articleNum, category: $0.category, content: $0.content)
         }
-        onEvent(.thinkStepWithArticles(name: "专家检索", content: "共 \(totalCount) 条", articles: allForDisplay))
+        onEvent(.thinkStepWithArticles(name: "专家检索", content: "共 \(allForDisplay.count) 条", articles: allForDisplay))
 
         // Coordinator 最终回答 + 引用提取（共用函数）
         let allArticlesFlat = deduplicateArticles(expertArticles)
@@ -629,7 +629,7 @@ final class LegalExpertService {
         }
         onEvent(.thinkStepWithArticles(
             name: "专家检索",
-            content: "共 \(totalArticleCount) 条（\(allSelectedExperts.count) 位专家）",
+            content: "共 \(allArticlesForDisplay.count) 条（\(allSelectedExperts.count) 位专家）",
             articles: allArticlesForDisplay))
 
         // Step 4: 按专家组合并同组专家的分析
@@ -731,8 +731,10 @@ final class LegalExpertService {
                            content: "从答案正文引用中提取 \(cited.count) 条直接引用的法条"))
 
         // 从答案里解析 【参考案例】 段，只展示 coordinator 实际写入的案例
+        // allCandidates covers retrieved cases; also look up any extra titles the coordinator cited from static knowledge
         let allCandidates = (gazetteCites + expertGazetteCites)
-        let citedGazette = parseCoordinatorGazetteCitations(answerText: answerText, candidates: allCandidates)
+        let citedGazette = parseCoordinatorGazetteCitations(answerText: answerText, candidates: allCandidates,
+                                                             db: DatabaseManager.shared)
         if !citedGazette.isEmpty {
             onEvent(.gazetteCitations(citedGazette))
         }
@@ -921,7 +923,9 @@ final class LegalExpertService {
         }
 
         let summary = result.map { "• \($0.title)" }.joined(separator: "\n")
-        onEvent(.thinkStep(name: "候选公报案例", content: "检索到 \(result.count) 条候选（由 coordinator 决定引用）\n\(summary)"))
+        onEvent(.thinkStepWithGazette(name: "候选公报案例",
+                                      content: "检索到 \(result.count) 条候选（由 coordinator 决定引用）",
+                                      gazetteCitations: result))
 
         return result
     }
@@ -1393,10 +1397,12 @@ final class LegalExpertService {
     - 法律判断（谁违约、谁承担责任、行为是否合法）由你独立作出，不要推给提问者判断
     - 【严格限制】只能引用"检索到的法条"中出现的条文。不得引用任何未在检索结果中列出的法律法规，即使你知道相关规定存在。
     - 【重要】如果检索到的法条不足以完整回答问题，明确说明哪部分无法回答及原因，不得编造条文编号或内容。
-    - 【公报案例】如果上下文提供了"人民法院公报相关案例"，必须在回答最后单独写一段【参考案例】，格式：【参考案例】《案例标题》：一句话说明该案确立的裁判规则及与本问题的关联（不超过50字）。每个案例单独一行，不要合并。
+    - 【公报案例】如果上下文提供了"人民法院公报候选案例"，选取与用户案情真正相关的，在回答最后单独写一段【参考案例】，每个案例单独一行，格式严格如下：
+      【参考案例】《案例完整标题》：一句话说明该案确立的裁判规则及与本案的关联（不超过60字）。
+      每个案例独占一行，不要合并，不要改变案例标题。
     格式要求：
-    1. 若只有一个问题：开头用一句话复述用户问题（如"关于XXX的问题："），再给出核心结论。
-    2. 若有多个子问题：用中文序号（一、二、三）分段，每段开头复述该子问题（如"一、关于彩礼返还："），再给出该问题的结论和分析。
+    1. 直接给出核心结论，不要复述用户问题或说"关于XXX的问题"。
+    2. 若有多个子问题：用中文序号（一、二、三）分段，每段开头写明该问题的结论，再展开分析。
     3. 在分析中直接引用条文编号（如"依据第X条"），不要在末尾单独列出"引用法条"清单。
     4. 如涉及诉讼，注明应去哪个法院。
     5. 总长度400-800字（不含【参考案例】段落）。
@@ -1413,7 +1419,7 @@ final class LegalExpertService {
         var citeLines = articles.compactMap { a -> String? in
             let key = "\(a.lawTitle)_\(a.articleNumber)"
             guard !a.articleNumber.isEmpty, seenCites.insert(key).inserted else { return nil }
-            return "• 《\(a.lawTitle)》\(a.articleNumber) — \(String(a.content.prefix(60)))..."
+            return "• 《\(a.lawTitle)》\(a.articleNumber) — \(String(a.content.prefix(150)))..."
         }
         if citeCap > 0 { citeLines = Array(citeLines.prefix(citeCap)) }
         var result = "各专家组分析：\n\(groupText)\n\n检索到的法条（供引用）：\n\(citeLines.joined(separator: "\n"))"
@@ -1435,14 +1441,15 @@ final class LegalExpertService {
     /// 匹配候选列表，返回实际被引用的案例（附上 coordinator 写的说明作为 relevanceReason）
     private func parseCoordinatorGazetteCitations(
         answerText: String,
-        candidates: [GazetteCitation]
+        candidates: [GazetteCitation],
+        db: DatabaseManager = DatabaseManager.shared
     ) -> [GazetteCitation] {
         var candidateMap: [String: GazetteCitation] = [:]
         for c in candidates { candidateMap[c.title] = c }
         var result: [GazetteCitation] = []
         var seenIds = Set<Int>()
 
-        // 匹配 【参考案例】《标题》：说明 格式
+        // Pass 1: 严格匹配 【参考案例】《标题》：说明 格式
         let pattern = "【参考案例】《([^》]+)》[：:](.*?)(?=\n【参考案例】|\n\n|$)"
         if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) {
             let ns = answerText as NSString
@@ -1450,16 +1457,34 @@ final class LegalExpertService {
             for m in matches {
                 let title = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
                 let reason = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                // Exact match in candidates
                 if let cand = candidateMap[title], seenIds.insert(cand.docId).inserted {
                     result.append(GazetteCitation(
                         docId: cand.docId, source: cand.source,
                         title: cand.title, rulingGist: cand.rulingGist,
                         strategy: cand.strategy, relevanceReason: reason))
+                    continue
+                }
+                // Fuzzy match in candidates (coordinator may have shortened the title)
+                if let cand = candidates.first(where: { $0.title.contains(title) || title.contains($0.title) }),
+                   seenIds.insert(cand.docId).inserted {
+                    result.append(GazetteCitation(
+                        docId: cand.docId, source: cand.source,
+                        title: cand.title, rulingGist: cand.rulingGist,
+                        strategy: cand.strategy, relevanceReason: reason))
+                    continue
+                }
+                // DB lookup — coordinator cited a case from static knowledge not in candidates list
+                if let doc = db.gazetteDocByTitle(title), seenIds.insert(doc.id).inserted {
+                    result.append(GazetteCitation(
+                        docId: doc.id, source: doc.source,
+                        title: doc.title, rulingGist: doc.rulingGist,
+                        strategy: "static-cited", relevanceReason: reason))
                 }
             }
         }
 
-        // fallback：扫描全文中出现的候选案例标题（处理 coordinator 未严格遵守格式的情况）
+        // Pass 2: fallback — scan full text for any candidate title appearing verbatim
         if result.isEmpty {
             for cand in candidates where answerText.contains(cand.title) {
                 if seenIds.insert(cand.docId).inserted {

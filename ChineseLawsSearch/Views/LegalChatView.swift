@@ -647,7 +647,8 @@ private struct MessageBubble: View {
                         ThinkStepRow(step: step, index: idx, total: message.thinkSteps.count,
                                      isExpanded: step.isExpanded,
                                      onToggle: { withAnimation(.spring(duration: 0.2)) { onToggleStep(step.id) } },
-                                     navigate: navigate)
+                                     navigate: navigate,
+                                     navigateToGazette: navigateToGazette)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -705,6 +706,7 @@ private struct ThinkStepRow: View {
     let isExpanded: Bool
     let onToggle: () -> Void
     let navigate: (Int, Int?) -> Void
+    let navigateToGazette: (GazetteDoc) -> Void
 
     private var stepIcon: String {
         switch step.name {
@@ -738,6 +740,22 @@ private struct ThinkStepRow: View {
                         } label: {
                             HStack(spacing: 3) {
                                 Text("\(step.articles.count)条")
+                                    .font(.caption2)
+                                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 9))
+                            }
+                            .foregroundStyle(AppColors.shared.searchHighlight)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(AppColors.shared.searchHighlight.opacity(0.1))
+                            .clipShape(Capsule())
+                        }
+                    }
+                    if !step.gazetteCitations.isEmpty {
+                        Button {
+                            onToggle()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text("\(step.gazetteCitations.count)案")
                                     .font(.caption2)
                                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                                     .font(.system(size: 9))
@@ -782,6 +800,42 @@ private struct ThinkStepRow: View {
                                     Text(verbatim: String(a.content.prefix(120)))
                                         .font(.caption2).foregroundStyle(.secondary)
                                         .lineLimit(3)
+                                }
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.appTertiaryBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.appSeparator, lineWidth: 0.5))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                if isExpanded && !step.gazetteCitations.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(step.gazetteCitations) { cite in
+                            Button {
+                                if let doc = DatabaseManager.shared.gazetteDoc(id: cite.docId) {
+                                    navigateToGazette(doc)
+                                }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 4) {
+                                        Text(cite.source == "al" ? "指导案例" : "裁判文书")
+                                            .font(.caption2).fontWeight(.semibold)
+                                            .foregroundStyle(AppColors.shared.searchHighlight)
+                                        Spacer()
+                                    }
+                                    Text(verbatim: cite.title)
+                                        .font(.caption2).foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    if !cite.rulingGist.isEmpty {
+                                        Text(verbatim: String(cite.rulingGist.prefix(100)))
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
                                 }
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
