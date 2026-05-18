@@ -116,12 +116,8 @@ final class PurchaseManager: ObservableObject {
     /// 追问传 isFollowUp=true 不消耗次数。
     func consumeIfAllowed(isFollowUp: Bool = false) -> Bool {
         lastConsumedPath = .none
-        if isFollowUp {
-            switch access {
-            case .free, .pro: return true
-            case .noAccess:   return false
-            }
-        }
+        // Follow-up questions are always free — the user already paid for the session.
+        if isFollowUp { return true }
         // 优先消耗免费次数
         let free = remainingFreeUses()
         if free > 0 {
