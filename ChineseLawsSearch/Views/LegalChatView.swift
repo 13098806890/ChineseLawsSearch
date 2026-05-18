@@ -37,6 +37,8 @@ struct LegalChatView: View {
     @State private var exportItem: ExportItem? = nil
     @FocusState private var inputFocused: Bool
     @EnvironmentObject private var userStore: UserStore
+    /// 当前 ScrollView 顶部可见的消息 ID，用于跳转返回后恢复位置
+    @State private var visibleMessageId: UUID?
 
     /// 是否允许使用 Agent：免费次数剩余或已订阅
     private var canUseAgent: Bool {
@@ -55,8 +57,14 @@ struct LegalChatView: View {
                     }
                     ForEach(vm.messages) { msg in
                         MessageBubble(message: msg, showThinking: showThinking,
-                                      navigate: navigate,
-                                      navigateToGazette: navigateToGazette,
+                                      navigate: { lawId, artNum in
+                                          vm.restoreScrollId = visibleMessageId
+                                          navigate(lawId, artNum)
+                                      },
+                                      navigateToGazette: { doc in
+                                          vm.restoreScrollId = visibleMessageId
+                                          navigateToGazette(doc)
+                                      },
                                       onToggleStep: { vm.toggleStep(messageId: msg.id, stepId: $0) },
                                       onToggleSteps: { vm.toggleSteps(messageId: msg.id) },
                                       onToggleCitations: { vm.toggleCitations(messageId: msg.id) },
@@ -67,10 +75,22 @@ struct LegalChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
+            .scrollPosition(id: $visibleMessageId, anchor: .top)
             .onChange(of: vm.scrollToken) { _, _ in
                 if let last = vm.messages.last {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
+            }
+            .onChange(of: vm.restoreScrollId) { _, restoreId in
+                guard let restoreId else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    proxy.scrollTo(restoreId, anchor: .top)
+                    vm.restoreScrollId = nil
+                }
+            }
+            .onChange(of: isActive) { _, active in
+                if active && vm.messages.isEmpty && !canUseAgent { showPaywall = true }
             }
             .scrollDismissesKeyboard(.immediately)
             .onTapGesture { inputFocused = false }
@@ -300,10 +320,6 @@ struct LegalChatView: View {
             Button("好") { vm.errorMessage = nil }
         } message: {
             Text(vm.errorMessage ?? "")
-        }
-        .onChange(of: isActive) { _, active in
-            // 用户首次切到对话 Tab 且无权限时弹 Paywall，避免每次 onAppear 重复弹
-            if active && vm.messages.isEmpty && !canUseAgent { showPaywall = true }
         }
     }
 
@@ -563,7 +579,11 @@ private struct MessageBubble: View {
                     }
                     if !message.text.isEmpty {
                         HStack {
-                            Text(verbatim: message.text)
+                            LinkedAnswerText(text: message.text,
+                                             citations: message.citations,
+                                             gazetteCitations: message.gazetteCitations,
+                                             navigate: navigate,
+                                             navigateToGazette: navigateToGazette)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 10)
                                 .background(Color.appTertiaryBackground)
@@ -699,6 +719,53 @@ private struct MessageBubble: View {
 
 // MARK: - Think Step Row
 
+private struct ThinkStepGazetteCitationCard: View {
+    let cite: GazetteCitation
+    let navigateToGazette: (GazetteDoc) -> Void
+    @State private var isLoading = false
+
+    var body: some View {
+        Button {
+            guard !isLoading else { return }
+            isLoading = true
+            Task.detached(priority: .userInitiated) {
+                let doc = DatabaseManager.shared.gazetteDoc(id: cite.docId)
+                await MainActor.run {
+                    isLoading = false
+                    if let doc { navigateToGazette(doc) }
+                }
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(cite.sourceDisplayName)
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(AppColors.shared.searchHighlight)
+                    Spacer()
+                    if isLoading {
+                        ProgressView().scaleEffect(0.6)
+                    }
+                }
+                Text(verbatim: cite.title)
+                    .font(.caption2).foregroundStyle(.primary)
+                    .lineLimit(2)
+                if !cite.rulingGist.isEmpty {
+                    Text(verbatim: String(cite.rulingGist.prefix(100)))
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.appTertiaryBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.appSeparator, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct ThinkStepRow: View {
     let step: ThinkStep
     let index: Int
@@ -816,35 +883,7 @@ private struct ThinkStepRow: View {
                 if isExpanded && !step.gazetteCitations.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(step.gazetteCitations) { cite in
-                            Button {
-                                if let doc = DatabaseManager.shared.gazetteDoc(id: cite.docId) {
-                                    navigateToGazette(doc)
-                                }
-                            } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack(spacing: 4) {
-                                        Text(cite.source == "al" ? "指导案例" : "裁判文书")
-                                            .font(.caption2).fontWeight(.semibold)
-                                            .foregroundStyle(AppColors.shared.searchHighlight)
-                                        Spacer()
-                                    }
-                                    Text(verbatim: cite.title)
-                                        .font(.caption2).foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                    if !cite.rulingGist.isEmpty {
-                                        Text(verbatim: String(cite.rulingGist.prefix(100)))
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                            .lineLimit(2)
-                                    }
-                                }
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color.appTertiaryBackground)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.appSeparator, lineWidth: 0.5))
-                            }
-                            .buttonStyle(.plain)
+                            ThinkStepGazetteCitationCard(cite: cite, navigateToGazette: navigateToGazette)
                         }
                     }
                     .padding(.top, 4)
@@ -938,7 +977,244 @@ private struct CitationList: View {
     }
 }
 
+// MARK: - Linked Answer Text
+
+/// Renders assistant answer text with tappable article and gazette case links.
+/// Uses regex to scan all 《Law》ArticleNumber patterns in the text,
+/// first looking up in citations, then falling back to a DB query.
+private struct LinkedAnswerText: View {
+    let text: String
+    let citations: [RAGCitation]
+    let gazetteCitations: [GazetteCitation]
+    let navigate: (Int, Int?) -> Void
+    let navigateToGazette: (GazetteDoc) -> Void
+
+    private static let articleRefRE = ArticleRefPattern.regex
+    private static let bracketRE = try! NSRegularExpression(pattern: "《([^》]{2,60})》")
+
+    private func buildAttributed() -> NSAttributedString {
+        let linkColor = UIColor(AppColors.shared.searchHighlight)
+        let bodyFont  = UIFont.preferredFont(forTextStyle: .body)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: bodyFont,
+            .foregroundColor: UIColor.label
+        ]
+        let result = NSMutableAttributedString(string: text, attributes: attrs)
+
+        var citationMap: [String: (Int, Int?)] = [:]
+        for c in citations {
+            let key = "\(c.lawTitle)||\(c.articleNumber)"
+            citationMap[key] = (c.lawId, c.articleNum)
+            let short = c.lawTitle
+                .replacingOccurrences(of: "中华人民共和国", with: "")
+                .replacingOccurrences(of: "最高人民法院", with: "")
+                .replacingOccurrences(of: "最高人民检察院", with: "")
+                .replacingOccurrences(of: "国务院", with: "")
+            if short != c.lawTitle {
+                citationMap["\(short)||\(c.articleNumber)"] = (c.lawId, c.articleNum)
+            }
+        }
+
+        let raw = text as NSString
+        let fullRange = NSRange(location: 0, length: raw.length)
+        let matches = Self.articleRefRE.matches(in: text, range: fullRange)
+        for m in matches {
+            let titleNS  = raw.substring(with: m.range(at: 1))
+            let artNumNS = raw.substring(with: m.range(at: 2))
+            var lawId: Int?
+            var artNum: Int?
+            let key = "\(titleNS)||\(artNumNS)"
+            if let hit = citationMap[key] {
+                lawId = hit.0; artNum = hit.1
+            } else {
+                let article = DatabaseManager.shared.articleByRef(
+                    lawTitleFragment: titleNS, articleNumber: artNumNS)
+                lawId  = article?.lawId
+                artNum = article?.articleNum
+            }
+            guard let lid = lawId,
+                  let url = URL(string: "legalchat://article/\(lid)/\(artNum ?? 0)") else { continue }
+            result.addAttributes([
+                .link: url,
+                .foregroundColor: linkColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue
+            ], range: m.range)
+        }
+
+        // Scan all 《...》 spans in the text; fuzzy-match against each gazetteCitation's DB title.
+        // Fuzzy: the text span contains the DB title, or the DB title contains the text span (LLM may shorten).
+        if !gazetteCitations.isEmpty {
+            let bracketMatches = Self.bracketRE.matches(in: text, range: fullRange)
+            for bm in bracketMatches {
+                let innerRange = bm.range(at: 1)
+                guard innerRange.location != NSNotFound else { continue }
+                let inner = raw.substring(with: innerRange)
+                // Find matching citation: DB title contains the text span, or vice versa
+                guard let gc = gazetteCitations.first(where: {
+                    $0.title.contains(inner) || inner.contains($0.title)
+                }), let url = URL(string: "legalchat://gazette/\(gc.docId)") else { continue }
+                result.addAttributes([
+                    .link: url,
+                    .foregroundColor: linkColor,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue
+                ], range: bm.range)
+            }
+        }
+
+        return result
+    }
+
+    var body: some View {
+        _LinkedTextView(attributedText: buildAttributed(),
+                        navigate: navigate,
+                        navigateToGazette: navigateToGazette)
+    }
+}
+
+// Subclass that returns the correct intrinsicContentSize for any given width,
+// so SwiftUI's layout pass gets the right height on the first pass.
+private final class _SelfSizingTextView: UITextView {
+    override var intrinsicContentSize: CGSize {
+        let w = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
+        return sizeThatFits(CGSize(width: w, height: .greatestFiniteMagnitude))
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if bounds.size != intrinsicContentSize { invalidateIntrinsicContentSize() }
+    }
+}
+
+// UITextView wrapper — needed because Text(AttributedString) link taps don't
+// go through SwiftUI's openURL environment; UITextView delegate fires reliably.
+private struct _LinkedTextView: UIViewRepresentable {
+    let attributedText: NSAttributedString
+    let navigate: (Int, Int?) -> Void
+    let navigateToGazette: (GazetteDoc) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(navigate: navigate, navigateToGazette: navigateToGazette) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let tv = _SelfSizingTextView()
+        tv.isEditable = false
+        tv.isScrollEnabled = false
+        tv.backgroundColor = .clear
+        tv.textContainerInset = .zero
+        tv.textContainer.lineFragmentPadding = 0
+        tv.delegate = context.coordinator
+        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tv.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        return tv
+    }
+
+    func updateUIView(_ tv: UITextView, context: Context) {
+        context.coordinator.navigate = navigate
+        context.coordinator.navigateToGazette = navigateToGazette
+        if tv.attributedText != attributedText {
+            tv.attributedText = attributedText
+            tv.invalidateIntrinsicContentSize()
+        }
+    }
+
+    // Override sizeThatFits so SwiftUI gets the correct height given the proposed width.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIScreen.main.bounds.width
+        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: size.height)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var navigate: (Int, Int?) -> Void
+        var navigateToGazette: (GazetteDoc) -> Void
+        init(navigate: @escaping (Int, Int?) -> Void,
+             navigateToGazette: @escaping (GazetteDoc) -> Void) {
+            self.navigate = navigate
+            self.navigateToGazette = navigateToGazette
+        }
+        func textView(_ textView: UITextView,
+                      primaryActionFor textItem: UITextItem,
+                      defaultAction: UIAction) -> UIAction? {
+            guard case .link(let url) = textItem.content,
+                  url.scheme == "legalchat" else { return defaultAction }
+            let parts = url.pathComponents.filter { $0 != "/" }
+            if url.host == "article", parts.count == 2,
+               let lawId = Int(parts[0]), let artNum = Int(parts[1]) {
+                return UIAction { [weak self] _ in self?.navigate(lawId, artNum == 0 ? nil : artNum) }
+            }
+            if url.host == "gazette", parts.count == 1,
+               let docId = Int(parts[0]) {
+                return UIAction { [weak self] _ in
+                    Task.detached(priority: .userInitiated) {
+                        let doc = DatabaseManager.shared.gazetteDoc(id: docId)
+                        await MainActor.run { [weak self] in
+                            if let doc { self?.navigateToGazette(doc) }
+                        }
+                    }
+                }
+            }
+            return nil
+        }
+    }
+}
+
 // MARK: - Gazette Citation Cards
+
+private struct GazetteCitationCard: View {
+    let cite: GazetteCitation
+    let navigateToGazette: (GazetteDoc) -> Void
+    @State private var isLoading = false
+
+    var body: some View {
+        Button {
+            guard !isLoading else { return }
+            isLoading = true
+            Task.detached(priority: .userInitiated) {
+                let doc = DatabaseManager.shared.gazetteDoc(id: cite.docId)
+                await MainActor.run {
+                    isLoading = false
+                    if let doc { navigateToGazette(doc) }
+                }
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(cite.sourceDisplayName)
+                        .font(.caption2)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.appQuaternaryBackground)
+                        .clipShape(Capsule())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if isLoading {
+                        ProgressView().scaleEffect(0.6)
+                    }
+                }
+                Text(cite.title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                if !cite.rulingGist.isEmpty {
+                    Text(cite.rulingGist)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if !cite.relevanceReason.isEmpty {
+                    Text("引用说明：\(cite.relevanceReason)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.appBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.appSeparator, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+}
 
 private struct GazetteCitationCards: View {
     let citations: [GazetteCitation]
@@ -957,59 +1233,12 @@ private struct GazetteCitationCards: View {
             .padding(.top, 4)
 
             ForEach(citations) { cite in
-                Button {
-                    if let doc = DatabaseManager.shared.gazetteDoc(id: cite.docId) {
-                        navigateToGazette(doc)
-                    }
-                } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 4) {
-                            Text(sourceLabel(cite.source))
-                                .font(.caption2)
-                                .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(Color.appQuaternaryBackground)
-                                .clipShape(Capsule())
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        Text(cite.title)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                        if !cite.rulingGist.isEmpty {
-                            Text(cite.rulingGist)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                        if !cite.relevanceReason.isEmpty {
-                            Text("引用说明：\(cite.relevanceReason)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.appBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.appSeparator, lineWidth: 0.5))
-                }
-                .buttonStyle(.plain)
+                GazetteCitationCard(cite: cite, navigateToGazette: navigateToGazette)
             }
         }
         .padding(.horizontal, 4)
     }
 
-    private func sourceLabel(_ source: String) -> String {
-        switch source {
-        case "al":     return "指导案例"
-        case "sfwj":   return "司法文件"
-        case "cpwsxd": return "裁判文书"
-        default:       return "公报"
-        }
-    }
 }
 
 // MARK: - History Sidebar (iPad split view)

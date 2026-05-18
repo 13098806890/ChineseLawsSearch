@@ -50,13 +50,20 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                switch tab {
-                case .browse:    browseView
-                case .chat:      chatView
-                case .favorites: favoritesView
-                case .gongbao:   gazetteView
-                }
+            // 所有 tab 同时存在于 View 树中，避免切换时销毁 ScrollView 状态
+            ZStack {
+                browseView
+                    .opacity(tab == .browse ? 1 : 0)
+                    .allowsHitTesting(tab == .browse)
+                gazetteView
+                    .opacity(tab == .gongbao ? 1 : 0)
+                    .allowsHitTesting(tab == .gongbao)
+                chatView
+                    .opacity(tab == .chat ? 1 : 0)
+                    .allowsHitTesting(tab == .chat)
+                favoritesView
+                    .opacity(tab == .favorites ? 1 : 0)
+                    .allowsHitTesting(tab == .favorites)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 

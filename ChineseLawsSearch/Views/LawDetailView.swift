@@ -158,8 +158,10 @@ struct LawDetailView: View {
             highlightedArticle = nil
             isLoadingNodes = true
 
-            // 先加载节点，与目标滚动位置一起提交（单次渲染，不产生跳动）
-            let loadedNodes = DatabaseManager.shared.nodes(lawId: lawId)
+            // 在后台线程查询，不阻塞主线程，loading overlay 立即可见
+            let loadedNodes = await Task.detached(priority: .userInitiated) {
+                DatabaseManager.shared.nodes(lawId: lawId)
+            }.value
 
             // 确定初始滚动位置：有目标条文则定位，否则回顶
             let targetNodeId: Int?
@@ -174,10 +176,16 @@ struct LawDetailView: View {
             isLoadingNodes = false
             scrollPosition = targetNodeId
 
-            // 引用关系并行加载（不阻塞渲染，加载完后静默更新）
-            async let ogTask = DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId, lawsExamOnly: flk)
-            async let icTask = DatabaseManager.shared.incomingRefsForLaw(lawId: lawId, lawsExamOnly: flk)
-            async let gazetteTask = DatabaseManager.shared.gazetteLinksForLaw(lawId: lawId)
+            // 引用关系并行加载（在后台线程，不阻塞渲染，加载完后静默更新）
+            async let ogTask = Task.detached(priority: .utility) {
+                DatabaseManager.shared.outgoingRefsForLaw(lawId: lawId, lawsExamOnly: flk)
+            }.value
+            async let icTask = Task.detached(priority: .utility) {
+                DatabaseManager.shared.incomingRefsForLaw(lawId: lawId, lawsExamOnly: flk)
+            }.value
+            async let gazetteTask = Task.detached(priority: .utility) {
+                DatabaseManager.shared.gazetteLinksForLaw(lawId: lawId)
+            }.value
             let (ogList, icList, gazetteMap) = await (ogTask, icTask, gazetteTask)
             outgoingMap = Dictionary(grouping: ogList, by: \.fromArticleNum)
             incomingMap = Dictionary(grouping: icList, by: \.toArticleNum)

@@ -121,10 +121,10 @@ struct GazetteSfjs: Identifiable, Hashable {
 }
 
 final class DatabaseManager {
-    static let shared = DatabaseManager()
+    nonisolated(unsafe) static let shared = DatabaseManager()
 
-    private var db: OpaquePointer?
-    private var enhDb: OpaquePointer?
+    nonisolated(unsafe) private var db: OpaquePointer?
+    nonisolated(unsafe) private var enhDb: OpaquePointer?
 
     /// 所有 SQLite 操作必须在此队列上执行，保证线程安全。
     // TODO: upgrade to concurrent queue with barrier writes for better read throughput
@@ -349,7 +349,7 @@ final class DatabaseManager {
 
     // MARK: 某部法律的全部出向引用（按条文分组用）
 
-    func outgoingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [OutgoingRef] {
+    nonisolated func outgoingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [OutgoingRef] {
         queue.sync { _outgoingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
     }
 
@@ -383,7 +383,7 @@ final class DatabaseManager {
 
     // MARK: 某部法律的全部入向引用（按条文分组用）
 
-    func incomingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [IncomingRef] {
+    nonisolated func incomingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [IncomingRef] {
         queue.sync { _incomingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
     }
 
@@ -412,7 +412,7 @@ final class DatabaseManager {
     }
 
     /// articleNum → [GazetteDocLink]，用于法条视图内跳转公报
-    func gazetteLinksForLaw(lawId: Int) -> [Int: [GazetteDocLink]] {
+    nonisolated func gazetteLinksForLaw(lawId: Int) -> [Int: [GazetteDocLink]] {
         queue.sync {
             guard let db = db else { return [:] }
             let sql = """
@@ -788,11 +788,11 @@ final class DatabaseManager {
     }
 
     /// FTS 检索单个关键词，在指定 legal_domain 和 category 范围内
-    func ftsSearch(keyword: String, domains: [String], categories: [String], limit: Int = 10) -> [RAGArticle] {
+    nonisolated func ftsSearch(keyword: String, domains: [String], categories: [String], limit: Int = 10) -> [RAGArticle] {
         queue.sync { _ftsSearch(keyword: keyword, domains: domains, categories: categories, limit: limit) }
     }
 
-    private func _ftsSearch(keyword: String, domains: [String], categories: [String], limit: Int = 10) -> [RAGArticle] {
+    private nonisolated func _ftsSearch(keyword: String, domains: [String], categories: [String], limit: Int = 10) -> [RAGArticle] {
         guard !keyword.isEmpty, let db = db else { return [] }
         let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
         let domainPH = domains.map { _ in "?" }.joined(separator: ",")
@@ -859,11 +859,11 @@ final class DatabaseManager {
     }
 
     /// hint law 检索：在指定法律标题内 FTS 搜索
-    func ftsSearchInLaw(keyword: String, lawTitle: String, categories: [String], limit: Int = 10) -> [RAGArticle] {
+    nonisolated func ftsSearchInLaw(keyword: String, lawTitle: String, categories: [String], limit: Int = 10) -> [RAGArticle] {
         queue.sync { _ftsSearchInLaw(keyword: keyword, lawTitle: lawTitle, categories: categories, limit: limit) }
     }
 
-    private func _ftsSearchInLaw(keyword: String, lawTitle: String, categories: [String], limit: Int = 10) -> [RAGArticle] {
+    private nonisolated func _ftsSearchInLaw(keyword: String, lawTitle: String, categories: [String], limit: Int = 10) -> [RAGArticle] {
         guard !keyword.isEmpty, let db = db else { return [] }
         let cjk = keyword.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
         guard cjk >= 3 else { return [] }
@@ -933,11 +933,11 @@ final class DatabaseManager {
         let content: String
     }
 
-    func lawId(title: String) -> Int? {
+    nonisolated func lawId(title: String) -> Int? {
         queue.sync { _lawId(title: title) }
     }
 
-    private func _lawId(title: String) -> Int? {
+    private nonisolated func _lawId(title: String) -> Int? {
         guard let db = db else { return nil }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
@@ -950,11 +950,11 @@ final class DatabaseManager {
         return Int(sqlite3_column_int(stmt, 0))
     }
 
-    func lawStructure(lawId: Int) -> [LawStructureNode] {
+    nonisolated func lawStructure(lawId: Int) -> [LawStructureNode] {
         queue.sync { _lawStructure(lawId: lawId) }
     }
 
-    private func _lawStructure(lawId: Int) -> [LawStructureNode] {
+    private nonisolated func _lawStructure(lawId: Int) -> [LawStructureNode] {
         guard let db = db else { return [] }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
@@ -974,11 +974,11 @@ final class DatabaseManager {
         return result
     }
 
-    func articlesInNode(_ nodeId: Int) -> [RAGArticle] {
+    nonisolated func articlesInNode(_ nodeId: Int) -> [RAGArticle] {
         queue.sync { _articlesInNode(nodeId, depth: 0) }
     }
 
-    private func _articlesInNode(_ nodeId: Int, depth: Int) -> [RAGArticle] {
+    private nonisolated func _articlesInNode(_ nodeId: Int, depth: Int) -> [RAGArticle] {
         guard depth < 4 else { return [] }  // guard against malformed data cycles
         guard let db = db else { return [] }
         // direct articles
@@ -1011,19 +1011,23 @@ final class DatabaseManager {
         return result
     }
 
-    func articleByRef(lawTitleFragment: String, articleNumber: String) -> RAGArticle? {
+    nonisolated func articleByRef(lawTitleFragment: String, articleNumber: String) -> RAGArticle? {
         queue.sync { _articleByRef(lawTitleFragment: lawTitleFragment, articleNumber: articleNumber) }
     }
 
-    private func _articleByRef(lawTitleFragment: String, articleNumber: String) -> RAGArticle? {
+    private nonisolated func _articleByRef(lawTitleFragment: String, articleNumber: String) -> RAGArticle? {
         guard let db = db else { return nil }
+        // Normalize nested angle brackets that LLM writes as 〈〉 but DB stores as 《》
+        let normalizedFrag = lawTitleFragment
+            .replacingOccurrences(of: "〈", with: "《")
+            .replacingOccurrences(of: "〉", with: "》")
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
             "SELECT n.id, n.law_id, l.title, l.category, l.legal_domain, n.article_number, n.article_num, n.content FROM nodes n JOIN laws l ON n.law_id = l.id WHERE l.title LIKE ? AND n.article_number = ? AND l.is_current = 1 LIMIT 1",
             -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(stmt, 1, "%\(lawTitleFragment)%", -1, t)
+        sqlite3_bind_text(stmt, 1, "%\(normalizedFrag)%", -1, t)
         sqlite3_bind_text(stmt, 2, articleNumber, -1, t)
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
         return RAGArticle(
@@ -1086,11 +1090,11 @@ final class DatabaseManager {
 
     /// 给定一批 nodeId，返回它们通过 article_references 引用或被引用的所有条文（双向），
     /// 排除已在 seenIds 中的节点。
-    func referencedArticles(nodeIds: [Int], excludingIds: Set<Int>) -> [RAGArticle] {
+    nonisolated func referencedArticles(nodeIds: [Int], excludingIds: Set<Int>) -> [RAGArticle] {
         queue.sync { _referencedArticles(nodeIds: nodeIds, excludingIds: excludingIds) }
     }
 
-    private func _referencedArticles(nodeIds: [Int], excludingIds: Set<Int>) -> [RAGArticle] {
+    private nonisolated func _referencedArticles(nodeIds: [Int], excludingIds: Set<Int>) -> [RAGArticle] {
         guard let db = db, !nodeIds.isEmpty else { return [] }
         let idList = nodeIds.map { String($0) }.joined(separator: ",")
         // 出向引用：当前条文 → 被引用条文（to_node_id 有值）
@@ -1165,7 +1169,7 @@ final class DatabaseManager {
         }
     }
 
-    func gazetteDoc(id: Int) -> GazetteDoc? {
+    nonisolated func gazetteDoc(id: Int) -> GazetteDoc? {
         queue.sync {
             guard let db = db else { return nil }
             let sql = """
@@ -1285,7 +1289,7 @@ final class DatabaseManager {
         }
     }
 
-    private func _gazetteDocs(source: String?, query: String, limit: Int) -> [GazetteDoc] {        guard let db = db else { return [] }
+    private nonisolated func _gazetteDocs(source: String?, query: String, limit: Int) -> [GazetteDoc] {        guard let db = db else { return [] }
         var docs: [GazetteDoc] = []
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -1405,7 +1409,7 @@ final class DatabaseManager {
         return docs
     }
 
-    private func _rowToGazetteDoc(_ stmt: OpaquePointer?) -> GazetteDoc {
+    private nonisolated func _rowToGazetteDoc(_ stmt: OpaquePointer?) -> GazetteDoc {
         // col 10 = keywords_meta (JSON), col 11 = full_text, col 12 = case_brief (JSON)
         let metaJson = str(stmt, 10)
         let keywordsMeta: [String: [String]]
@@ -1437,7 +1441,7 @@ final class DatabaseManager {
             id: Int(sqlite3_column_int(stmt, 0)),
             source: str(stmt, 1),
             caseNumber: str(stmt, 2),
-            title: str(stmt, 3),
+            title: cleanStr(stmt, 3),
             issue: str(stmt, 4),
             year: Int(sqlite3_column_int(stmt, 5)),
             pubDate: str(stmt, 6),
@@ -1452,9 +1456,18 @@ final class DatabaseManager {
 
     // MARK: 工具
 
-    private func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {
+    private nonisolated func str(_ stmt: OpaquePointer?, _ col: Int32) -> String {
         guard let cstr = sqlite3_column_text(stmt, col) else { return "" }
         return String(cString: cstr)
+    }
+
+    /// Like str() but strips zero-width and default-ignorable Unicode code points (e.g. U+200B).
+    private nonisolated func cleanStr(_ stmt: OpaquePointer?, _ col: Int32) -> String {
+        let s = str(stmt, col)
+        let cleaned = s.unicodeScalars
+            .filter { !$0.properties.isDefaultIgnorableCodePoint }
+            .reduce(into: "") { $0.append(Character($1)) }
+        return cleaned.trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - 公报司法解释（现已迁移至 laws 表 source='gongbao'）
@@ -1531,7 +1544,7 @@ final class DatabaseManager {
         queue.sync { _gazetteSfjsDocs(query: query, limit: limit) }
     }
 
-    private func _gazetteSfjsDocs(query: String, limit: Int) -> [GazetteSfjs] {
+    private nonisolated func _gazetteSfjsDocs(query: String, limit: Int) -> [GazetteSfjs] {
         guard let db = db else { return [] }
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         var stmt: OpaquePointer?
@@ -1562,7 +1575,7 @@ final class DatabaseManager {
         return results
     }
 
-    private func _rowToGazetteSfjs(_ stmt: OpaquePointer?) -> GazetteSfjs {
+    private nonisolated func _rowToGazetteSfjs(_ stmt: OpaquePointer?) -> GazetteSfjs {
         GazetteSfjs(
             id:            Int(sqlite3_column_int(stmt, 0)),
             title:         str(stmt, 1),

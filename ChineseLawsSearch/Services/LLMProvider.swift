@@ -41,12 +41,19 @@ protocol LLMProvider {
     var keychainKey: String { get }
     var apiURL: URL { get }
 
-    func apiKey() throws -> String
     func chat(messages: [[String: Any]], temperature: Double) async throws -> String
     func streamChat(messages: [[String: Any]], temperature: Double, onToken: @escaping (String) -> Void) async throws
+    func apiKey() throws -> String
 }
 
 extension LLMProvider {
+    func apiKey() throws -> String {
+        guard let k = KeychainHelper.load(forKey: keychainKey), !k.isEmpty else {
+            throw LLMError.apiKeyMissing(displayName)
+        }
+        return k
+    }
+
     func chat(messages: [[String: Any]], temperature: Double) async throws -> String {
         let data = try await openAIChat(url: apiURL, apiKey: try apiKey(), providerName: displayName,
                                         model: modelName, messages: messages,
@@ -172,13 +179,6 @@ struct DeepSeekProvider: LLMProvider {
     let keychainKey = "deepseek_api_key"
     let keyURL      = URL(string: "https://platform.deepseek.com/api_keys")
     let apiURL      = URL(string: "https://api.deepseek.com/chat/completions")!
-
-    func apiKey() throws -> String {
-        guard let k = KeychainHelper.load(forKey: keychainKey), !k.isEmpty else {
-            throw LLMError.apiKeyMissing(displayName)
-        }
-        return k
-    }
 }
 
 // MARK: - BuiltinDeepSeekProvider（免费/付费 agent 使用，不存入 Keychain）
@@ -190,6 +190,8 @@ struct BuiltinDeepSeekProvider: LLMProvider {
     let keychainKey = ""
     let keyURL: URL? = nil
     let apiURL      = URL(string: "https://api.deepseek.com/chat/completions")!
+
+    static var hasBuiltinKey: Bool { cachedKey != nil }
 
     private static let cachedKey: String? = {
         // Parts read from Info.plist (injected via Secrets.xcconfig at build time).
@@ -227,13 +229,6 @@ struct GroqProvider: LLMProvider {
     let keychainKey = "groq_api_key"
     let keyURL      = URL(string: "https://console.groq.com/keys")
     let apiURL      = URL(string: "https://api.groq.com/openai/v1/chat/completions")!
-
-    func apiKey() throws -> String {
-        guard let k = KeychainHelper.load(forKey: keychainKey), !k.isEmpty else {
-            throw LLMError.apiKeyMissing(displayName)
-        }
-        return k
-    }
 }
 
 // Reserved for future use — not currently exposed in UI
@@ -244,13 +239,6 @@ struct GeminiProvider: LLMProvider {
     let keychainKey = "gemini_api_key"
     let keyURL      = URL(string: "https://aistudio.google.com/apikey")
     let apiURL      = URL(string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")!
-
-    func apiKey() throws -> String {
-        guard let k = KeychainHelper.load(forKey: keychainKey), !k.isEmpty else {
-            throw LLMError.apiKeyMissing(displayName)
-        }
-        return k
-    }
 }
 
 // MARK: - Registry
@@ -268,7 +256,14 @@ enum LLMProviderRegistry {
 
     static var current: any LLMProvider {
         let saved = UserDefaults.standard.string(forKey: "selected_llm_provider") ?? "deepseek"
-        return provider(id: saved) ?? DeepSeekProvider()
+        // If DeepSeek is selected but no user key is configured, use the built-in key.
+        if saved == "deepseek" {
+            let userKey = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+            if userKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return BuiltinDeepSeekProvider()
+            }
+        }
+        return provider(id: saved) ?? BuiltinDeepSeekProvider()
     }
 
     /// Agent 功能专用 provider：始终使用内置 Key，不暴露给用户。

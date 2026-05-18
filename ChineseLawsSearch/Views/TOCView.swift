@@ -5,26 +5,6 @@
 
 import SwiftUI
 
-// MARK: - Highlight helper
-
-private func highlighted(_ text: String, query: String,
-                          baseFont: Font = .caption,
-                          highlightColor: Color = AppColors.shared.searchHighlight) -> Text {
-    guard !query.isEmpty else { return Text(text).font(baseFont) }
-    var attr = AttributedString(text)
-    let lower = text.lowercased()
-    let lowerQ = query.lowercased()
-    var searchFrom = lower.startIndex
-    while let range = lower.range(of: lowerQ, range: searchFrom..<lower.endIndex) {
-        if let attrRange = Range(range, in: attr) {
-            attr[attrRange].font = baseFont.bold()
-            attr[attrRange].foregroundColor = UIColor(highlightColor)
-        }
-        searchFrom = range.upperBound
-    }
-    return Text(attr).font(baseFont)
-}
-
 struct TOCView: View {
     @Binding var target: LawTarget?
     @Environment(\.dismissSearch) private var dismissSearch
@@ -125,7 +105,7 @@ struct TOCView: View {
                                     dismissSearch()
                                     target = LawTarget(law: law, scrollToArticle: nil)
                                 } label: {
-                                    highlighted(law.title, query: searchQuery,
+                                    highlightedText(law.title, query: searchQuery,
                                                 baseFont: .subheadline)
                                         .foregroundStyle(.primary)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -304,12 +284,12 @@ struct TOCView: View {
             }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
-                highlighted(result.lawTitle, query: searchQuery, baseFont: .caption)
+                highlightedText(result.lawTitle, query: searchQuery, baseFont: .caption)
                     .foregroundStyle(.secondary)
                 Text(result.articleNumber)
                     .font(.caption.bold())
                     .foregroundStyle(.primary)
-                highlighted(result.content, query: searchQuery, baseFont: .caption)
+                highlightedText(result.content, query: searchQuery, baseFont: .caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             }

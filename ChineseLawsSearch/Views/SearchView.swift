@@ -163,45 +163,6 @@ struct SearchView: View {
         isPresented = false
     }
 
-    // MARK: - 高亮关键词
-
-    private func highlightedText(_ text: String, query: String) -> Text {
-        guard !query.isEmpty else { return Text(text) }
-        let keywords = [query, DatabaseManager.numberVariant(of: query)]
-            .compactMap { $0 }
-            .filter { !$0.isEmpty }
-
-        var ranges: [Range<String.Index>] = []
-        for kw in keywords {
-            var searchFrom = text.startIndex
-            while searchFrom < text.endIndex,
-                  let r = text.range(of: kw, options: .caseInsensitive, range: searchFrom..<text.endIndex) {
-                ranges.append(r)
-                searchFrom = r.upperBound
-            }
-        }
-        guard !ranges.isEmpty else { return Text(text) }
-
-        let sorted = ranges.sorted { $0.lowerBound < $1.lowerBound }
-        var merged: [Range<String.Index>] = []
-        for r in sorted {
-            if let last = merged.last, last.upperBound >= r.lowerBound {
-                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, r.upperBound)
-            } else {
-                merged.append(r)
-            }
-        }
-
-        var attributed = AttributedString(text)
-        let highlightColor = AppColors.shared.searchHighlight
-        for r in merged {
-            guard let attrRange = Range(r, in: attributed) else { continue }
-            attributed[attrRange].foregroundColor = highlightColor
-            attributed[attrRange].font = .body.bold()
-        }
-        return Text(attributed)
-    }
-
     // MARK: - 选项面板
 
     private var optionsPanel: some View {

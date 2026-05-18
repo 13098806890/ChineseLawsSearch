@@ -15,6 +15,8 @@ final class LegalChatViewModel: ObservableObject {
     var isThinking: Bool { thinkingSessions.contains(sessionId) }
     @Published var dotScale   = [1.0, 1.0, 1.0]
     @Published var scrollToken = 0
+    /// 从 chat 跳转到法条/案例前记录的可见消息 ID，返回时用于恢复滚动位置
+    @Published var restoreScrollId: UUID? = nil
     @Published var mode: ChatMode = .expert
     @Published var lastFailedQuestion: String? = nil  // set on network error, cleared on retry
     @Published var lastFailedIcon: String = "wifi.exclamationmark"
@@ -30,8 +32,8 @@ final class LegalChatViewModel: ObservableObject {
     private let lastSendTimeKey = "lastChatSendTime"
 
     // Follow-up state (expert mode)
-    var isAwaitingClarification = false
-    var followUpRound = 0
+    private(set) var isAwaitingClarification = false  // no longer set; kept for session persistence compat
+    private var followUpRound = 0                      // no longer set; kept for session persistence compat
     var pendingFacts: [String: String] = [:]
     var conversationHistory: [(user: String, assistant: String)] = []
 
@@ -109,9 +111,7 @@ final class LegalChatViewModel: ObservableObject {
         messages = []
         inputText = ""
         // sessionId 切换后 isThinking 计算属性自动变 false，旧 session 的 thinkingSessions 条目保留直到任务完成
-        isAwaitingClarification = false
-        followUpRound = 0
-        pendingFacts = [:]
+        isAwaitingClarification = false  // kept for legacy session compat        pendingFacts = [:]
         conversationHistory = []
         lastSelectedExperts = []
         lastQueryMode = nil
@@ -162,6 +162,8 @@ final class LegalChatViewModel: ObservableObject {
         tokenBasePrompt         = session.totalPromptTokens
         tokenBaseCompletion     = session.totalCompletionTokens
         TokenCounter.shared.reset()
+        // Scroll to top of the newly loaded session
+        restoreScrollId = messages.first?.id
     }
 
     @MainActor
@@ -169,11 +171,15 @@ final class LegalChatViewModel: ObservableObject {
         let q = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, q.count >= 2, !isThinking else { return }
 
+        let currentSessionId = sessionId  // capture before any await
+        thinkingSessions.insert(currentSessionId)  // 立即标记，防止并发双触发
+
         // 准入检查：
         // - 免费次数 > 0 → 消耗一次，用内置 key
         // - 免费用完 + 已购买 + 有 key → 直接放行
         // - 其他 → 拦截（canUseAgent 已 disabled，此处兜底）
-        if !PurchaseManager.shared.consumeIfAllowed(isFollowUp: isAwaitingClarification) {
+        if !PurchaseManager.shared.consumeIfAllowed(isFollowUp: false) {
+            thinkingSessions.remove(currentSessionId)
             needsPaywall = true
             return
         }
@@ -189,34 +195,23 @@ final class LegalChatViewModel: ObservableObject {
 
         LegalExpertService.shared.gazetteNotes = gazetteNotes
 
-        let currentSessionId = sessionId  // capture before any await
         lastFailedQuestion = nil
         inputText = ""
         messages.append(ChatMessage(role: .user, text: q))
         // 立即保存用户消息，确保切换对话时不丢失
         autoSave(historyStore: historyStore)
 
-        thinkingSessions.insert(currentSessionId)
         defer {
             // 无论哪条路径退出，都清除该 session 的 thinking 状态
             thinkingSessions.remove(currentSessionId)
         }
 
         do {
-            if isAwaitingClarification { followUpRound += 1 }
-
-            // ── Intent classification (Mod 1: single LLM call for intent + mode) ─
-            let intent: MessageIntent
-            let preMode: QueryMode?
-            if isAwaitingClarification {
-                intent = .followUp
-                preMode = lastQueryMode   // carry over mode from the turn that triggered clarification
-            } else {
-                let classified = await LegalExpertService.shared.classifyIntentAndMode(
-                    message: q, history: conversationHistory)
-                intent = classified.0
-                preMode = classified.1
-            }
+            // ── Intent classification ──────────────────────────────────────────
+            let classified = await LegalExpertService.shared.classifyIntentAndMode(
+                message: q, history: conversationHistory)
+            let intent = classified.0
+            let preMode = classified.1
 
             // ── Route by intent ────────────────────────────────────────────────
             switch intent {
@@ -287,9 +282,11 @@ final class LegalChatViewModel: ObservableObject {
             conversationHistory.removeAll()
             isAwaitingClarification = false
             followUpRound = 0
-            // 保存已有内容（如有部分回复已展示，保留历史）
+            // 保存已有内容（如有部分回复已展示，保留历史）；否则删除提前写入的空 session
             if !messages.isEmpty {
                 autoSave(historyStore: historyStore)
+            } else {
+                historyStore.delete(id: sessionId)
             }
         }
     }
@@ -318,13 +315,11 @@ final class LegalChatViewModel: ObservableObject {
                     question: q,
                     conversationHistory: conversationHistory,
                     knownFacts: pendingFacts,
-                    followUpRound: 0,
-                    maxFollowUpRounds: 0,
                     preClassifiedMode: preMode ?? .legalAdvisory
                 ) { [weak self] event in
                     self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId)
                 }
-                if mode == .caseAnalysis { isAwaitingClarification = false }
+                _ = mode
                 citations = c
             } else {
                 let (c, updatedExperts) = try await LegalExpertService.shared.askFollowUp(
@@ -336,36 +331,31 @@ final class LegalChatViewModel: ObservableObject {
                     self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId)
                 }
                 lastSelectedExperts = updatedExperts
-                isAwaitingClarification = false
                 citations = c
             }
 
         case .legalQuery:
-            // Reset clarification state for fresh queries
-            if !isAwaitingClarification {
-                lastSelectedExperts = []
-                pendingFacts = [:]
-                followUpRound = 0
-            }
-            let maxRounds = isAwaitingClarification ? 0 : UserDefaults.standard.integer(forKey: "maxFollowUpRounds")
-            // Mod 6: pass preMode to skip redundant classifyQueryMode call
+            // Reset state for fresh queries
+            lastSelectedExperts = []
+            pendingFacts = [:]
             let (c, mode) = try await LegalExpertService.shared.askLegalQuery(
                 question: q,
                 conversationHistory: conversationHistory,
                 knownFacts: pendingFacts,
-                followUpRound: followUpRound,
-                maxFollowUpRounds: maxRounds,
                 preClassifiedMode: preMode
             ) { [weak self] event in
                 self?.handleEvent(event, replyIdx: replyIdx, sessionId: currentSessionId)
             }
-            // Only case analysis supports multi-turn clarification
-            if mode != .caseAnalysis { isAwaitingClarification = false }
             lastQueryMode = mode
             citations = c
         }
 
-        if replyIdx < messages.count { messages[replyIdx].citations = citations }
+        if replyIdx < messages.count {
+            // 补全 citations：扫描正文里 《...》第X条，把数据库能查到但 RAG 未返回的条文追加进去
+            let answerText = messages[replyIdx].text
+            let extra = Self.extractCitationsFromText(answerText, existing: citations)
+            messages[replyIdx].citations = citations + extra
+        }
 
         if lastFailedQuestion == nil && sessionId == currentSessionId {
             let assistantText = messages.last(where: { $0.role == .assistant })?.text ?? ""
@@ -543,6 +533,30 @@ final class LegalChatViewModel: ObservableObject {
         }
         lines.append("\n---\n免责声明：以上内容由 AI 自动生成，仅供参考，不构成正式法律意见。具体案件建议咨询执业律师。")
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Answer text citation extraction
+    /// queries the DB for each, and returns the additional RAGCitations found.
+    static func extractCitationsFromText(_ text: String, existing: [RAGCitation]) -> [RAGCitation] {
+        let re = ArticleRefPattern.regex
+        let existingKeys = Set(existing.map { "\($0.lawId)||\($0.articleNumber)" })
+        var result: [RAGCitation] = []
+        var seenKeys = Set<String>()
+        let ns = text as NSString
+        let matches = re.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        for m in matches {
+            let title  = ns.substring(with: m.range(at: 1))
+            let artNum = ns.substring(with: m.range(at: 2))
+            guard let article = DatabaseManager.shared.articleByRef(
+                lawTitleFragment: title, articleNumber: artNum) else { continue }
+            let key = "\(article.lawId)||\(article.articleNumber)"
+            guard !existingKeys.contains(key), seenKeys.insert(key).inserted else { continue }
+            result.append(RAGCitation(
+                lawId: article.lawId, lawTitle: article.lawTitle,
+                articleNumber: article.articleNumber, articleNum: article.articleNum,
+                category: article.category, content: article.content))
+        }
+        return result
     }
 }
 

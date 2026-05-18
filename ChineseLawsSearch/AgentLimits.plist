@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>coordinatorAnswerSoftLimitChars</key>
-	<integer>-1</integer>
+	<integer>3000</integer>
 	<key>gazetteRulingGistMaxChars</key>
 	<integer>-1</integer>
 	<key>statuteArticlesPerLawMax</key>
@@ -11,12 +11,12 @@
 	<key>statuteArticlesTotalMax</key>
 	<integer>10</integer>
 	<key>routingMaxExperts</key>
-	<integer>4</integer>
+	<integer>8</integer>
 	<key>decompositionMaxSubQuestions</key>
-	<integer>4</integer>
+	<integer>10</integer>
 	<key>expertGazetteCandidatesTypical</key>
 	<integer>3</integer>
 	<key>expertGazetteCandidatesMax</key>
-	<integer>4</integer>
+	<integer>8</integer>
 </dict>
 </plist>

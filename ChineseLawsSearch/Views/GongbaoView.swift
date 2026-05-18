@@ -581,14 +581,7 @@ struct GazetteDetailView: View {
         }
     }
 
-    private var sourceLabel: String {
-        switch doc.source {
-        case "al":     return "指导案例"
-        case "sfwj":   return "司法文件"
-        case "cpwsxd": return "裁判文书"
-        default:       return "公报"
-        }
-    }
+    private var sourceLabel: String { doc.sourceDisplayName }
 
     // MARK: 分享
 

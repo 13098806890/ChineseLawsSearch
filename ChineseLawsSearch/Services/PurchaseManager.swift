@@ -253,8 +253,8 @@ final class PurchaseManager: ObservableObject {
         proRemaining  = loadProQuota().count
         #if DEBUG
         if Self.debugSimulatePRO {
-            hasPRO       = true
-            proRemaining = Self.proMonthlyTotal
+            hasPRO = true
+            // proRemaining 保留从 Keychain 读出的实际值，不重置为满额
         }
         #endif
     }

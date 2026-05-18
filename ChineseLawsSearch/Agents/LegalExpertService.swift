@@ -124,8 +124,6 @@ final class LegalExpertService {
     func askLegalQuery(question: String,
                        conversationHistory: [(user: String, assistant: String)],
                        knownFacts: [String: String],
-                       followUpRound: Int,
-                       maxFollowUpRounds: Int,
                        preClassifiedMode: QueryMode? = nil,
                        onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> ([RAGCitation], QueryMode) {
         let mode = preClassifiedMode ?? .legalAdvisory
@@ -144,7 +142,6 @@ final class LegalExpertService {
             let citations = try await runPipeline(
                 question: question, factContext: decomposed.preamble, subQs: subQs,
                 conversationHistory: conversationHistory, knownFacts: knownFacts,
-                followUpRound: followUpRound, maxFollowUpRounds: maxFollowUpRounds,
                 onEvent: onEvent)
             return (citations, mode)
 
@@ -212,7 +209,7 @@ final class LegalExpertService {
             }
         }
 
-        let totalCount = expertArticles.values.map { $0.count }.reduce(0, +)
+        let totalCount = expertArticles.values.map { $0.count }.reduce(0, +); _ = totalCount
         let allForDisplay = deduplicateArticles(expertArticles).map {
             RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
                         articleNum: $0.articleNum, category: $0.category, content: $0.content)
@@ -458,8 +455,6 @@ final class LegalExpertService {
                               subQs: [String],
                               conversationHistory: [(user: String, assistant: String)],
                               knownFacts: [String: String],
-                              followUpRound: Int,
-                              maxFollowUpRounds: Int,
                               onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
         let questionsToAnalyze = subQs.isEmpty ? [question] : subQs
@@ -508,8 +503,6 @@ final class LegalExpertService {
             expertToQuestions: expertToQuestions,
             conversationHistory: conversationHistory,
             knownFacts: knownFacts,
-            followUpRound: followUpRound,
-            maxFollowUpRounds: maxFollowUpRounds,
             onEvent: onEvent
         )
     }
@@ -529,7 +522,6 @@ final class LegalExpertService {
             expertToQuestions: expertToQuestions,
             conversationHistory: conversationHistory,
             knownFacts: knownFacts,
-            followUpRound: 0, maxFollowUpRounds: 0,
             onEvent: onEvent
         )
     }
@@ -542,42 +534,15 @@ final class LegalExpertService {
                                   expertToQuestions: [String: [String]],
                                   conversationHistory: [(user: String, assistant: String)],
                                   knownFacts: [String: String],
-                                  followUpRound: Int,
-                                  maxFollowUpRounds: Int,
                                   onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
         let allUserText = ([factContext, question] + conversationHistory.map { $0.user + " " + $0.assistant })
             .filter { !$0.isEmpty }.joined(separator: "\n")
         var mergedFacts = autoExtractFacts(question: allUserText, experts: allSelectedExperts)
         for (k, v) in knownFacts { mergedFacts[k] = v }
 
-        // 追问缺失的事实信息（仅当问题未拆分时才追问——多问题情形直接分析）
-        if followUpRound < maxFollowUpRounds && subQs.isEmpty {
-            let missingInfos = allSelectedExperts.flatMap { expert in
-                expert.requiredInfo.filter { info in
-                    mergedFacts[info.field] == nil &&
-                    !info.regexHint.isEmpty &&
-                    !info.question.isEmpty
-                }
-            }.uniqued(by: \.field)
-
-            if !missingInfos.isEmpty {
-                let isLastRound = followUpRound == maxFollowUpRounds - 1
-                let questionText: String
-                if isLastRound || missingInfos.count >= 2 {
-                    // 最后一轮或多项缺失：一次性列出所有问题
-                    let lines = missingInfos.enumerated().map { "\($0.offset + 1). \($0.element.question)" }
-                    questionText = "为了给您提供更准确的法律分析，需要了解以下几点关键信息：\n\n"
-                        + lines.joined(separator: "\n")
-                        + "\n\n请尽量详细回答，有助于专家给出更具针对性的意见。"
-                } else {
-                    // 首轮单项缺失：礼貌引导，说明为何需要该信息
-                    let info = missingInfos[0]
-                    questionText = "为了更准确地分析您的情况，我需要了解一个关键信息：\n\n\(info.question)\n\n这一信息将直接影响适用的法律条款和您的权利主张，请尽量详细说明。"
-                }
-                onEvent(.clarifyingQuestion(questionText))
-                return []
-            }
-        }
+        // LLM fallback: infer any fields regex missed — enriches context without blocking analysis
+        await llmExtractMissingFacts(question: allUserText, experts: allSelectedExperts,
+                                     facts: &mergedFacts, onEvent: onEvent)
 
         let knownFacts = mergedFacts
 
@@ -594,8 +559,10 @@ final class LegalExpertService {
                 let kf = knownFacts
                 group.addTask { [self] in
                     guard !Task.isCancelled else { return (expert.name, [], "", []) }
-                    // Mod 4: filterArticles removed; expert self-filters via prompt instruction
-                    var articles = self.retrieveForExpert(expert: expert, question: expertContext, facts: kf)
+                    // Dynamic keyword expansion runs concurrently with nothing — awaited before retrieval
+                    let dynKws = await self.expandKeywordsForExpert(expert: expert, question: expertContext, facts: kf)
+                    var articles = self.retrieveForExpert(expert: expert, question: expertContext,
+                                                          facts: kf, dynamicKeywords: dynKws)
                     articles = self.expandReferences(articles: articles)
                     let raw = try await self.analyzeWithExpert(expert: expert, question: expertContext,
                                                                facts: kf, articles: articles)
@@ -622,7 +589,7 @@ final class LegalExpertService {
                                    strategy: "expert-cited", relevanceReason: "专家在分析中直接引用（\(label)）")
         }
 
-        let totalArticleCount = expertArticles.values.map { $0.count }.reduce(0, +)
+        let totalArticleCount = expertArticles.values.map { $0.count }.reduce(0, +); _ = totalArticleCount
         let allArticlesForDisplay = deduplicateArticles(expertArticles).map {
             RAGCitation(lawId: $0.lawId, lawTitle: $0.lawTitle, articleNumber: $0.articleNumber,
                         articleNum: $0.articleNum, category: $0.category, content: $0.content)
@@ -922,9 +889,9 @@ final class LegalExpertService {
                             strategy: item.strategy, relevanceReason: "")
         }
 
-        let summary = result.map { "• \($0.title)" }.joined(separator: "\n")
+        _ = result.map { "• \($0.title)" }.joined(separator: "\n")
         onEvent(.thinkStepWithGazette(name: "候选公报案例",
-                                      content: "检索到 \(result.count) 条候选（由 coordinator 决定引用）",
+                                      content: "检索到 \(result.count) 条候选",
                                       gazetteCitations: result))
 
         return result
@@ -1087,10 +1054,60 @@ final class LegalExpertService {
         return facts
     }
 
-    // MARK: - Step 4: Retrieval
+    // MARK: - LLM-based fact extraction fallback
+
+    /// For any requiredInfo fields still missing after regex extraction, attempt one LLM call
+    /// to infer them from the user's text. Updates mergedFacts in place and emits a thinkStep.
+    private func llmExtractMissingFacts(question: String,
+                                        experts: [SubExpert],
+                                        facts: inout [String: String],
+                                        onEvent: @escaping @MainActor (RAGEvent) -> Void) async {
+        let missing = experts.flatMap { $0.requiredInfo }
+            .filter { !$0.field.isEmpty && !$0.question.isEmpty && facts[$0.field] == nil }
+            .uniqued(by: \.field)
+        guard !missing.isEmpty else { return }
+
+        let fieldList = missing.map { "- \($0.field)：\($0.question)" }.joined(separator: "\n")
+        let prompt = """
+        以下是用户描述的案情：
+        \(question)
+
+        请从上述案情中提取以下字段的值（如果案情中有明确或隐含的信息）。对于无法从案情中推断的字段，输出 null。
+        \(fieldList)
+
+        输出严格的 JSON 对象，key 为字段名，value 为提取到的简短描述或 null。不要输出任何其他内容。
+        示例：{"事故当事人类型": "机动车（私家车）", "责任认定": null}
+        """
+        let messages: [[String: Any]] = [
+            ["role": "system", "content": "你是案情信息提取助手，只输出 JSON，不输出任何解释。"],
+            ["role": "user",   "content": prompt]
+        ]
+        guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
+            messages: messages, temperature: 0.0) else { return }
+
+        // Parse JSON
+        guard let data = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        var extracted: [String] = []
+        for info in missing {
+            if let val = obj[info.field], !(val is NSNull), let str = val as? String, !str.isEmpty {
+                facts[info.field] = str
+                extracted.append("\(info.field)：\(str)")
+            }
+        }
+        guard !extracted.isEmpty else { return }
+        await onEvent(.thinkStep(name: "案情补充提取", content: extracted.joined(separator: "\n")))
+    }
+
 
     private nonisolated func retrieveForExpert(expert: SubExpert, question: String,
-                                   facts: [String: String]) -> [DatabaseManager.RAGArticle] {
+                                   facts: [String: String],
+                                   dynamicKeywords: [String] = []) -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
         var seenIds = Set<Int>()
         var results: [DatabaseManager.RAGArticle] = []
@@ -1138,7 +1155,7 @@ final class LegalExpertService {
         }
 
         // 2. FTS in primary laws
-        let kws = simpleKeywords(from: question) + expert.ftsKeywordsExtra
+        let kws = simpleKeywords(from: question) + expert.ftsKeywordsExtra + dynamicKeywords
         let lawCats   = ["法律", "宪法", "修正案", "法律解释", "监察法规"]
         let interpCats = ["司法解释"]
 
@@ -1149,13 +1166,48 @@ final class LegalExpertService {
             }
         }
 
-        // 3. Domain FTS
+        // 3. Domain FTS — static keywords
         for kw in kws {
-            db.ftsSearch(keyword: kw, domains: expert.ftsDomains, categories: lawCats,   limit: 8).forEach { add($0) }
+            db.ftsSearch(keyword: kw, domains: expert.ftsDomains, categories: lawCats,    limit: 8).forEach { add($0) }
             db.ftsSearch(keyword: kw, domains: expert.ftsDomains, categories: interpCats, limit: 5).forEach { add($0) }
         }
 
+        // 4. Dynamic keywords: broader domain search (not limited to expert.ftsDomains)
+        let allDomains = ["宪法相关法","民法典","民法商法","刑法","行政法","经济法","社会法","诉讼与非诉讼程序法"]
+        for kw in dynamicKeywords {
+            db.ftsSearch(keyword: kw, domains: allDomains, categories: lawCats,    limit: 5).forEach { add($0) }
+            db.ftsSearch(keyword: kw, domains: allDomains, categories: interpCats, limit: 3).forEach { add($0) }
+        }
+
         return results
+    }
+
+    /// LLM-based keyword expansion for a single expert: generates 3-6 legal search terms
+    /// specific to the expert's domain and the user's question. Runs concurrently per expert.
+    private func expandKeywordsForExpert(expert: SubExpert, question: String,
+                                         facts: [String: String]) async -> [String] {
+        let factsText = facts.isEmpty ? "" : "\n已知情况：" + facts.map { "\($0.key)：\($0.value)" }.joined(separator: "；")
+        let prompt = """
+        你是【\(expert.name)】，专精：\(expert.domain)。
+        根据用户的案情/问题，生成3-8个最有可能命中相关法律条文的数据库检索词。
+        要求：
+        - 使用法律术语（非口语），每个检索词3-8个汉字
+        - 聚焦本专业领域，不要生成其他领域的词
+        - 覆盖核心法律概念、责任类型、赔偿项目等维度
+        - 不要重复 expert 已有的静态关键词，生成补充性的新词
+        输出纯JSON数组，例如：["违约责任","合同解除后果","损失赔偿计算"]
+        不要任何其他内容。
+
+        用户问题：\(question)\(factsText)
+        """
+        guard let raw = try? await chat(system: "只输出JSON数组，不要markdown。", user: prompt),
+              let data = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                  .replacingOccurrences(of: "```json", with: "")
+                  .replacingOccurrences(of: "```", with: "")
+                  .data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [String]
+        else { return [] }
+        return arr.filter { $0.count >= 3 && $0.count <= 10 }
     }
 
     // MARK: - Reference expansion
@@ -1166,13 +1218,13 @@ final class LegalExpertService {
         return try! NSRegularExpression(pattern: pattern)
     }
 
-    private static let crossLawPattern = LegalExpertService.regex(
+    private nonisolated static let crossLawPattern = LegalExpertService.regex(
         "《([^》]{4,30})》第([一二三四五六七八九十百千零\\d]+)条")
-    private static let selfRefPattern  = LegalExpertService.regex(
+    private nonisolated static let selfRefPattern  = LegalExpertService.regex(
         "(?:本法|依照|适用|参照)第([一二三四五六七八九十百千零\\d]+)条")
-    private static let numberedQRE     = LegalExpertService.regex(
+    private nonisolated static let numberedQRE     = LegalExpertService.regex(
         #"(?:^|\n)\s*(?:\d+[、.．。）)）]|（\d+）|问题\s*[一二三四五六七八九十\d]+[、：:.]?)\s*(?=[^\n]{6,})"#)
-    private static let cjkKeywordRE   = LegalExpertService.regex("[\\u4E00-\\u9FFF]{3,6}")
+    private nonisolated static let cjkKeywordRE   = LegalExpertService.regex("[\\u4E00-\\u9FFF]{3,6}")
 
     private nonisolated func expandReferences(articles: [DatabaseManager.RAGArticle]) -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
@@ -1357,7 +1409,16 @@ final class LegalExpertService {
 【严格限制】只能引用上方提供的法条，不得引用任何未在法条列表中出现的法律法规。
 【重要】如果提供的法条与用户问题不直接相关，请明确说明"现有检索到的法条不足以回答此问题"，并说明需要什么信息或应查阅哪类法规，不得凭记忆编造法条内容或条文编号。
 如果提供的法条中只有部分与问题直接相关，只引用相关的，忽略无关条文，不要为了引用而引用。
-【法条引用逻辑要求】每次引用法条，必须在正文中明确说明该条款与本案事实的具体关联：该条款规定了什么，用户的情况符合该条款的哪个构成要件，因此得出什么结论。不得仅列出条文编号而不说明推理过程，不得引用与结论无逻辑联系的条款。
+
+【逐条演绎分析要求】——这是最重要的格式要求，必须严格遵守：
+对每一条你认为相关的法条，必须按以下三步走：
+第一步：引用该条款的核心规定（原文要点，一两句话）
+第二步：将该条款的构成要件逐一对照用户案情，判断是否满足
+第三步：基于上述对照，得出该条款下的具体结论
+禁止"先写综合结论、再堆积法条"。分析必须从法条出发，推导到结论，而非从结论出发找法条支撑。
+如果某条款只有部分与案情相关，明确指出哪一款/哪一项适用，哪一款不适用。
+
+【缺失信息处理】如果案情中某些信息未知，直接基于已知事实进行分析，对结论有影响的信息用条件式表述（"若…则…，若…则…"）。分析完成后，如果有一个关键信息缺失且会显著影响结论，可在回答末尾简短追问一句（限一个问题）；若问题不影响核心结论则不追问。
 【公报案例引用规则】
 仅在以下两种情形引用公报案例，其余情形不得引用：
 （一）用户有具体案情（含当事人、事实经过、争议），且候选案例与用户案情存在相似的法律关系和核心事实构成（当事人类型、行为性质、争议焦点高度吻合）——此时可引用该案例裁判规则，须具体说明案情相似之处；
@@ -1409,8 +1470,10 @@ final class LegalExpertService {
     1. 直接给出核心结论，不要复述用户问题或说"关于XXX的问题"。
     2. 若有多个子问题：用中文序号（一、二、三）分段，每段开头写明该问题的结论，再展开分析。
     3. 在分析中直接引用条文编号（如"依据第X条"），不要在末尾单独列出"引用法条"清单。
-    4. 如涉及诉讼，注明应去哪个法院。
-    5. 回答详尽完整，不要因字数而截断分析\(AgentLimits.coordinatorAnswerSoftLimitText)。
+    4. 【按需展开原则】只回答用户实际提问的内容。诉讼程序、时效计算、维权步骤等内容，除非用户明确询问，否则不展开。专家模板中的"维权路径/维权流程"条目仅在用户明确问到如何维权或起诉时才使用。
+    5. 【缺失信息处理】基于已知事实直接给出分析结论，对结论有分歧的信息用条件式表述（"若…则…，若…则…"）。分析完成后，如果有一个关键信息缺失且会显著影响核心结论，可在回答末尾简短追问一句（限一个问题）；若不影响核心结论则不追问。
+    6. 如涉及诉讼，注明应去哪个法院。
+    7. 回答详尽完整，不要因字数而截断分析\(AgentLimits.coordinatorAnswerSoftLimitText)。
     严禁使用任何Markdown格式：不得使用**加粗**、#标题、-列表符号、---分隔线等。用中文序号（一、二、三）、顿号、书名号代替。
     不要说"根据以上"、"综上所述"等空话。直接给结论。
     """ }
@@ -1676,7 +1739,7 @@ final class LegalExpertService {
         return result
     }
 
-    private func simpleKeywords(from text: String) -> [String] {
+    private nonisolated func simpleKeywords(from text: String) -> [String] {
         let common = ["违约责任","合同解除","损害赔偿","劳动合同","经济补偿",
                       "工资拖欠","工伤认定","消费者权益","假冒伪劣",
                       "名誉权","隐私权","故意伤害","诉讼时效",

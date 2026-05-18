@@ -71,12 +71,15 @@ final class UserStore: ObservableObject {
 
     @Published var apiKeyConfigured: Bool = {
         let k = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+        // Also considered configured if the built-in key is available (plist injection)
         return !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || BuiltinDeepSeekProvider.hasBuiltinKey
     }()
 
     func refreshAPIKeyState() {
         let k = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
         apiKeyConfigured = !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || BuiltinDeepSeekProvider.hasBuiltinKey
     }
 
     // MARK: - 阅读记录（当前 target）
