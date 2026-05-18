@@ -354,7 +354,7 @@ struct LegalChatView: View {
                     modeCard(
                         icon: "person.crop.circle.badge.questionmark",
                         title: "案情分析",
-                        desc: "描述您遇到的具体纠纷：当事人关系、事件经过、时间节点。专家会追问关键细节，分析责任归属，给出维权建议。",
+                        desc: "描述您遇到的具体纠纷：当事人关系、事件经过、时间节点。专家会直接基于已知事实分析责任归属，给出维权建议；如有关键信息缺失，会在分析末尾简短追问。",
                         examples: [
                             "我和房东签了一年租约，还有四个月到期，房东突然要求我两周内搬走并拒绝退押金，我该怎么办？",
                         ]
@@ -391,6 +391,10 @@ struct LegalChatView: View {
                     tipRow(icon: "book.closed",
                            title: "本地法规库，精准引用",
                            body: "内置 4000 余部法律法规、司法解释全文，回答时直接标注条文出处，不靠\"印象\"作答。点击引用法条可跳转原文查看。")
+
+                    tipRow(icon: "text.magnifyingglass",
+                           title: "逐条演绎分析",
+                           body: "专家对每条相关法条做三步推理：引用条款规定 → 对照您的案情是否满足构成要件 → 得出该条款下的结论。分析从法条出发，结论有据可查。")
 
                     tipRow(icon: "newspaper",
                            title: "公报案例引用",

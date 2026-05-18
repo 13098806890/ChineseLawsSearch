@@ -173,15 +173,15 @@ LLM 根据问题内容，从 6 个专家组中选取 1–3 个相关组，每组
 | `LawDetailView.swift` | 法律全文阅读，条文锚点滚动，公报案例链接 |
 | `UserStore.swift` | 用户偏好、收藏、公报笔记持久化（iCloud KV） |
 
-LLM 接入：DeepSeek（`deepseek-chat`），API Key 存储于系统 Keychain 或通过 xcconfig 注入。
+LLM 接入：DeepSeek（`deepseek-chat`）。
 
 ---
 
 ## 变现
 
 - **免费**：5 次体验额度
-- **畅用版**（月/年订阅）：内置 API Key，每周 80 次，周一自动重置
-- **基础版**（买断）：自备 DeepSeek API Key，无次数限制
+- **畅用版**（月/年订阅）：每周 80 次，周一自动重置
+- **基础版**（买断）：自备 API Key，无次数限制
 
 ---
 
