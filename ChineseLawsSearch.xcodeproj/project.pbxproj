@@ -6,11 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		DAA1D8412FA1DF3B0003A448 /* law_content.db in Resources */ = {isa = PBXBuildFile; fileRef = DAA1D8402FA1DF3B0003A448 /* law_content.db */; };
-		DAB1E0012FA1DF3B0003A448 /* law_enhancements.db in Resources */ = {isa = PBXBuildFile; fileRef = DAB1E0002FA1DF3B0003A448 /* law_enhancements.db */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXContainerItemProxy section */
 		DAA1D81B2FA1DF3B0003A448 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -235,8 +230,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				DAA1D8412FA1DF3B0003A448 /* law_content.db in Resources */,
-				DAB1E0012FA1DF3B0003A448 /* law_enhancements.db in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

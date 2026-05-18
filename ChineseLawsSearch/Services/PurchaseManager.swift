@@ -67,6 +67,11 @@ final class PurchaseManager: ObservableObject {
 
     static let proMonthlyTotal: Int = 150
 
+    /// Debug only: set true to simulate active PRO subscription without a real purchase.
+    #if DEBUG
+    static var debugSimulatePRO: Bool = false
+    #endif
+
     private let freeTotal: Int = 5
 
     // MARK: - Storage keys
@@ -246,6 +251,12 @@ final class PurchaseManager: ObservableObject {
         hasPRO        = pro
         freeRemaining = remainingFreeUses()
         proRemaining  = loadProQuota().count
+        #if DEBUG
+        if Self.debugSimulatePRO {
+            hasPRO       = true
+            proRemaining = Self.proMonthlyTotal
+        }
+        #endif
     }
 
     private func listenForTransactions() -> Task<Void, Never> {

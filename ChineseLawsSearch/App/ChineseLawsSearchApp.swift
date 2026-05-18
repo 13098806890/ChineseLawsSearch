@@ -11,6 +11,12 @@ import SwiftUI
 struct ChineseLawsSearchApp: App {
     @State private var showSplash = true
 
+    init() {
+        #if DEBUG
+        PurchaseManager.debugSimulatePRO = true   // ← 测试订阅状态，发布前改为 false
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             if showSplash {
