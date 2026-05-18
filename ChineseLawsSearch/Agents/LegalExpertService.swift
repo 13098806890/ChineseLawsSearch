@@ -323,7 +323,7 @@ final class LegalExpertService {
         规则：
         - 只列属于你专业领域的条文，不要列其他领域的条文
         - 法律全称（中文，不要简称），条文编号用"第X条"格式（汉字数字）
-        - 每部法律最多5条，总共最多10条
+        - 每部法律最多\(AgentLimits.statuteArticlesPerLawMax)条，总共最多\(AgentLimits.statuteArticlesTotalMax)条
         - 如不确定具体条文号，可只写法律名称，articles 填空数组
         - 如该查询与你的专业领域无关，输出 {"laws": []}
 
@@ -1000,7 +1000,7 @@ final class LegalExpertService {
         \(allExpertDesc)
 
         选专家规则：
-        - 只选与问题核心法律关系直接相关的（通常1-3个，最多4个）
+        - 只选与问题核心法律关系直接相关的（通常1-\(AgentLimits.expertGazetteCandidatesTypical)个，最多\(AgentLimits.routingMaxExperts)个）
         - 违约→合同法专家；侵权→侵权责任专家；竞合→两者都选
         - 涉及公司股权/担保/决议→公司商事专家
         - 有程序问题→对应程序专家（民事/刑事/行政）
@@ -1410,7 +1410,7 @@ final class LegalExpertService {
     2. 若有多个子问题：用中文序号（一、二、三）分段，每段开头写明该问题的结论，再展开分析。
     3. 在分析中直接引用条文编号（如"依据第X条"），不要在末尾单独列出"引用法条"清单。
     4. 如涉及诉讼，注明应去哪个法院。
-    5. 回答详尽完整，不要因字数而截断分析；复杂案情可超过800字。
+    5. 回答详尽完整，不要因字数而截断分析\(AgentLimits.coordinatorAnswerSoftLimitText)。
     严禁使用任何Markdown格式：不得使用**加粗**、#标题、-列表符号、---分隔线等。用中文序号（一、二、三）、顿号、书名号代替。
     不要说"根据以上"、"综上所述"等空话。直接给结论。
     """ }
@@ -1641,7 +1641,7 @@ final class LegalExpertService {
         拆分规则：
         - 如果涉及多个完全不同的法律关系（如彩礼返还 + 抚养权 + 费用分担），必须拆分。
         - 同一法律关系的多个追问 → 不拆，输出 {"preamble":"","questions":[]}。
-        - 最多拆分为4个子问题。
+        - 最多拆分为\(AgentLimits.decompositionMaxSubQuestions)个子问题。
 
         输出要求（严格JSON，不要其他内容）：
         {
