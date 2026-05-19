@@ -1284,13 +1284,29 @@ final class LegalExpertService {
         let terms: [String]
     }
 
-    // MARK: - Round 1.8: LLM-driven missing article lookup
+    // MARK: - Round 1.8: LLM-driven article and case set refinement
 
-    private static let missingArticlesSystem = """
-    你是中国法律专家。仔细阅读以下已检索到的法条，判断：哪些条文正文中引用了（"依照本法第X条"、"适用本编规定"、"参照……"等）或逻辑上依赖的其他条文，但这些条文尚未出现在当前列表中？
-    只列出对回答用户问题确实必要的缺失条文（最多8条）。
-    输出纯 JSON 数组，每项格式 {"law": "法律名称简称（如 民法典）", "article": "第X条"}。
-    如果不缺少任何条文，输出空数组 []。不要输出任何其他内容。
+    private static let articleRefinementSystem = """
+    你是中国法律专家。仔细阅读已检索到的法条和公报案例列表，以及用户问题，完成以下四件事：
+
+    一、补充缺失法条：扫描每条法条正文，找出其中引用了（"依照本法第X条"、"参照……"、"适用本编规定"等）但尚未出现在列表中的条文，且该条文对回答用户问题确实必要。
+
+    二、移除无关法条：当前列表中与用户问题的法律关系、构成要件、适用场景均无关的条文，可以排除。
+
+    三、补充缺失案例：如果当前案例列表对用户问题的覆盖不足，列出需要额外检索的关键词（最多3个，每个3-8字），系统将用这些关键词再次检索数据库。如果已有案例已经足够，返回空数组。
+
+    四、移除无关案例：当前案例列表中与用户案情法律关系不符、事实差异过大的案例，可以排除。
+
+    输出纯 JSON，格式如下（所有字段都必须有，没有则为空数组）：
+    {
+      "add_articles": [{"law": "法律名称（如 民法典）", "article": "第X条"}, ...],
+      "remove_articles": ["《法律名称》第X条", ...],
+      "add_case_keywords": ["检索词1", "检索词2"],
+      "remove_case_ids": [id1, id2]
+    }
+    remove_articles 中填写需排除条文的完整引用格式（《》第X条），必须与已有列表中的格式完全一致。
+    remove_case_ids 中填写需排除案例的 id 整数。
+    不要输出任何其他内容。
     """
 
     private struct ArticleRef: Decodable {
@@ -1298,42 +1314,78 @@ final class LegalExpertService {
         let article: String
     }
 
-    /// Round 1.8: ask LLM which referenced articles are missing from the current set,
-    /// then fetch them from DB and append (deduped) to the article list.
-    private func fetchMissingReferencedArticles(
+    private struct ArticleRefinementResult: Decodable {
+        let add_articles: [ArticleRef]
+        let remove_articles: [String]
+        let add_case_keywords: [String]
+        let remove_case_ids: [Int]
+    }
+
+    private struct RefinementOutput {
+        let toAddArticles: [DatabaseManager.RAGArticle]
+        let toRemoveArticleIds: Set<Int>
+        let addCaseKeywords: [String]
+        let removeCaseIds: Set<Int>
+    }
+
+    /// Round 1.8: refine both article and gazette case sets in a single LLM call.
+    private func refineArticleSet(
         articles: [DatabaseManager.RAGArticle],
+        gazetteDocs: [GazetteDoc],
         question: String,
         facts: [String: String]
-    ) async -> [DatabaseManager.RAGArticle] {
-        let artText = articles.prefix(30)
+    ) async -> RefinementOutput {
+        let artText = articles
             .map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(300)))" }
             .joined(separator: "\n")
+        let caseText = gazetteDocs.isEmpty ? "（无）" : gazetteDocs.map { doc -> String in
+            let src = doc.source == "al" ? "指导案例" : "裁判文书"
+            return "id:\(doc.id) [\(src)]《\(doc.title)》\(doc.rulingGist.prefix(100))"
+        }.joined(separator: "\n")
         let factsText = facts.isEmpty ? "" : "\n已知情况：" + facts.map { "\($0.key)：\($0.value)" }.joined(separator: "；")
-        let userMsg = "用户问题：\(question)\(factsText)\n\n已有法条：\n\(artText)"
+        let userMsg = "用户问题：\(question)\(factsText)\n\n已有法条：\n\(artText)\n\n已有公报案例：\n\(caseText)"
 
+        let empty = RefinementOutput(toAddArticles: [], toRemoveArticleIds: [], addCaseKeywords: [], removeCaseIds: [])
         guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
             messages: [
-                ["role": "system", "content": Self.missingArticlesSystem],
+                ["role": "system", "content": Self.articleRefinementSystem],
                 ["role": "user",   "content": userMsg],
             ],
             temperature: 0
-        ) else { return [] }
+        ) else { return empty }
 
-        let extracted = extractJSON(raw, open: "[", close: "]")
+        let extracted = extractJSON(raw, open: "{", close: "}")
         guard let data = extracted.data(using: .utf8),
-              let refs = try? JSONDecoder().decode([ArticleRef].self, from: data),
-              !refs.isEmpty else { return [] }
+              let result = try? JSONDecoder().decode(ArticleRefinementResult.self, from: data)
+        else { return empty }
 
+        // Fetch articles to add
         let db = DatabaseManager.shared
         let seenIds = Set(articles.map { $0.nodeId })
-        var fetched: [DatabaseManager.RAGArticle] = []
-        for ref in refs.prefix(8) {
+        var toAddArticles: [DatabaseManager.RAGArticle] = []
+        for ref in result.add_articles {
             guard let art = db.articleByRef(lawTitleFragment: ref.law, articleNumber: ref.article),
                   !seenIds.contains(art.nodeId),
-                  !fetched.contains(where: { $0.nodeId == art.nodeId }) else { continue }
-            fetched.append(art)
+                  !toAddArticles.contains(where: { $0.nodeId == art.nodeId }) else { continue }
+            toAddArticles.append(art)
         }
-        return fetched
+
+        // Article node IDs to remove
+        var toRemoveArticleIds = Set<Int>()
+        for removeKey in result.remove_articles {
+            if let match = articles.first(where: {
+                removeKey.contains($0.lawTitle) && removeKey.contains($0.articleNumber)
+            }) {
+                toRemoveArticleIds.insert(match.nodeId)
+            }
+        }
+
+        return RefinementOutput(
+            toAddArticles: toAddArticles,
+            toRemoveArticleIds: toRemoveArticleIds,
+            addCaseKeywords: result.add_case_keywords.filter { $0.count >= 3 && $0.count <= 8 },
+            removeCaseIds: Set(result.remove_case_ids)
+        )
     }
 
     private func queryExpertCaseTerms(articlesSummary: String, question: String) async -> CaseQueryResult {
@@ -1427,6 +1479,7 @@ final class LegalExpertService {
 
         // DB retrieval using LLM-generated terms (limit 5, al first)
         var gazetteCasesText = ""
+        var selectedDocsForRefinement: [GazetteDoc] = []
         if !caseQuery.terms.isEmpty {
             let db = DatabaseManager.shared
             var docs = db.searchGazetteDocsMultiTerm(terms: caseQuery.terms, sourceFilter: nil, limit: 5)
@@ -1436,6 +1489,7 @@ final class LegalExpertService {
                 return a.year > b.year
             }
             let selected = Array(docs.prefix(5))
+            selectedDocsForRefinement = selected
             if !selected.isEmpty {
                 // Round 1.5: show case_brief to expert, ask which cases need full text
                 let needFullTextIds = await queryNeedFullText(cases: selected, question: question)
@@ -1455,19 +1509,59 @@ final class LegalExpertService {
             }
         }
 
-        // Round 1.8: LLM identifies referenced articles missing from the current set, fetch from DB
-        let missingArts = await fetchMissingReferencedArticles(articles: lawArts + interpArts,
-                                                               question: question, facts: facts)
-        if !missingArts.isEmpty {
-            let missingLaw   = missingArts.filter { $0.category != "司法解释" }
-            let missingInterp = missingArts.filter { $0.category == "司法解释" }
-            if !missingLaw.isEmpty {
-                if parts.first != "【法律原文】" { parts.insert("【法律原文】", at: 0) }
-                parts += missingLaw.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
+        // Round 1.8: LLM refines both article and gazette case sets
+        let allCurrentArticles = lawArts + interpArts
+        let refinement = await refineArticleSet(
+            articles: allCurrentArticles,
+            gazetteDocs: selectedDocsForRefinement,
+            question: question,
+            facts: facts
+        )
+        // Apply article additions
+        let addedLaw   = refinement.toAddArticles.filter { $0.category != "司法解释" }
+        let addedInterp = refinement.toAddArticles.filter { $0.category == "司法解释" }
+        if !addedLaw.isEmpty {
+            if parts.first != "【法律原文】" { parts.insert("【法律原文】", at: 0) }
+            parts += addedLaw.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
+        }
+        if !addedInterp.isEmpty {
+            if !parts.contains("\n【司法解释】") { parts.append("\n【司法解释】") }
+            parts += addedInterp.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
+        }
+        // Apply article removals (filter out irrelevant articles from parts)
+        if !refinement.toRemoveArticleIds.isEmpty {
+            let removeKeys = allCurrentArticles
+                .filter { refinement.toRemoveArticleIds.contains($0.nodeId) }
+                .flatMap { art in
+                    [art.articleNumber, "《\(art.lawTitle)》\(art.articleNumber)"]
+                }
+            parts = parts.filter { line in
+                !removeKeys.contains(where: { line.contains($0) && !line.contains("（引用补充）") })
             }
-            if !missingInterp.isEmpty {
-                if !parts.contains("\n【司法解释】") { parts.append("\n【司法解释】") }
-                parts += missingInterp.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
+        }
+        // Apply gazette case additions and removals
+        if !refinement.addCaseKeywords.isEmpty || !refinement.removeCaseIds.isEmpty {
+            let db = DatabaseManager.shared
+            var refinedDocs = selectedDocsForRefinement.filter { !refinement.removeCaseIds.contains($0.id) }
+            if !refinement.addCaseKeywords.isEmpty {
+                var extra = db.searchGazetteDocsMultiTerm(terms: refinement.addCaseKeywords, sourceFilter: nil, limit: 5)
+                extra = extra.filter { doc in !refinedDocs.contains(where: { $0.id == doc.id }) }
+                extra.sort { $0.source == "al" && $1.source != "al" }
+                refinedDocs += Array(extra.prefix(3))
+            }
+            if !refinedDocs.isEmpty {
+                let needFullRefined = await queryNeedFullText(cases: refinedDocs, question: question)
+                let lines = refinedDocs.map { doc -> String in
+                    let sourceLabel = doc.source == "al" ? "指导案例" : "裁判文书"
+                    var entry = "• [\(sourceLabel)]《\(doc.title)》(id:\(doc.id))"
+                    entry += formatCaseBrief(doc.caseBrief)
+                    if !doc.rulingGist.isEmpty { entry += "\n  裁判要旨：\(doc.rulingGist)" }
+                    if needFullRefined.contains(doc.id) && !doc.fullText.isEmpty { entry += "\n  案情全文：\(doc.fullText)" }
+                    return entry
+                }.joined(separator: "\n")
+                gazetteCasesText = "\n\n【相关公报案例】（人民法院公报，LLM检索，仅供参考）\n\(lines)"
+            } else {
+                gazetteCasesText = ""
             }
         }
 
