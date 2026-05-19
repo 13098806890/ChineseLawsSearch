@@ -995,6 +995,10 @@ private struct LinkedAnswerText: View {
 
     private static let articleRefRE = ArticleRefPattern.regex
     private static let bracketRE = try! NSRegularExpression(pattern: "《([^》]{2,60})》")
+    private static let bareArticleRE = try! NSRegularExpression(
+        pattern: #"(?<!》\s{0,2})(第[一二三四五六七八九十百千零\d]+条)"#
+    )
+    private static let lawTitleExtractRE = try! NSRegularExpression(pattern: "《([^》]{2,90})》")
 
     private func buildAttributed() -> NSAttributedString {
         let linkColor = UIColor(AppColors.shared.searchHighlight)
@@ -1062,6 +1066,53 @@ private struct LinkedAnswerText: View {
                     .foregroundColor: linkColor,
                     .underlineStyle: NSUnderlineStyle.single.rawValue
                 ], range: bm.range)
+            }
+        }
+
+        // Second pass: bare 第X条 (no preceding 《》) — infer law from nearest preceding law title in text.
+        // Build list of (location, lawTitle) from all 《》 spans in the text, sorted by position.
+        let allTitleMatches = Self.lawTitleExtractRE.matches(in: text, range: fullRange)
+        var titlePositions: [(Int, String)] = allTitleMatches.compactMap { m in
+            guard m.range(at: 1).location != NSNotFound else { return nil }
+            return (m.range.location, raw.substring(with: m.range(at: 1)))
+        }
+
+        if !titlePositions.isEmpty {
+            // Collect ranges already linked from first pass (avoid double-linking)
+            var linkedRanges: [NSRange] = matches.compactMap { m -> NSRange? in
+                guard let _ = result.attribute(.link, at: m.range.location,
+                                               effectiveRange: nil) else { return nil }
+                return m.range
+            }
+            let bareMatches = Self.bareArticleRE.matches(in: text, range: fullRange)
+            for bm in bareMatches {
+                let artRange = bm.range(at: 1)
+                guard artRange.location != NSNotFound else { continue }
+                // Skip if already linked
+                if result.attribute(.link, at: artRange.location, effectiveRange: nil) != nil { continue }
+                let artNumNS = raw.substring(with: artRange)
+                // Find nearest preceding law title
+                let pos = artRange.location
+                let preceding = titlePositions.last(where: { $0.0 < pos })
+                guard let (_, titleNS) = preceding else { continue }
+                var lawId: Int?
+                var artNum: Int?
+                let key = "\(titleNS)||\(artNumNS)"
+                if let hit = citationMap[key] {
+                    lawId = hit.0; artNum = hit.1
+                } else {
+                    let article = DatabaseManager.shared.articleByRef(
+                        lawTitleFragment: titleNS, articleNumber: artNumNS)
+                    lawId  = article?.lawId
+                    artNum = article?.articleNum
+                }
+                guard let lid = lawId,
+                      let url = URL(string: "legalchat://article/\(lid)/\(artNum ?? 0)") else { continue }
+                result.addAttributes([
+                    .link: url,
+                    .foregroundColor: linkColor,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue
+                ], range: artRange)
             }
         }
 

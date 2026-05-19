@@ -12,6 +12,7 @@ struct LawDetailView: View {
     var navigateToGazette: (GazetteDoc) -> Void = { _ in }
     var canGoBack: Bool = false
     var goBack: () -> Void = {}
+    var goToMenu: () -> Void = {}   // jump back to TOC/browse when canGoBack is true
 
     @EnvironmentObject private var userStore: UserStore
 
@@ -225,12 +226,14 @@ struct LawDetailView: View {
         }
         .navigationTitle(law.title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(canGoBack)
         .toolbar {
+            // When jumped in from chat/gazette: hide system back, put "返回引用处" as primary back,
+            // right-swipe gesture also triggers goBack (system gesture disabled by backButtonHidden).
+            // "去菜单" moves to trailing as an icon.
             if canGoBack {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        goBack()
-                    } label: {
+                    Button { goBack() } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
                                 .font(.system(size: 14, weight: .semibold))
@@ -241,21 +244,42 @@ struct LawDetailView: View {
                 }
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                if isSearching {
-                    Button("完成") {
-                        isSearching = false
-                        searchQuery = ""
-                        searchFocused = false
+                HStack(spacing: 16) {
+                    if canGoBack {
+                        // Menu icon to go back to the browse tab / TOC
+                        Button {
+                            // Jump to browse tab by clearing backStack entry that isn't from browse
+                            // We reuse the existing navigate mechanism: just set target to nil navigates to TOC
+                            // Actually: call a dedicated closure passed from ContentView
+                            goToMenu()
+                        } label: {
+                            Image(systemName: "list.bullet")
+                        }
                     }
-                } else {
-                    Button {
-                        isSearching = true
-                    } label: {
-                        Image(systemName: "magnifyingglass")
+                    if isSearching {
+                        Button("完成") {
+                            isSearching = false
+                            searchQuery = ""
+                            searchFocused = false
+                        }
+                    } else {
+                        Button {
+                            isSearching = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
                     }
                 }
             }
         }
+        .gesture(
+            canGoBack
+            ? DragGesture(minimumDistance: 20)
+                .onEnded { v in
+                    if v.translation.width > 60 && abs(v.translation.height) < 80 { goBack() }
+                }
+            : nil
+        )
     }
 }
 

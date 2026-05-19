@@ -432,6 +432,7 @@ struct GazetteDetailView: View {
     let doc: GazetteDoc
     var navigateBack: (() -> Void)? = nil
     var backLabel: String = "返回法条"
+    var goToMenu: (() -> Void)? = nil   // jump back to gongbao list when navigateBack is set
     @EnvironmentObject private var userStore: UserStore
 
     private var isFav: Bool { userStore.isGazetteFavorited(docId: doc.id) }
@@ -524,12 +525,11 @@ struct GazetteDetailView: View {
         }
         .navigationTitle(sourceLabel)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(navigateBack != nil)
         .toolbar {
             if let back = navigateBack {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        back()
-                    } label: {
+                    Button { back() } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
                                 .font(.system(size: 14, weight: .semibold))
@@ -541,6 +541,11 @@ struct GazetteDetailView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 16) {
+                    if navigateBack != nil, let menu = goToMenu {
+                        Button { menu() } label: {
+                            Image(systemName: "list.bullet")
+                        }
+                    }
                     Button {
                         showNoteSheet = true
                     } label: {
@@ -575,6 +580,14 @@ struct GazetteDetailView: View {
                 }
             }
         }
+        .gesture(
+            navigateBack != nil
+            ? DragGesture(minimumDistance: 20)
+                .onEnded { v in
+                    if v.translation.width > 60 && abs(v.translation.height) < 80 { navigateBack?() }
+                }
+            : nil
+        )
         .sheet(isPresented: $showNoteSheet) {
             GazetteNoteSheet(doc: doc)
                 .environmentObject(userStore)

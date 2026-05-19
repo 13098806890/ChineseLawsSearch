@@ -140,7 +140,8 @@ struct ContentView: View {
                     .navigationDestination(item: $target) { t in
                         LawDetailView(target: t, navigate: navigate,
                                       navigateToGazette: navigateToGazette,
-                                      canGoBack: !backStack.isEmpty, goBack: goBack)
+                                      canGoBack: !backStack.isEmpty, goBack: goBack,
+                                      goToMenu: { tab = .browse; target = nil; backStack.removeAll(); persistBackStack() })
                             .environmentObject(userStore)
                     }
             }
@@ -153,7 +154,8 @@ struct ContentView: View {
                     NavigationStack {
                         LawDetailView(target: t, navigate: navigate,
                                       navigateToGazette: navigateToGazette,
-                                      canGoBack: !backStack.isEmpty, goBack: goBack)
+                                      canGoBack: !backStack.isEmpty, goBack: goBack,
+                                      goToMenu: { target = nil; backStack.removeAll(); persistBackStack() })
                             .environmentObject(userStore)
                     }
                     .id(t)
@@ -218,7 +220,8 @@ struct ContentView: View {
                                 navigateBack: gazetteNavigatedFromBrowse ? { tab = .browse; gazetteNavigatedFromBrowse = false }
                                             : gazetteNavigatedFromChat   ? { tab = .chat;   gazetteNavigatedFromChat   = false }
                                             : nil,
-                                backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条"
+                                backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条",
+                                goToMenu: { selectedGazetteDoc = nil }
                             )
                             .environmentObject(userStore)
                         }
@@ -245,7 +248,8 @@ struct ContentView: View {
                             navigateBack: gazetteNavigatedFromBrowse ? { tab = .browse; gazetteNavigatedFromBrowse = false }
                                         : gazetteNavigatedFromChat   ? { tab = .chat;   gazetteNavigatedFromChat   = false }
                                         : nil,
-                            backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条"
+                            backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条",
+                            goToMenu: { selectedGazetteDoc = nil }
                         )
                         .environmentObject(userStore)
                     } else {
