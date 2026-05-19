@@ -195,8 +195,7 @@ final class LegalExpertService {
                         // Mod 3: each expert has its own seenIds (no shared state)
                         articles = try await self.lookupArticlesWithExpert(expert: expert, question: question, db: db)
                     } else {
-                        // Mod 4: filterArticles removed; expert self-filters via prompt
-                        articles = self.retrieveForExpert(expert: expert, question: question, facts: [:])
+                        articles = await self.pullArticlesForExpert(expert: expert, question: question, facts: [:])
                         articles = self.expandReferences(articles: articles)
                     }
                     let answer = try await self.analyzeWithExpertMode(expert: expert, question: question, articles: articles, mode: mode)
@@ -498,12 +497,36 @@ final class LegalExpertService {
         let enrichedFactContext = combinedCaseSummary.isEmpty ? factContext
             : (factContext.isEmpty ? combinedCaseSummary : "\(factContext)\n\n【案情摘要】\n\(combinedCaseSummary)")
 
+        // Merge extracted facts from all analyses + caller-supplied knownFacts
+        var mergedKnownFacts = knownFacts
+        for analysis in questionAnalyses {
+            for (k, v) in analysis.extractedFacts where mergedKnownFacts[k] == nil {
+                mergedKnownFacts[k] = v
+            }
+        }
+        // Emit extracted facts as a thinkStep if any were found
+        let newlyExtracted = mergedKnownFacts.filter { knownFacts[$0.key] == nil }
+        if !newlyExtracted.isEmpty {
+            let factLines = newlyExtracted.map { "\($0.key)：\($0.value)" }.sorted().joined(separator: "\n")
+            onEvent(.thinkStep(name: "案情补充提取", content: factLines))
+        }
+
+        // Merge search keywords from all analyses (deduplicated)
+        var mergedSearchKeywords: [String] = []
+        var seenKws = Set<String>()
+        for analysis in questionAnalyses {
+            for kw in analysis.searchKeywords where seenKws.insert(kw).inserted {
+                mergedSearchKeywords.append(kw)
+            }
+        }
+
         return try await runExpertStages(
             question: question, factContext: enrichedFactContext, subQs: subQs,
             allSelectedExperts: allSelectedExperts,
             expertToQuestions: expertToQuestions,
             conversationHistory: conversationHistory,
-            knownFacts: knownFacts,
+            knownFacts: mergedKnownFacts,
+            searchKeywords: mergedSearchKeywords,
             onEvent: onEvent
         )
     }
@@ -523,6 +546,7 @@ final class LegalExpertService {
             expertToQuestions: expertToQuestions,
             conversationHistory: conversationHistory,
             knownFacts: knownFacts,
+            searchKeywords: [],
             onEvent: onEvent
         )
     }
@@ -535,17 +559,9 @@ final class LegalExpertService {
                                   expertToQuestions: [String: [String]],
                                   conversationHistory: [(user: String, assistant: String)],
                                   knownFacts: [String: String],
+                                  searchKeywords: [String],
                                   onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
-        let allUserText = ([factContext, question] + conversationHistory.map { $0.user + " " + $0.assistant })
-            .filter { !$0.isEmpty }.joined(separator: "\n")
-        var mergedFacts = autoExtractFacts(question: allUserText, experts: allSelectedExperts)
-        for (k, v) in knownFacts { mergedFacts[k] = v }
-
-        // LLM fallback: infer any fields regex missed — enriches context without blocking analysis
-        await llmExtractMissingFacts(question: allUserText, experts: allSelectedExperts,
-                                     facts: &mergedFacts, onEvent: onEvent)
-
-        let knownFacts = mergedFacts
+        let knownFacts = knownFacts
 
         // Step 3: 每个专家检索并分析其负责的子问题（Mod 3: 并发执行）
         var expertArticles: [String: [DatabaseManager.RAGArticle]] = [:]
@@ -558,15 +574,15 @@ final class LegalExpertService {
                 let questionText = assignedQs.count == 1 ? assignedQs[0] : assignedQs.joined(separator: "\n")
                 let expertContext = factContext.isEmpty ? questionText : "\(factContext)\n\n\(questionText)"
                 let kf = knownFacts
+                let skws = searchKeywords
                 group.addTask { [self] in
                     guard !Task.isCancelled else { return (expert.name, [], "", []) }
-                    // Dynamic keyword expansion runs concurrently with nothing — awaited before retrieval
-                    let dynKws = await self.expandKeywordsForExpert(expert: expert, question: expertContext, facts: kf)
-                    var articles = self.retrieveForExpert(expert: expert, question: expertContext,
-                                                          facts: kf, dynamicKeywords: dynKws)
+                    // Round 0: LLM browses article index and selects relevant articles (Pull mode)
+                    var articles = await self.pullArticlesForExpert(expert: expert, question: expertContext, facts: kf, searchKeywords: skws)
                     articles = self.expandReferences(articles: articles)
                     let raw = try await self.analyzeWithExpert(expert: expert, question: expertContext,
-                                                               facts: kf, articles: articles)
+                                                               facts: kf, articles: articles,
+                                                               searchKeywords: skws)
                     let (body, caseTitles) = self.parseExpertCitations(raw)
                     return (expert.name, articles, body, caseTitles)
                 }
@@ -645,9 +661,10 @@ final class LegalExpertService {
         // Step 5+6: Coordinator 最终回答 + 引用提取（共用函数）
         let allArticlesFlat = deduplicateArticles(expertArticles)
         return try await runCoordinatorStage(
-            question: question, searchQuestion: allUserText, subQs: subQs,
+            question: question, searchQuestion: factContext.isEmpty ? question : "\(factContext)\n\(question)", subQs: subQs,
             groupAnswers: groupAnswers, allArticlesFlat: allArticlesFlat,
             expertGazetteCites: expertGazetteCites,
+            searchKeywords: searchKeywords,
             systemPrompt: coordinatorSystemPrompt, onEvent: onEvent)
     }
 
@@ -661,17 +678,24 @@ final class LegalExpertService {
                                       groupAnswers: [String: String],
                                       allArticlesFlat: [DatabaseManager.RAGArticle],
                                       expertGazetteCites: [GazetteCitation] = [],
+                                      searchKeywords: [String] = [],
                                       systemPrompt: String,
                                       onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
         // 公报案例检索在 coordinator 生成之前完成，结果注入 context
         // 用 searchQuestion（含历史上下文）而非 question（追问时可能只是"无"）
-        // LLM 扩词确保无标点长句也能提取语义关键词（如"交强险"、"追偿权"）
-        let expansion = await expandSearchTerms(question: searchQuestion)
+        // 若上游已通过 characterizeAndRoute 生成检索词，直接复用，跳过 expandSearchTerms LLM call
+        let gazetteTerms: [String]
+        if searchKeywords.isEmpty {
+            let expansion = await expandSearchTerms(question: searchQuestion)
+            gazetteTerms = expansion.terms
+        } else {
+            gazetteTerms = searchKeywords
+        }
         let nodeIds = Array(Set(allArticlesFlat.compactMap { $0.nodeId > 0 ? $0.nodeId : nil }))
         let gazetteCites = await retrieveGazetteCases(
             question: searchQuestion,
-            expandedTerms: expansion.terms,
+            expandedTerms: gazetteTerms,
             sourceFilter: nil,
             candidateNodeIds: nodeIds,
             onEvent: onEvent)
@@ -926,6 +950,8 @@ final class LegalExpertService {
         let characterization: String   // 多层定性描述
         let experts: [SubExpert]
         let caseSummary: String        // 结构化案情摘要（当事人/争议焦点/证据/法律关系），空串表示无
+        let extractedFacts: [String: String]  // 从案情中提取的字段值（由 characterizeAndRoute 在定性同一轮完成）
+        let searchKeywords: [String]   // 供 FTS 补充检索使用的法律术语，由 characterizeAndRoute 生成
     }
 
     /// Mod 5: characterizeAndRoute now accepts conversationHistory for context.
@@ -940,8 +966,16 @@ final class LegalExpertService {
             .map { "- \($0.name)：\($0.domain)" }
             .sorted().joined(separator: "\n")
 
+        // Collect all requiredInfo fields from all experts (deduplicated by field name)
+        let allRequiredInfo = nameToExpert.values
+            .flatMap { $0.requiredInfo }
+            .uniqued(by: \.field)
+        let factFieldsDesc = allRequiredInfo
+            .map { "  - \($0.field)：\($0.question)" }
+            .joined(separator: "\n")
+
         let system = """
-        你是中国法律问题定性专家。对法律问题进行递进式定性分析，提取案情要素，然后选出需要的细分专家。
+        你是中国法律问题定性专家。对法律问题进行递进式定性分析，提取案情要素，选出需要的细分专家，并提取各专家所需的关键案情字段。
 
         定性步骤（递进，每步基于上一步结论）：
         1. 法律关系性质：违约 / 侵权 / 行政 / 刑事 / 混合 / 公司法律关系 / 劳动关系 等
@@ -954,6 +988,11 @@ final class LegalExpertService {
         - 关键证据线索：用户已提到的或可能需要的证据（简要列举，逗号分隔）
         - 法律关系摘要：一句话总结本案法律关系（用于专家分析上下文）
 
+        专家所需案情字段提取（"case_facts" 对象）：
+        以下是各细分专家可能需要的关键事实字段。请从案情中直接提取，只填写案情中可以读到的事实描述，不得推断或虚构。如果某字段在案情中无对应信息，输出 null。
+        注意：字段值只能是对用户叙述的事实的直接描述（如"私家车""物业公司""轮胎破损"），不得做法律定性（不得写"建筑倒塌""侵权行为"等法律归类术语）。
+        \(factFieldsDesc)
+
         输出 JSON（严格格式，不要其他内容）：
         {
           "layers": ["第1步：...", "第2步：...", "第3步：...（无则省略）"],
@@ -961,8 +1000,12 @@ final class LegalExpertService {
           "case_parties": "原告：xxx；被告：xxx",
           "dispute_focus": "争议焦点一句话",
           "evidence_hints": "证据线索1，证据线索2",
-          "legal_summary": "法律关系一句话摘要"
+          "legal_summary": "法律关系一句话摘要",
+          "case_facts": {"字段名": "值或null", ...},
+          "search_keywords": ["法律术语1", "法律术语2", "法律术语3"]
         }
+
+        search_keywords 规则：生成 4-8 个最可能命中相关法律条文和公报案例的中文法律术语（3-8字），覆盖核心法律概念、责任类型、赔偿项目、争议焦点。
 
         可用细分专家：
         \(allExpertDesc)
@@ -979,7 +1022,6 @@ final class LegalExpertService {
         if !knownFacts.isEmpty {
             ctx += "\n已知事实：" + knownFacts.map { "\($0.key)=\($0.value)" }.joined(separator: "；")
         }
-        // Mod 5: attach recent conversation history for context
         if !conversationHistory.isEmpty {
             let hist = conversationHistory.suffix(2)
                 .map { "用户：\($0.user.prefix(100))\n助手：\($0.assistant.prefix(80))" }
@@ -1011,11 +1053,26 @@ final class LegalExpertService {
         if !legalSum.isEmpty { summaryParts.append("法律关系：\(legalSum)") }
         let caseSummary = summaryParts.joined(separator: "\n")
 
+        // Parse extracted case facts (null values are dropped)
+        var extractedFacts: [String: String] = [:]
+        if let factsObj = obj["case_facts"] as? [String: Any] {
+            for (key, val) in factsObj {
+                if let str = val as? String, !str.isEmpty {
+                    extractedFacts[key] = str
+                }
+            }
+        }
+
+        let searchKeywords = (obj["search_keywords"] as? [String] ?? [])
+            .filter { $0.count >= 3 && $0.count <= 10 }
+
         return QuestionAnalysis(
             question: question,
             characterization: charText,
             experts: selected.isEmpty ? fallbackAnalysis(question: question).experts : selected,
-            caseSummary: caseSummary
+            caseSummary: caseSummary,
+            extractedFacts: extractedFacts,
+            searchKeywords: searchKeywords
         )
     }
 
@@ -1033,182 +1090,139 @@ final class LegalExpertService {
             question: question,
             characterization: "（关键词兜底路由）",
             experts: matched.isEmpty ? [contractGeneralExpert] : matched,
-            caseSummary: ""
+            caseSummary: "",
+            extractedFacts: [:],
+            searchKeywords: []
         )
     }
 
-    // MARK: - Info extraction
+    // MARK: - Round 0: Pull 模式 — LLM 浏览目录后主动选条
 
-    private func autoExtractFacts(question: String, experts: [SubExpert]) -> [String: String] {
-        var facts: [String: String] = [:]
-        for expert in experts {
-            for info in expert.requiredInfo where facts[info.field] == nil {
-                guard !info.regexHint.isEmpty,
-                      let regex = try? NSRegularExpression(pattern: info.regexHint),
-                      let match = regex.firstMatch(in: question,
-                                                   range: NSRange(question.startIndex..., in: question)),
-                      let range = Range(match.range, in: question)
-                else { continue }
-                facts[info.field] = String(question[range])
-            }
-        }
-        return facts
-    }
+    private static let largeCodexThreshold = 200  // 超过此条数的法律用两阶段
 
-    // MARK: - LLM-based fact extraction fallback
+    // Phase A（大型法典）：LLM 看章节目录，选出需要阅读的章节
+    private static let chapterSelectionSystem = """
+    你是中国法律专家。根据用户问题，从以下法律的章节目录中，选出需要精读的章节。
 
-    /// For any requiredInfo fields still missing after regex extraction, attempt one LLM call
-    /// to infer them from the user's text. Updates mergedFacts in place and emits a thinkStep.
-    private func llmExtractMissingFacts(question: String,
-                                        experts: [SubExpert],
-                                        facts: inout [String: String],
-                                        onEvent: @escaping @MainActor (RAGEvent) -> Void) async {
-        let missing = experts.flatMap { $0.requiredInfo }
-            .filter { !$0.field.isEmpty && !$0.question.isEmpty && facts[$0.field] == nil }
-            .uniqued(by: \.field)
-        guard !missing.isEmpty else { return }
+    选章原则：
+    1. 只选与案情法律关系直接相关的章节
+    2. 宁可多选一章看完再筛，不要漏掉核心章节
+    3. 每章后标注了该章条文数，作为参考
 
-        let fieldList = missing.map { "- \($0.field)：\($0.question)" }.joined(separator: "\n")
-        let prompt = """
-        以下是用户描述的案情：
-        \(question)
+    输出纯 JSON 数组，填写章节节点 ID（整数）：
+    [nodeId1, nodeId2, ...]
+    不要任何其他内容。
+    """
 
-        请从上述案情中提取以下字段的值（如果案情中有明确或隐含的信息）。对于无法从案情中推断的字段，输出 null。
-        \(fieldList)
+    // Phase B / 短法律（单阶段）：LLM 看条文目录，选出需要的具体条文
+    private static let articleIndexSelectionSystem = """
+    你是中国法律专家。根据用户问题，从以下法律条文目录中精准选出真正必要的条文。
 
-        输出严格的 JSON 对象，key 为字段名，value 为提取到的简短描述或 null。不要输出任何其他内容。
-        示例：{"事故当事人类型": "机动车（私家车）", "责任认定": null}
-        """
-        let messages: [[String: Any]] = [
-            ["role": "system", "content": "你是案情信息提取助手，只输出 JSON，不输出任何解释。"],
-            ["role": "user",   "content": prompt]
-        ]
-        guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
-            messages: messages, temperature: 0.0) else { return }
+    选条原则：
+    1. 只选构成要件与案情事实相符的条文——条文要求的关键事实必须在案情中存在
+    2. 领域相关但要件不符的，不选（例如案情是"地面固定设施损坏"，不选要求"脱落坠落"的条文）
+    3. 宁可少选精准，不要多选泛滥
 
-        // Parse JSON
-        guard let data = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
+    输出纯 JSON 数组，每项包含法律名称和条号：
+    [{"law": "法律全名", "article": "第X条"}, ...]
+    不要任何其他内容。
+    """
 
-        var extracted: [String] = []
-        for info in missing {
-            if let val = obj[info.field], !(val is NSNull), let str = val as? String, !str.isEmpty {
-                facts[info.field] = str
-                extracted.append("\(info.field)：\(str)")
-            }
-        }
-        guard !extracted.isEmpty else { return }
-        await onEvent(.thinkStep(name: "案情补充提取", content: extracted.joined(separator: "\n")))
-    }
-
-
-    private nonisolated func retrieveForExpert(expert: SubExpert, question: String,
-                                   facts: [String: String],
-                                   dynamicKeywords: [String] = []) -> [DatabaseManager.RAGArticle] {
+    /// Round 0: Pull 模式检索
+    /// - 大型法典（>200条）：Phase A 选章节 → Phase B 选条文
+    /// - 短法律/司法解释（≤200条）：直接展示条文目录选条
+    /// - FTS 补充：lawTitles 之外的司法解释、九民纪要等
+    private func pullArticlesForExpert(expert: SubExpert,
+                                        question: String,
+                                        facts: [String: String],
+                                        searchKeywords: [String] = []) async -> [DatabaseManager.RAGArticle] {
         let db = DatabaseManager.shared
         var seenIds = Set<Int>()
-        var results: [DatabaseManager.RAGArticle] = []
+        var result: [DatabaseManager.RAGArticle] = []
 
-        func add(_ a: DatabaseManager.RAGArticle, pinned: Bool = false) {
+        func add(_ a: DatabaseManager.RAGArticle) {
             guard seenIds.insert(a.nodeId).inserted else { return }
-            let modified = DatabaseManager.RAGArticle(
-                nodeId: a.nodeId, lawId: a.lawId, lawTitle: a.lawTitle,
-                category: a.category, legalDomain: a.legalDomain,
-                articleNumber: a.articleNumber, articleNum: a.articleNum,
-                content: a.content, pinned: pinned || a.pinned)
-            results.append(modified)
+            result.append(a)
         }
 
-        // 1. Chapter navigation via hint ids
+        let factsText = facts.isEmpty ? "" : "\n已知情况：" + facts.map { "\($0.key)：\($0.value)" }.joined(separator: "；")
+        let context = "用户问题：\(question)\(factsText)"
+
+        // ── Phase A+B（按法律处理）──────────────────────────────────────────
         for lawTitle in expert.lawTitles {
-            guard let lid = db.lawId(title: lawTitle) else { continue }
-            let structure = db.lawStructure(lawId: lid)
+            let totalCount = db.articleIndex(lawTitle: lawTitle).count
+            guard totalCount > 0 else { continue }
 
-            var chapterIds = expert.chapterIdHints
-            // keyword-match structure titles
-            let domainKws = expert.domain.components(separatedBy: CharacterSet(charactersIn: "、，"))
-            for node in structure {
-                let title = node.title.isEmpty ? node.content : node.title
-                if domainKws.contains(where: { $0.count >= 2 && title.contains($0) }) {
-                    if !chapterIds.contains(node.id) { chapterIds.append(node.id) }
-                }
-            }
+            if totalCount > Self.largeCodexThreshold {
+                // 两阶段：先选章节，再选条文
+                let chapters = db.chapterIndex(lawTitle: lawTitle)
+                let chapterLines = chapters.map { ch -> String in
+                    let indent = ch.type == "part" ? "" : "  "
+                    return "\(indent)[\(ch.nodeId)] \(ch.title)（\(ch.articleCount)条）"
+                }.joined(separator: "\n")
 
-            var count = 0
-            for chId in chapterIds {
-                let arts = db.articlesInNode(chId)
-                for var art in arts {
-                    art = DatabaseManager.RAGArticle(
-                        nodeId: art.nodeId, lawId: lid, lawTitle: lawTitle,
-                        category: "法律", legalDomain: "",
-                        articleNumber: art.articleNumber, articleNum: art.articleNum,
-                        content: art.content, pinned: true)
-                    add(art, pinned: true)
-                    count += 1
-                    if count >= 30 { break }
+                let phaseAMsg = "\(context)\n\n《\(lawTitle)》章节目录：\n\(chapterLines)"
+                guard let rawA = try? await chat(system: Self.chapterSelectionSystem, user: phaseAMsg),
+                      let dataA = extractJSON(rawA, open: "[", close: "]").data(using: .utf8),
+                      let selectedChapterIds = try? JSONDecoder().decode([Int].self, from: dataA),
+                      !selectedChapterIds.isEmpty
+                else { continue }
+
+                // Phase B：拿选中章节的条文目录，再选具体条文
+                let articleEntries = db.articleIndex(lawTitle: lawTitle, chapterNodeIds: selectedChapterIds)
+                guard !articleEntries.isEmpty else { continue }
+
+                var entryMap: [String: DatabaseManager.ArticleIndexEntry] = [:]
+                let artLines = articleEntries.map { e -> String in
+                    entryMap["\(lawTitle)·\(e.articleNumber)"] = e
+                    return "  \(e.articleNumber)：\(e.snippet)"
+                }.joined(separator: "\n")
+
+                let phaseBMsg = "\(context)\n\n《\(lawTitle)》选中章节条文目录：\n\(artLines)"
+                if let rawB = try? await chat(system: Self.articleIndexSelectionSystem, user: phaseBMsg),
+                   let dataB = extractJSON(rawB, open: "[", close: "]").data(using: .utf8),
+                   let refs = try? JSONDecoder().decode([ArticleRef].self, from: dataB) {
+                    let ids = refs.compactMap { entryMap["\(lawTitle)·\($0.article)"]?.nodeId }
+                    db.articlesByNodeIds(ids).forEach { add($0) }
                 }
-                if count >= 30 { break }
+
+            } else {
+                // 单阶段：直接展示条文目录
+                let entries = db.articleIndex(lawTitle: lawTitle)
+                var entryMap: [String: DatabaseManager.ArticleIndexEntry] = [:]
+                let artLines = entries.map { e -> String in
+                    entryMap["\(lawTitle)·\(e.articleNumber)"] = e
+                    return "  \(e.articleNumber)：\(e.snippet)"
+                }.joined(separator: "\n")
+
+                let msg = "\(context)\n\n《\(lawTitle)》（共\(entries.count)条）条文目录：\n\(artLines)"
+                if let raw = try? await chat(system: Self.articleIndexSelectionSystem, user: msg),
+                   let data = extractJSON(raw, open: "[", close: "]").data(using: .utf8),
+                   let refs = try? JSONDecoder().decode([ArticleRef].self, from: data) {
+                    let ids = refs.compactMap { entryMap["\(lawTitle)·\($0.article)"]?.nodeId }
+                    db.articlesByNodeIds(ids).forEach { add($0) }
+                }
             }
         }
 
-        // 2. FTS in primary laws
-        let kws = simpleKeywords(from: question) + expert.ftsKeywordsExtra + dynamicKeywords
+        // ── FTS 补充：司法解释、九民纪要等 lawTitles 未覆盖的内容 ───────────
+        let factKws = facts.values.flatMap { simpleKeywords(from: $0) }
+        let kws = simpleKeywords(from: question) + expert.ftsKeywordsExtra + searchKeywords + factKws
         let lawCats   = ["法律", "宪法", "修正案", "法律解释", "监察法规"]
         let interpCats = ["司法解释"]
 
-        for lawTitle in expert.lawTitles {
-            for kw in kws {
-                db.ftsSearchInLaw(keyword: kw, lawTitle: lawTitle,
-                                  categories: lawCats + interpCats).forEach { add($0) }
-            }
-        }
-
-        // 3. Domain FTS — static keywords
+        // lawTitles 内的司法解释（已通过 Pull 处理），这里额外搜索域内其他司法解释
         for kw in kws {
             db.ftsSearch(keyword: kw, domains: expert.ftsDomains, categories: lawCats,    limit: 8).forEach { add($0) }
-            db.ftsSearch(keyword: kw, domains: expert.ftsDomains, categories: interpCats, limit: 5).forEach { add($0) }
+            db.ftsSearch(keyword: kw, domains: expert.ftsDomains, categories: interpCats, limit: 8).forEach { add($0) }
         }
-
-        // 4. Dynamic keywords: broader domain search (not limited to expert.ftsDomains)
         let allDomains = ["宪法相关法","民法典","民法商法","刑法","行政法","经济法","社会法","诉讼与非诉讼程序法"]
-        for kw in dynamicKeywords {
+        for kw in searchKeywords {
             db.ftsSearch(keyword: kw, domains: allDomains, categories: lawCats,    limit: 5).forEach { add($0) }
-            db.ftsSearch(keyword: kw, domains: allDomains, categories: interpCats, limit: 3).forEach { add($0) }
+            db.ftsSearch(keyword: kw, domains: allDomains, categories: interpCats, limit: 5).forEach { add($0) }
         }
 
-        return results
-    }
-
-    /// LLM-based keyword expansion for a single expert: generates 3-6 legal search terms
-    /// specific to the expert's domain and the user's question. Runs concurrently per expert.
-    private func expandKeywordsForExpert(expert: SubExpert, question: String,
-                                         facts: [String: String]) async -> [String] {
-        let factsText = facts.isEmpty ? "" : "\n已知情况：" + facts.map { "\($0.key)：\($0.value)" }.joined(separator: "；")
-        let prompt = """
-        你是【\(expert.name)】，专精：\(expert.domain)。
-        根据用户的案情/问题，生成3-8个最有可能命中相关法律条文的数据库检索词。
-        要求：
-        - 使用法律术语（非口语），每个检索词3-8个汉字
-        - 聚焦本专业领域，不要生成其他领域的词
-        - 覆盖核心法律概念、责任类型、赔偿项目等维度
-        - 不要重复 expert 已有的静态关键词，生成补充性的新词
-        输出纯JSON数组，例如：["违约责任","合同解除后果","损失赔偿计算"]
-        不要任何其他内容。
-
-        用户问题：\(question)\(factsText)
-        """
-        guard let raw = try? await chat(system: "只输出JSON数组，不要markdown。", user: prompt),
-              let data = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                  .replacingOccurrences(of: "```json", with: "")
-                  .replacingOccurrences(of: "```", with: "")
-                  .data(using: .utf8),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [String]
-        else { return [] }
-        return arr.filter { $0.count >= 3 && $0.count <= 10 }
+        return result
     }
 
     // MARK: - Reference expansion
@@ -1270,20 +1284,6 @@ final class LegalExpertService {
 
     // MARK: - Step 4b: Expert analysis
 
-    // Round 1: ask expert to produce search terms for gazette case lookup (fast, small output)
-    private static let expertCaseQuerySystem = """
-    你是一个中国法律专家，正在分析一个法律问题。
-    根据提供的法条和问题，判断是否需要查阅人民法院公报中的指导案例或裁判文书来辅助分析。
-    如果需要，输出 1-4 个精准的中文检索词（案由、争议焦点、核心法律概念），用于在公报数据库中检索相关案例。
-    如果不需要（问题属于纯法条查询、无争议事实问题），输出空数组。
-    只输出 JSON，格式：{"terms": ["检索词1", "检索词2"]}
-    不要输出任何其他内容。
-    """
-
-    private struct CaseQueryResult {
-        let terms: [String]
-    }
-
     // MARK: - Round 1.8: LLM-driven article and case set refinement
 
     private static let articleRefinementSystem = """
@@ -1291,7 +1291,9 @@ final class LegalExpertService {
 
     一、补充缺失法条：扫描每条法条正文，找出其中引用了（"依照本法第X条"、"参照……"、"适用本编规定"等）但尚未出现在列表中的条文，且该条文对回答用户问题确实必要。
 
-    二、移除无关法条：当前列表中与用户问题的法律关系、构成要件、适用场景均无关的条文，可以排除。
+    二、移除无关法条：满足以下任一条件的法条应当移除：
+    （1）与用户问题的法律关系、构成要件、适用场景均无关；
+    （2）该条文的核心构成要件在案情中根本不存在——例如：条文要求"脱落""坠落"但案情是地面固定设施损坏；条文要求"产品缺陷"但案情是合同违约；条文要求"无民事行为能力人"但当事人是成年人。领域相近但要件不符，同样应当移除。
 
     三、补充缺失案例：如果当前案例列表对用户问题的覆盖不足，列出需要额外检索的关键词（最多3个，每个3-8字），系统将用这些关键词再次检索数据库。如果已有案例已经足够，返回空数组。
 
@@ -1388,51 +1390,6 @@ final class LegalExpertService {
         )
     }
 
-    private func queryExpertCaseTerms(articlesSummary: String, question: String) async -> CaseQueryResult {
-        let userMsg = "法条摘要：\n\(articlesSummary)\n\n用户问题：\(question)"
-        guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
-            messages: [
-                ["role": "system", "content": Self.expertCaseQuerySystem],
-                ["role": "user",   "content": userMsg],
-            ],
-            temperature: 0
-        ) else { return CaseQueryResult(terms: []) }
-        let extracted = extractJSON(raw, open: "{", close: "}")
-        guard let data = extracted.data(using: .utf8),
-              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let arr  = obj["terms"] as? [String] else { return CaseQueryResult(terms: []) }
-        let terms = arr.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        return CaseQueryResult(terms: terms)
-    }
-
-    // Round 1.5: show case_brief summaries to expert, ask which cases need full text
-    private static let needFullTextSystem = """
-    你是中国法律专家。根据用户问题和以下案例的案情概括，判断哪些案例与用户情况高度吻合（事实层面，非仅规则层面），需要查阅完整案情全文来辅助分析。
-    只输出 JSON，格式：{"need_full": [case_id1, case_id2]}（填需要全文的案例 id，不需要则返回空数组）
-    不要输出任何其他内容。
-    """
-
-    private func queryNeedFullText(cases: [GazetteDoc], question: String) async -> Set<Int> {
-        let summaries = cases.map { doc -> String in
-            var s = "id:\(doc.id) 《\(doc.title)》"
-            s += formatCaseBrief(doc.caseBrief)
-            return s
-        }.joined(separator: "\n\n")
-        let userMsg = "用户问题：\(question)\n\n案例概括：\n\(summaries)"
-        guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
-            messages: [
-                ["role": "system", "content": Self.needFullTextSystem],
-                ["role": "user",   "content": userMsg],
-            ],
-            temperature: 0
-        ) else { return [] }
-        let extracted = extractJSON(raw, open: "{", close: "}")
-        guard let data = extracted.data(using: .utf8),
-              let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let arr  = obj["need_full"] as? [Int] else { return [] }
-        return Set(arr)
-    }
-
     private func formatCaseBrief(_ brief: [String: String]) -> String {
         guard !brief.isEmpty else { return "" }
         var parts: [String] = []
@@ -1450,7 +1407,8 @@ final class LegalExpertService {
 
     private func analyzeWithExpert(expert: SubExpert, question: String,
                                    facts: [String: String],
-                                   articles: [DatabaseManager.RAGArticle]) async throws -> String {
+                                   articles: [DatabaseManager.RAGArticle],
+                                   searchKeywords: [String] = []) async throws -> String {
         if articles.isEmpty {
             return "（\(expert.name)：未检索到相关条文，无法分析。）"
         }
@@ -1473,16 +1431,14 @@ final class LegalExpertService {
             factsText = "\n\n【已知情况】\n" + facts.map { "- \($0.key)：\($0.value)" }.joined(separator: "\n")
         }
 
-        // Round 1: LLM generates search terms for gazette case lookup
-        let articlesSummary = parts.prefix(6).joined(separator: "\n")
-        let caseQuery = await queryExpertCaseTerms(articlesSummary: articlesSummary, question: question)
-
-        // DB retrieval using LLM-generated terms (limit 5, al first)
+        // DB retrieval using search keywords from routing phase (no extra LLM call)
         var gazetteCasesText = ""
         var selectedDocsForRefinement: [GazetteDoc] = []
-        if !caseQuery.terms.isEmpty {
+        let caseTerms = (searchKeywords + expert.ftsKeywordsExtra + simpleKeywords(from: question))
+            .filter { $0.count >= 3 }.prefix(6).map { $0 }
+        if !caseTerms.isEmpty {
             let db = DatabaseManager.shared
-            var docs = db.searchGazetteDocsMultiTerm(terms: caseQuery.terms, sourceFilter: nil, limit: 5)
+            var docs = db.searchGazetteDocsMultiTerm(terms: caseTerms, sourceFilter: nil, limit: 5)
             docs.sort { a, b in
                 if a.source == "al" && b.source != "al" { return true }
                 if a.source != "al" && b.source == "al" { return false }
@@ -1491,17 +1447,13 @@ final class LegalExpertService {
             let selected = Array(docs.prefix(5))
             selectedDocsForRefinement = selected
             if !selected.isEmpty {
-                // Round 1.5: show case_brief to expert, ask which cases need full text
-                let needFullTextIds = await queryNeedFullText(cases: selected, question: question)
+                // Show case_brief + rulingGist directly, no extra LLM round for full-text selection
                 let lines = selected.map { doc -> String in
                     let sourceLabel = doc.source == "al" ? "指导案例" : "裁判文书"
                     var entry = "• [\(sourceLabel)]《\(doc.title)》(id:\(doc.id))"
                     entry += formatCaseBrief(doc.caseBrief)
                     if !doc.rulingGist.isEmpty {
                         entry += "\n  裁判要旨：\(doc.rulingGist)"
-                    }
-                    if needFullTextIds.contains(doc.id) && !doc.fullText.isEmpty {
-                        entry += "\n  案情全文：\(doc.fullText)"
                     }
                     return entry
                 }.joined(separator: "\n")
@@ -1550,13 +1502,11 @@ final class LegalExpertService {
                 refinedDocs += Array(extra.prefix(3))
             }
             if !refinedDocs.isEmpty {
-                let needFullRefined = await queryNeedFullText(cases: refinedDocs, question: question)
                 let lines = refinedDocs.map { doc -> String in
                     let sourceLabel = doc.source == "al" ? "指导案例" : "裁判文书"
                     var entry = "• [\(sourceLabel)]《\(doc.title)》(id:\(doc.id))"
                     entry += formatCaseBrief(doc.caseBrief)
                     if !doc.rulingGist.isEmpty { entry += "\n  裁判要旨：\(doc.rulingGist)" }
-                    if needFullRefined.contains(doc.id) && !doc.fullText.isEmpty { entry += "\n  案情全文：\(doc.fullText)" }
                     return entry
                 }.joined(separator: "\n")
                 gazetteCasesText = "\n\n【相关公报案例】（人民法院公报，LLM检索，仅供参考）\n\(lines)"

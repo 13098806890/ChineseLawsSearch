@@ -290,7 +290,7 @@ struct LegalChatView: View {
             PaywallView(pm: pm)
         }
         .sheet(item: $exportItem) { item in
-            ShareSheet(activityItems: [item.activityItem])
+            ShareSheet(activityItems: [item.activityItem], onDismiss: { exportItem = nil })
         }
         .alert("需要配置 API Key", isPresented: $showNoKeyAlert) {
             Button("前往设置") { onOpenSettings?() }

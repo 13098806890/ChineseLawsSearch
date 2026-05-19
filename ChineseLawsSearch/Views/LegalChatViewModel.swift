@@ -609,9 +609,12 @@ enum ChatExportPDF {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let activityItems: [Any]
+    var onDismiss: (() -> Void)? = nil
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        vc.completionWithItemsHandler = { _, _, _, _ in onDismiss?() }
+        return vc
     }
 
     func updateUIViewController(_ uvc: UIActivityViewController, context: Context) {

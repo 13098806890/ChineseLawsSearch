@@ -658,6 +658,14 @@ final class DatabaseManager {
         return result
     }
 
+    /// Converts "第5条" → "第五条", leaves "第五条" unchanged.
+    private nonisolated static func arabicToChineseArticleNumber(_ s: String) -> String {
+        guard let m = s.range(of: #"第(\d+)条"#, options: .regularExpression) else { return s }
+        let numStr = s[m].dropFirst(1).dropLast(1) // strip 第…条
+        guard let n = Int(numStr) else { return s }
+        return "第\(intToChinese(n))条"
+    }
+
     private static func intToChinese(_ n: Int) -> String {
         let digits = ["零","一","二","三","四","五","六","七","八","九"]
         if n < 10  { return digits[n] }
@@ -1021,6 +1029,8 @@ final class DatabaseManager {
         let normalizedFrag = lawTitleFragment
             .replacingOccurrences(of: "〈", with: "《")
             .replacingOccurrences(of: "〉", with: "》")
+        // Normalize arabic numerals in article number to Chinese (e.g. "第5条" → "第五条")
+        let normalizedArtNum = Self.arabicToChineseArticleNumber(articleNumber)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
             "SELECT n.id, n.law_id, l.title, l.category, l.legal_domain, n.article_number, n.article_num, n.content FROM nodes n JOIN laws l ON n.law_id = l.id WHERE l.title LIKE ? AND n.article_number = ? AND l.is_current = 1 LIMIT 1",
@@ -1028,7 +1038,7 @@ final class DatabaseManager {
         defer { sqlite3_finalize(stmt) }
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(stmt, 1, "%\(normalizedFrag)%", -1, t)
-        sqlite3_bind_text(stmt, 2, articleNumber, -1, t)
+        sqlite3_bind_text(stmt, 2, normalizedArtNum, -1, t)
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
         return RAGArticle(
             nodeId: Int(sqlite3_column_int(stmt, 0)),
@@ -1081,6 +1091,151 @@ final class DatabaseManager {
                 articleNumber: str(stmt, 5),
                 articleNum: sqlite3_column_type(stmt, 6) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 6)) : nil,
                 content: str(stmt, 7), pinned: false
+            ))
+        }
+        return result
+    }
+
+    // MARK: 条文目录（用于 Round 0 Pull 模式）
+
+    /// 法律章节目录条目，用于大型法典的两阶段选条（Phase A：选章节）
+    struct ChapterIndexEntry {
+        let nodeId: Int
+        let type: String     // "part" / "chapter" / "section"
+        let title: String
+        let articleCount: Int
+    }
+
+    /// 返回指定法律的章节目录（part/chapter/section），附带每章条文数。
+    /// 供 LLM 先选章节，再拉取章节内全部条文目录（Phase A）。
+    nonisolated func chapterIndex(lawTitle: String) -> [ChapterIndexEntry] {
+        queue.sync { _chapterIndex(lawTitle: lawTitle) }
+    }
+
+    private nonisolated func _chapterIndex(lawTitle: String) -> [ChapterIndexEntry] {
+        guard let db = db else { return [] }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, """
+            SELECT n.id, n.type, COALESCE(NULLIF(n.title,''), substr(n.content,1,30)),
+                   (SELECT COUNT(*) FROM nodes c
+                    WHERE c.law_id = n.law_id AND c.type = 'article'
+                      AND (c.parent_id = n.id
+                        OR c.parent_id IN (SELECT id FROM nodes WHERE parent_id = n.id)
+                        OR c.parent_id IN (SELECT id FROM nodes WHERE parent_id IN (SELECT id FROM nodes WHERE parent_id = n.id))
+                      )
+                   ) as art_cnt
+            FROM nodes n JOIN laws l ON n.law_id = l.id
+            WHERE l.title = ? AND l.is_current = 1 AND n.type IN ('part','chapter','section')
+            ORDER BY n.global_order
+            """, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, lawTitle, -1, t)
+        var result: [ChapterIndexEntry] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(ChapterIndexEntry(
+                nodeId: Int(sqlite3_column_int(stmt, 0)),
+                type:   str(stmt, 1),
+                title:  str(stmt, 2),
+                articleCount: Int(sqlite3_column_int(stmt, 3))
+            ))
+        }
+        return result
+    }
+
+    /// 返回指定法律的条文目录：条号 + 正文前 60 字，供 LLM 浏览后主动选条。
+    /// lawTitle 需精确匹配（同 lawId(:)）。
+    struct ArticleIndexEntry {
+        let nodeId: Int
+        let lawTitle: String
+        let category: String
+        let articleNumber: String
+        let articleNum: Int?
+        let snippet: String   // 条文正文前 60 字
+    }
+
+    nonisolated func articleIndex(lawTitle: String, chapterNodeIds: [Int] = []) -> [ArticleIndexEntry] {
+        queue.sync { _articleIndex(lawTitle: lawTitle, chapterNodeIds: chapterNodeIds) }
+    }
+
+    private nonisolated func _articleIndex(lawTitle: String, chapterNodeIds: [Int]) -> [ArticleIndexEntry] {
+        guard let db = db else { return [] }
+        var stmt: OpaquePointer?
+        let sql: String
+        if chapterNodeIds.isEmpty {
+            sql = """
+                SELECT n.id, l.title, l.category, n.article_number, n.article_num, n.content
+                FROM nodes n JOIN laws l ON n.law_id = l.id
+                WHERE l.title = ? AND l.is_current = 1 AND n.type = 'article'
+                ORDER BY n.global_order
+                """
+        } else {
+            let idsPH = chapterNodeIds.map { String($0) }.joined(separator: ",")
+            sql = """
+                SELECT n.id, l.title, l.category, n.article_number, n.article_num, n.content
+                FROM nodes n JOIN laws l ON n.law_id = l.id
+                WHERE l.title = ? AND l.is_current = 1 AND n.type = 'article'
+                  AND (
+                    n.parent_id IN (\(idsPH))
+                    OR n.parent_id IN (SELECT id FROM nodes WHERE parent_id IN (\(idsPH)))
+                    OR n.parent_id IN (SELECT id FROM nodes WHERE parent_id IN (SELECT id FROM nodes WHERE parent_id IN (\(idsPH))))
+                  )
+                ORDER BY n.global_order
+                """
+        }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, lawTitle, -1, t)
+        var result: [ArticleIndexEntry] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let content = str(stmt, 5)
+            let snippet = String(content.prefix(60))
+            let artNum = sqlite3_column_type(stmt, 4) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 4)) : nil
+            result.append(ArticleIndexEntry(
+                nodeId: Int(sqlite3_column_int(stmt, 0)),
+                lawTitle: str(stmt, 1),
+                category: str(stmt, 2),
+                articleNumber: str(stmt, 3),
+                articleNum: artNum,
+                snippet: snippet
+            ))
+        }
+        return result
+    }
+
+    /// 按 nodeId 批量取完整条文（用于 Round 0 LLM 选出条号后的精确拉取）
+    nonisolated func articlesByNodeIds(_ ids: [Int]) -> [RAGArticle] {
+        guard !ids.isEmpty else { return [] }
+        return queue.sync { _articlesByNodeIds(ids) }
+    }
+
+    private nonisolated func _articlesByNodeIds(_ ids: [Int]) -> [RAGArticle] {
+        guard let db = db else { return [] }
+        // ids are internal integers — safe to inline
+        let ph = ids.map { String($0) }.joined(separator: ",")
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, """
+            SELECT n.id, n.law_id, l.title, l.category, l.legal_domain,
+                   n.article_number, n.article_num, n.content
+            FROM nodes n JOIN laws l ON n.law_id = l.id
+            WHERE n.id IN (\(ph)) AND n.type = 'article'
+            ORDER BY n.global_order
+            """, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        var result: [RAGArticle] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let artNum = sqlite3_column_type(stmt, 6) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 6)) : nil
+            result.append(RAGArticle(
+                nodeId: Int(sqlite3_column_int(stmt, 0)),
+                lawId: Int(sqlite3_column_int(stmt, 1)),
+                lawTitle: str(stmt, 2),
+                category: str(stmt, 3),
+                legalDomain: str(stmt, 4),
+                articleNumber: str(stmt, 5),
+                articleNum: artNum,
+                content: str(stmt, 7),
+                pinned: false
             ))
         }
         return result
