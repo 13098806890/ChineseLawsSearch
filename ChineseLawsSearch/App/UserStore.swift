@@ -8,6 +8,7 @@
 
 import SwiftUI
 import Combine
+import Foundation
 
 // MARK: - 持久化跳转栈条目
 
@@ -66,6 +67,29 @@ final class UserStore: ObservableObject {
     // Note: NSUbiquitousKeyValueStore silently fails when iCloud is unavailable;
     // values fall back to the in-memory defaults set in init().
     private let kv = NSUbiquitousKeyValueStore.default
+    private var kvObserver: NSObjectProtocol?
+
+    init() {
+        loadFavorites()
+        loadGazetteFavorites()
+        loadGazetteNotes()
+        kvObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: kv,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            let keys = (notification.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]) ?? []
+            if keys.contains(Self.favoritesKey)       { self.loadFavorites() }
+            if keys.contains(Self.gongbaoFavoritesKey) { self.loadGazetteFavorites() }
+            if keys.contains(Self.gongbaoNotesKey)     { self.loadGazetteNotes() }
+        }
+        kv.synchronize()
+    }
+
+    deinit {
+        if let obs = kvObserver { NotificationCenter.default.removeObserver(obs) }
+    }
 
     // MARK: - API Key 状态（供跨视图响应）
 
