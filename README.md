@@ -145,11 +145,11 @@ LLM 根据问题内容，从 6 个专家组中选取 1–3 个相关组，每组
 
 | 表 | 说明 |
 |----|------|
-| `laws` | 2,020 部法律元数据（主库 1,253 + 公报司法解释 767），含 `source`、`is_current`、`is_flk` 等字段 |
-| `nodes` | ~84,000 条条文及编章节节点，含 `global_order`、`article_num` 等 |
+| `laws` | 2,454 部法律元数据（主库 1,527 + 公报司法解释 927），含 `source`、`is_current`、`is_flk` 等字段 |
+| `nodes` | ~80,000 条条文及编章节节点，含 `global_order`、`article_num` 等 |
 | `nodes_fts` | FTS5 trigram 全文索引（外部内容表，≥3 字） |
 | `nodes_fts_bigram` | FTS5 unicode61 索引（1–2 字短词） |
-| `article_references` | 8,340 条法条间引用关系，解析率 96.2% |
+| `article_references` | 8,315 条法条间引用关系，解析率 96.2% |
 | `gongbao_docs` | 公报文书 2,289 条（指导案例/司法文件/裁判文书） |
 | `gongbao_case_law_links` | 公报文书 → 法条关联 3,533 条，解析率 99.8% |
 | `gongbao_docs_fts` | 公报 FTS5 trigram 全文索引 |

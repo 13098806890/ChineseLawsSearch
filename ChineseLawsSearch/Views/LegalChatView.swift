@@ -1051,21 +1051,27 @@ private struct LinkedAnswerText: View {
 
         // Scan all 《...》 spans in the text; fuzzy-match against each gazetteCitation's DB title.
         // Fuzzy: the text span contains the DB title, or the DB title contains the text span (LLM may shorten).
-        if !gazetteCitations.isEmpty {
-            let bracketMatches = Self.bracketRE.matches(in: text, range: fullRange)
-            for bm in bracketMatches {
-                let innerRange = bm.range(at: 1)
-                guard innerRange.location != NSNotFound else { continue }
-                let inner = raw.substring(with: innerRange)
-                // Find matching citation: DB title contains the text span, or vice versa
-                guard let gc = gazetteCitations.first(where: {
-                    $0.title.contains(inner) || inner.contains($0.title)
-                }), let url = URL(string: "legalchat://gazette/\(gc.docId)") else { continue }
-                result.addAttributes([
-                    .link: url,
-                    .foregroundColor: linkColor,
-                    .underlineStyle: NSUnderlineStyle.single.rawValue
-                ], range: bm.range)
+        // Fallback: if no gazette match, try to link the law title itself to its law page in the main DB.
+        let bracketMatches = Self.bracketRE.matches(in: text, range: fullRange)
+        for bm in bracketMatches {
+            let innerRange = bm.range(at: 1)
+            guard innerRange.location != NSNotFound else { continue }
+            let inner = raw.substring(with: innerRange)
+            // Skip if already linked by the first pass (article ref)
+            if result.attribute(.link, at: bm.range.location, effectiveRange: nil) != nil { continue }
+            // Try gazette citation first
+            if !gazetteCitations.isEmpty,
+               let gc = gazetteCitations.first(where: { $0.title.contains(inner) || inner.contains($0.title) }),
+               let url = URL(string: "legalchat://gazette/\(gc.docId)") {
+                result.addAttributes([.link: url, .foregroundColor: linkColor,
+                                      .underlineStyle: NSUnderlineStyle.single.rawValue], range: bm.range)
+                continue
+            }
+            // Fallback: look up by law title in main DB (handles 《司法解释》 with no article number)
+            if let lawId = DatabaseManager.shared.lawId(titleFragment: inner),
+               let url = URL(string: "legalchat://law/\(lawId)") {
+                result.addAttributes([.link: url, .foregroundColor: linkColor,
+                                      .underlineStyle: NSUnderlineStyle.single.rawValue], range: bm.range)
             }
         }
 
@@ -1194,6 +1200,10 @@ private struct _LinkedTextView: UIViewRepresentable {
             if url.host == "article", parts.count == 2,
                let lawId = Int(parts[0]), let artNum = Int(parts[1]) {
                 return UIAction { [weak self] _ in self?.navigate(lawId, artNum == 0 ? nil : artNum) }
+            }
+            if url.host == "law", parts.count == 1,
+               let lawId = Int(parts[0]) {
+                return UIAction { [weak self] _ in self?.navigate(lawId, nil) }
             }
             if url.host == "gazette", parts.count == 1,
                let docId = Int(parts[0]) {

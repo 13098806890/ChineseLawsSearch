@@ -941,8 +941,81 @@ final class DatabaseManager {
         let content: String
     }
 
+    /// Normalize a law title fragment from LLM output to match DB storage conventions.
+    /// DB stores fullwidth parens as halfwidth: （一）→ (一)
+    private nonisolated static func normalizeLawTitle(_ s: String) -> String {
+        s.replacingOccurrences(of: "〈", with: "《")
+         .replacingOccurrences(of: "〉", with: "》")
+         .replacingOccurrences(of: "（", with: "(")
+         .replacingOccurrences(of: "）", with: ")")
+    }
+
     nonisolated func lawId(title: String) -> Int? {
-        queue.sync { _lawId(title: title) }
+        queue.sync { _lawId(title: Self.normalizeLawTitle(title)) }
+    }
+
+    /// Fuzzy law ID lookup for linking bare 《法律名》 spans (LLM may omit words like 案件/若干).
+    /// Tries: exact → substring LIKE → 2-char token AND match.
+    nonisolated func lawId(titleFragment: String) -> Int? {
+        queue.sync { _lawIdFuzzy(titleFragment: Self.normalizeLawTitle(titleFragment)) }
+    }
+
+    private nonisolated func _lawIdFuzzy(titleFragment: String) -> Int? {
+        if let id = _lawId(title: titleFragment) { return id }
+        guard let db = db else { return nil }
+        if let id = _lawIdLike(db: db, fragment: titleFragment) { return id }
+        let tokens = Self.titleTokens(titleFragment)
+        guard tokens.count >= 2 else { return nil }
+        return _lawIdTokenAnd(db: db, tokens: tokens)
+    }
+
+    private nonisolated func _lawIdLike(db: OpaquePointer, fragment: String) -> Int? {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "SELECT id FROM laws WHERE (title LIKE ? OR ? LIKE '%' || title || '%') AND is_current = 1 ORDER BY length(title) DESC LIMIT 1",
+            -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, "%\(fragment)%", -1, t)
+        sqlite3_bind_text(stmt, 2, fragment, -1, t)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return Int(sqlite3_column_int(stmt, 0))
+    }
+
+    private nonisolated func _lawIdTokenAnd(db: OpaquePointer, tokens: [String]) -> Int? {
+        let conditions = tokens.map { _ in "title LIKE ?" }.joined(separator: " AND ")
+        let sql = "SELECT id FROM laws WHERE (\(conditions)) AND is_current = 1 ORDER BY length(title) DESC LIMIT 1"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (i, tok) in tokens.enumerated() {
+            sqlite3_bind_text(stmt, Int32(i + 1), "%\(tok)%", -1, t)
+        }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return Int(sqlite3_column_int(stmt, 0))
+    }
+
+    /// Split normalized title into 2-char CJK windows + optional (X) suffix for AND matching.
+    private nonisolated static func titleTokens(_ title: String) -> [String] {
+        let chars = Array(title.unicodeScalars)
+        var tokens: [String] = []
+        var seen = Set<String>()
+        var i = 0
+        while i + 1 < chars.count {
+            let window = chars[i..<(i+2)]
+            if window.allSatisfy({ $0.value >= 0x4E00 && $0.value <= 0x9FFF }) {
+                let s = String(String.UnicodeScalarView(window))
+                if seen.insert(s).inserted { tokens.append(s) }
+            }
+            i += 2
+        }
+        // Include (X) suffix to disambiguate numbered versions e.g. (一)/(二)
+        if let m = title.range(of: #"\([^)]+\)$"#, options: .regularExpression) {
+            let suffix = String(title[m])
+            if seen.insert(suffix).inserted { tokens.append(suffix) }
+        }
+        return tokens
     }
 
     private nonisolated func _lawId(title: String) -> Int? {
@@ -1025,20 +1098,47 @@ final class DatabaseManager {
 
     private nonisolated func _articleByRef(lawTitleFragment: String, articleNumber: String) -> RAGArticle? {
         guard let db = db else { return nil }
-        // Normalize nested angle brackets that LLM writes as 〈〉 but DB stores as 《》
-        let normalizedFrag = lawTitleFragment
-            .replacingOccurrences(of: "〈", with: "《")
-            .replacingOccurrences(of: "〉", with: "》")
-        // Normalize arabic numerals in article number to Chinese (e.g. "第5条" → "第五条")
+        let normalizedFrag = Self.normalizeLawTitle(lawTitleFragment)
         let normalizedArtNum = Self.arabicToChineseArticleNumber(articleNumber)
+        // Pass 1: substring LIKE match
+        if let r = _articleByRefLike(db: db, fragment: "%\(normalizedFrag)%", artNum: normalizedArtNum) { return r }
+        // Pass 2: token-split AND match (handles LLM omitting words like 案件/若干)
+        let tokens = Self.titleTokens(normalizedFrag)
+        guard tokens.count >= 2 else { return nil }
+        return _articleByRefTokenAnd(db: db, tokens: tokens, artNum: normalizedArtNum)
+    }
+
+    private nonisolated func _articleByRefLike(db: OpaquePointer, fragment: String, artNum: String) -> RAGArticle? {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
             "SELECT n.id, n.law_id, l.title, l.category, l.legal_domain, n.article_number, n.article_num, n.content FROM nodes n JOIN laws l ON n.law_id = l.id WHERE l.title LIKE ? AND n.article_number = ? AND l.is_current = 1 LIMIT 1",
             -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(stmt, 1, "%\(normalizedFrag)%", -1, t)
-        sqlite3_bind_text(stmt, 2, normalizedArtNum, -1, t)
+        sqlite3_bind_text(stmt, 1, fragment, -1, t)
+        sqlite3_bind_text(stmt, 2, artNum, -1, t)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return RAGArticle(
+            nodeId: Int(sqlite3_column_int(stmt, 0)),
+            lawId:  Int(sqlite3_column_int(stmt, 1)),
+            lawTitle: str(stmt, 2), category: str(stmt, 3), legalDomain: str(stmt, 4),
+            articleNumber: str(stmt, 5),
+            articleNum: sqlite3_column_type(stmt, 6) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 6)) : nil,
+            content: str(stmt, 7), pinned: false
+        )
+    }
+
+    private nonisolated func _articleByRefTokenAnd(db: OpaquePointer, tokens: [String], artNum: String) -> RAGArticle? {
+        let conditions = tokens.map { _ in "l.title LIKE ?" }.joined(separator: " AND ")
+        let sql = "SELECT n.id, n.law_id, l.title, l.category, l.legal_domain, n.article_number, n.article_num, n.content FROM nodes n JOIN laws l ON n.law_id = l.id WHERE (\(conditions)) AND n.article_number = ? AND l.is_current = 1 LIMIT 1"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (i, tok) in tokens.enumerated() {
+            sqlite3_bind_text(stmt, Int32(i + 1), "%\(tok)%", -1, t)
+        }
+        sqlite3_bind_text(stmt, Int32(tokens.count + 1), artNum, -1, t)
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
         return RAGArticle(
             nodeId: Int(sqlite3_column_int(stmt, 0)),
