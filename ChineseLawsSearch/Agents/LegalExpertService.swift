@@ -1284,6 +1284,58 @@ final class LegalExpertService {
         let terms: [String]
     }
 
+    // MARK: - Round 1.8: LLM-driven missing article lookup
+
+    private static let missingArticlesSystem = """
+    你是中国法律专家。仔细阅读以下已检索到的法条，判断：哪些条文正文中引用了（"依照本法第X条"、"适用本编规定"、"参照……"等）或逻辑上依赖的其他条文，但这些条文尚未出现在当前列表中？
+    只列出对回答用户问题确实必要的缺失条文（最多8条）。
+    输出纯 JSON 数组，每项格式 {"law": "法律名称简称（如 民法典）", "article": "第X条"}。
+    如果不缺少任何条文，输出空数组 []。不要输出任何其他内容。
+    """
+
+    private struct ArticleRef: Decodable {
+        let law: String
+        let article: String
+    }
+
+    /// Round 1.8: ask LLM which referenced articles are missing from the current set,
+    /// then fetch them from DB and append (deduped) to the article list.
+    private func fetchMissingReferencedArticles(
+        articles: [DatabaseManager.RAGArticle],
+        question: String,
+        facts: [String: String]
+    ) async -> [DatabaseManager.RAGArticle] {
+        let artText = articles.prefix(30)
+            .map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(300)))" }
+            .joined(separator: "\n")
+        let factsText = facts.isEmpty ? "" : "\n已知情况：" + facts.map { "\($0.key)：\($0.value)" }.joined(separator: "；")
+        let userMsg = "用户问题：\(question)\(factsText)\n\n已有法条：\n\(artText)"
+
+        guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
+            messages: [
+                ["role": "system", "content": Self.missingArticlesSystem],
+                ["role": "user",   "content": userMsg],
+            ],
+            temperature: 0
+        ) else { return [] }
+
+        let extracted = extractJSON(raw, open: "[", close: "]")
+        guard let data = extracted.data(using: .utf8),
+              let refs = try? JSONDecoder().decode([ArticleRef].self, from: data),
+              !refs.isEmpty else { return [] }
+
+        let db = DatabaseManager.shared
+        let seenIds = Set(articles.map { $0.nodeId })
+        var fetched: [DatabaseManager.RAGArticle] = []
+        for ref in refs.prefix(8) {
+            guard let art = db.articleByRef(lawTitleFragment: ref.law, articleNumber: ref.article),
+                  !seenIds.contains(art.nodeId),
+                  !fetched.contains(where: { $0.nodeId == art.nodeId }) else { continue }
+            fetched.append(art)
+        }
+        return fetched
+    }
+
     private func queryExpertCaseTerms(articlesSummary: String, question: String) async -> CaseQueryResult {
         let userMsg = "法条摘要：\n\(articlesSummary)\n\n用户问题：\(question)"
         guard let raw = try? await LLMProviderRegistry.agentProvider.chat(
@@ -1400,6 +1452,22 @@ final class LegalExpertService {
                     return entry
                 }.joined(separator: "\n")
                 gazetteCasesText = "\n\n【相关公报案例】（人民法院公报，LLM检索，仅供参考）\n\(lines)"
+            }
+        }
+
+        // Round 1.8: LLM identifies referenced articles missing from the current set, fetch from DB
+        let missingArts = await fetchMissingReferencedArticles(articles: lawArts + interpArts,
+                                                               question: question, facts: facts)
+        if !missingArts.isEmpty {
+            let missingLaw   = missingArts.filter { $0.category != "司法解释" }
+            let missingInterp = missingArts.filter { $0.category == "司法解释" }
+            if !missingLaw.isEmpty {
+                if parts.first != "【法律原文】" { parts.insert("【法律原文】", at: 0) }
+                parts += missingLaw.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
+            }
+            if !missingInterp.isEmpty {
+                if !parts.contains("\n【司法解释】") { parts.append("\n【司法解释】") }
+                parts += missingInterp.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
             }
         }
 
