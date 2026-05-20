@@ -199,7 +199,10 @@ final class ChatHistoryStore: ObservableObject {
             }
             let result = decoded
             await MainActor.run {
-                self.sessions = result
+                // Only update if content actually changed to avoid unnecessary UI redraws
+                if result.map(\.id) != self.sessions.map(\.id) {
+                    self.sessions = result
+                }
                 self.isLoading = false
             }
         }
@@ -230,7 +233,7 @@ final class ChatHistoryStore: ObservableObject {
             self?.reloadWorkItem?.cancel()
             let item = DispatchWorkItem { [weak self] in self?.loadAsync() }
             self?.reloadWorkItem = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: item)
         }
         q.start()
         metadataQuery = q

@@ -138,16 +138,7 @@ final class PurchaseManager: ObservableObject {
             return false
         }
         #endif
-        // 优先消耗免费次数
-        let free = remainingFreeUses()
-        if free > 0 {
-            let newVal = free - 1
-            ud.set(newVal, forKey: freeCountKey)
-            freeRemaining = newVal
-            lastConsumedPath = .free
-            return true
-        }
-        // 消耗订阅月度配额
+        // 已订阅：优先消耗订阅配额，免费次数保留
         if hasPRO {
             var quota = loadProQuota()
             if quota.count > 0 {
@@ -158,6 +149,15 @@ final class PurchaseManager: ObservableObject {
                 return true
             }
             return false
+        }
+        // 未订阅：消耗免费次数
+        let free = remainingFreeUses()
+        if free > 0 {
+            let newVal = free - 1
+            ud.set(newVal, forKey: freeCountKey)
+            freeRemaining = newVal
+            lastConsumedPath = .free
+            return true
         }
         return false
     }
