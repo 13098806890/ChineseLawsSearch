@@ -104,6 +104,9 @@ final class PurchaseManager: ObservableObject {
     // MARK: - Access control
 
     var access: AgentAccess {
+        #if DEBUG
+        if Self.debugSimulatePRO { return .pro(remaining: proRemaining) }
+        #endif
         let free = freeRemaining
         if free > 0 { return .free(remaining: free) }
         if hasPRO   { return .pro(remaining: proRemaining) }
@@ -111,18 +114,30 @@ final class PurchaseManager: ObservableObject {
     }
 
     var canViewGazetteDetail: Bool {
-        switch access {
-        case .pro: return true
-        case .free, .noAccess: return false
-        }
+        #if DEBUG
+        if Self.debugSimulatePRO { return true }
+        #endif
+        return hasPRO
     }
 
     /// 调用 Agent 前调用；有权限则消耗计数并返回 true。
     /// 追问传 isFollowUp=true 不消耗次数。
     func consumeIfAllowed(isFollowUp: Bool = false) -> Bool {
         lastConsumedPath = .none
-        // Follow-up questions are always free — the user already paid for the session.
         if isFollowUp { return true }
+        #if DEBUG
+        if Self.debugSimulatePRO {
+            var quota = loadProQuota()
+            if quota.count > 0 {
+                quota.count -= 1
+                saveProQuota(quota)
+                proRemaining = quota.count
+                lastConsumedPath = .pro
+                return true
+            }
+            return false
+        }
+        #endif
         // 优先消耗免费次数
         let free = remainingFreeUses()
         if free > 0 {
@@ -142,7 +157,7 @@ final class PurchaseManager: ObservableObject {
                 lastConsumedPath = .pro
                 return true
             }
-            return false   // 本月配额已用完
+            return false
         }
         return false
     }
@@ -244,19 +259,17 @@ final class PurchaseManager: ObservableObject {
 
     func refreshPurchaseStatus() async {
         var pro = false
+        #if DEBUG
+        if Self.debugSimulatePRO { pro = true }
+        #else
         for await result in Transaction.currentEntitlements {
             guard let t = try? checkVerified(result) else { continue }
             if AgentProductID.proIDs.contains(t.productID) { pro = true }
         }
+        #endif
         hasPRO        = pro
         freeRemaining = remainingFreeUses()
         proRemaining  = loadProQuota().count
-        #if DEBUG
-        if Self.debugSimulatePRO {
-            hasPRO = true
-            // proRemaining 保留从 Keychain 读出的实际值，不重置为满额
-        }
-        #endif
     }
 
     private func listenForTransactions() -> Task<Void, Never> {

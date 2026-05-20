@@ -163,43 +163,45 @@ struct LegalChatView: View {
                     .padding(.top, 10)
 
                     // Free uses hint / status bar
-                    switch pm.access {
-                    case .free(let remaining):
-                        HStack(spacing: 4) {
-                            Text("免费剩余 \(remaining) 次")
-                                .font(.caption2).foregroundStyle(.secondary)
-                            Text("·")
-                                .font(.caption2).foregroundStyle(.secondary)
-                            Button { showPaywall = true } label: {
-                                Text("解锁无限使用")
-                                    .font(.caption2)
-                                    .foregroundStyle(AppColors.shared.searchHighlight)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
-                    case .pro(let remaining):
+                    if pm.hasPRO {
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(.secondary)
-                            Text("已订阅 · 本月剩余 \(remaining) 次")
+                            Text("已订阅 · 本月剩余 \(pm.proRemaining) 次")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
-                    case .noAccess:
-                        HStack(spacing: 4) {
-                            Text("免费次数已用完")
-                                .font(.caption2).foregroundStyle(.secondary)
-                            Text("·")
-                                .font(.caption2).foregroundStyle(.secondary)
-                            Button { showPaywall = true } label: {
-                                Text("订阅解锁")
-                                    .font(.caption2)
-                                    .foregroundStyle(AppColors.shared.searchHighlight)
+                    } else {
+                        switch pm.access {
+                        case .free(let remaining):
+                            HStack(spacing: 4) {
+                                Text("免费剩余 \(remaining) 次")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("·")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Button { showPaywall = true } label: {
+                                    Text("解锁无限使用")
+                                        .font(.caption2)
+                                        .foregroundStyle(AppColors.shared.searchHighlight)
+                                }
                             }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                        case .noAccess, .pro:
+                            HStack(spacing: 4) {
+                                Text("免费次数已用完")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("·")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Button { showPaywall = true } label: {
+                                    Text("订阅解锁")
+                                        .font(.caption2)
+                                        .foregroundStyle(AppColors.shared.searchHighlight)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
                     }
 
                     // Token counter — DEBUG 模式始终显示，便于测试

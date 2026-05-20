@@ -373,42 +373,46 @@ private struct SettingsSheet: View {
             Form {
                 // MARK: Agent 解锁状态
                 Section {
-                    switch pm.access {
-                    case .pro(let remaining):
+                    if pm.hasPRO {
                         VStack(alignment: .leading, spacing: 4) {
                             Label("已订阅", systemImage: "checkmark.seal.fill")
                                 .foregroundStyle(.green)
-                            Text("本月剩余 \(remaining) 次 · 每月 1 日自动重置")
+                            Text("本月剩余 \(pm.proRemaining) 次 · 每月 1 日自动重置")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                    case .free(let remaining):
-                        HStack {
-                            Label("免费剩余 \(remaining) 次", systemImage: "gift")
-                            Spacer()
-                            Button("订阅解锁") { showPaywall = true }
-                                .font(.footnote)
-                                .foregroundStyle(AppColors.shared.searchHighlight)
-                        }
-                    case .noAccess:
-                        HStack {
-                            Label("免费次数已用完", systemImage: "exclamationmark.circle")
-                                .foregroundStyle(.orange)
-                            Spacer()
-                            Button("订阅解锁") { showPaywall = true }
-                                .font(.footnote)
-                                .foregroundStyle(AppColors.shared.searchHighlight)
+                    } else {
+                        switch pm.access {
+                        case .free(let remaining):
+                            HStack {
+                                Label("免费剩余 \(remaining) 次", systemImage: "gift")
+                                Spacer()
+                                Button("订阅解锁") { showPaywall = true }
+                                    .font(.footnote)
+                                    .foregroundStyle(AppColors.shared.searchHighlight)
+                            }
+                        case .noAccess, .pro:
+                            HStack {
+                                Label("免费次数已用完", systemImage: "exclamationmark.circle")
+                                    .foregroundStyle(.orange)
+                                Spacer()
+                                Button("订阅解锁") { showPaywall = true }
+                                    .font(.footnote)
+                                    .foregroundStyle(AppColors.shared.searchHighlight)
+                            }
                         }
                     }
                 } header: {
                     Text("法律顾问")
                 } footer: {
-                    switch pm.access {
-                    case .pro:
+                    if pm.hasPRO {
                         Text("订阅版：每月 150 次法律顾问，每月 1 日重置，无限访问高院公报全文。")
-                    case .free(let remaining):
-                        Text("每位新用户赠送 5 次免费体验，剩余 \(remaining) 次。订阅后每月 150 次。")
-                    case .noAccess:
-                        Text("免费体验已用完，订阅后每月 150 次法律顾问，同时解锁高院公报全文。")
+                    } else {
+                        switch pm.access {
+                        case .free(let remaining):
+                            Text("每位新用户赠送 5 次免费体验，剩余 \(remaining) 次。订阅后每月 150 次。")
+                        case .noAccess, .pro:
+                            Text("免费体验已用完，订阅后每月 150 次法律顾问，同时解锁高院公报全文。")
+                        }
                     }
                 }
 
