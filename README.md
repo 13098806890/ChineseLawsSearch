@@ -188,5 +188,5 @@ LLM 接入：DeepSeek（`deepseek-chat`）。
 ## 数据来源
 
 - 法律法规：[国家法律法规数据库](https://flk.npc.gov.cn/)
-- 最高人民法院公报：[gongbao.court.gov.cn](https://gongbao.court.gov.cn)
+- 最高人民法院公报：[gongbao.court.gov.cn](http://gongbao.court.gov.cn)
 - 数据处理 pipeline：[laws-data](https://github.com/13098806890/laws-data)
