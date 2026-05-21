@@ -285,6 +285,9 @@ final class LegalChatViewModel: ObservableObject {
             errorMessage = (error as? LLMError)?.errorDescription
                 ?? (error as? URLError).map { "网络错误：\($0.localizedDescription)" }
                 ?? error.localizedDescription
+            // Discard tokens accumulated during the failed request so they don't
+            // inflate the session count on the next successful send.
+            TokenCounter.shared.reset()
             // Only remove if we actually appended a turn (legalQuery/followUp path)
             if appendedToHistory, !conversationHistory.isEmpty { conversationHistory.removeLast() }
             isAwaitingClarification = false
