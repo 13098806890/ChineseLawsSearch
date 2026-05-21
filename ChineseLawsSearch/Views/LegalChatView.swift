@@ -32,7 +32,7 @@ struct LegalChatView: View {
     @ObservedObject private var tokenCounter = TokenCounter.shared
     @ObservedObject private var pm = PurchaseManager.shared
     @State private var showHistory = false
-    @State private var showNoKeyAlert = false
+    @State private var showNoKeyAlert = false  // reserved: shown when user-configured key missing; currently unused (built-in key always present)
     @State private var showPaywall = false
     @State private var exportItem: ExportItem? = nil
     @FocusState private var inputFocused: Bool

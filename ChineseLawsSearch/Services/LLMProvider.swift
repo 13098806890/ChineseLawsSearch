@@ -174,8 +174,11 @@ private func consumeSSELines(_ bytes: URLSession.AsyncBytes, onToken: @escaping 
     }
 }
 
-// MARK: - DeepSeek
+// MARK: - DeepSeek (user-key variant — reserved for future "bring your own key" feature)
 
+// Not currently exposed in UI. App always uses BuiltinDeepSeekProvider.
+// Re-enable DeepSeekProvider + GroqProvider + GeminiProvider + LLMProviderRegistry.current
+// switching logic when user-key settings UI is added back.
 struct DeepSeekProvider: LLMProvider {
     let id          = "deepseek"
     let displayName = "DeepSeek"
@@ -218,8 +221,9 @@ struct BuiltinDeepSeekProvider: LLMProvider {
     }
 }
 
-// MARK: - Groq
+// MARK: - Groq (reserved for future multi-provider support)
 
+// Not currently exposed in UI.
 struct GroqProvider: LLMProvider {
     let id          = "groq"
     let displayName = "Groq（免费）"
