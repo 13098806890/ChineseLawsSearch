@@ -130,9 +130,29 @@ struct ChatSession: Identifiable, Codable {
 // MARK: - Persist actor (serializes all disk I/O, preventing concurrent-write races)
 
 private actor PersistActor {
+    /// Pending snapshot waiting to be written; updated on every enqueue so that only the
+    /// latest snapshot is written when the actor is free, discarding intermediate ones.
+    private var pendingSnapshot: [ChatSession]? = nil
+    private var isWriting = false
+
+    func writeLatest(_ sessions: [ChatSession], to url: URL) {
+        pendingSnapshot = sessions
+        guard !isWriting else { return }
+        isWriting = true
+        Task {
+            while let snap = pendingSnapshot {
+                pendingSnapshot = nil
+                guard let data = try? JSONEncoder().encode(snap) else { break }
+                try? data.write(to: url, options: .atomic)
+            }
+            isWriting = false
+        }
+    }
+
     func write(_ data: Data, to url: URL) throws {
         try data.write(to: url, options: .atomic)
     }
+
     func read(from url: URL) -> Data? {
         try? Data(contentsOf: url)
     }
@@ -231,13 +251,15 @@ final class ChatHistoryStore: ObservableObject {
     }
 
     /// 序列化写文件，通过 PersistActor 保证同一时刻只有一个写操作。
+    /// Snapshot is captured on MainActor immediately so it reflects the latest state,
+    /// then written serially through the actor to prevent an older snapshot from
+    /// overwriting a newer one when two saves queue up in rapid succession.
     private func persistAsync() {
-        let snapshot = sessions
+        let snapshot = sessions  // captured on MainActor — always the latest
         let url = fileURL
         let actor = persistActor
         Task.detached(priority: .utility) {
-            guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            try? await actor.write(data, to: url)
+            await actor.writeLatest(snapshot, to: url)
         }
     }
 

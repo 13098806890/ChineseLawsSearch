@@ -191,6 +191,9 @@ final class LegalChatViewModel: ObservableObject {
         inputText = ""
         messages.append(ChatMessage(role: .user, text: q))
 
+        // Tracks whether conversationHistory was appended this turn; used by error handler
+        var appendedToHistory = false
+
         defer {
             // 无论哪条路径退出，都清除该 session 的 thinking 状态
             thinkingSessions.remove(currentSessionId)
@@ -240,18 +243,18 @@ final class LegalChatViewModel: ObservableObject {
 """)
                 reply.intent = .offTopic
                 messages.append(reply)
+                // Off-topic reply is not real legal Q&A; do NOT add to conversationHistory
+                // to avoid polluting intent classification in subsequent turns.
+                autoSave(historyStore: historyStore)
 
             // ── Legal query / Follow-up: run pipeline ──────────────────────────
             case .legalQuery, .followUp:
+                appendedToHistory = true
                 try await handleLLMIntent(intent, question: q, preMode: preMode,
                                           historyStore: historyStore,
                                           currentSessionId: currentSessionId)
                 return
             }
-
-            // Off-topic path: update history and save
-            conversationHistory.append((user: q, assistant: messages.last?.text ?? ""))
-            autoSave(historyStore: historyStore)
 
         } catch {
             // Refund the quota consumed at the top of send() — the request never completed
@@ -282,8 +285,8 @@ final class LegalChatViewModel: ObservableObject {
             errorMessage = (error as? LLMError)?.errorDescription
                 ?? (error as? URLError).map { "网络错误：\($0.localizedDescription)" }
                 ?? error.localizedDescription
-            // Remove the last (failed) turn from multi-turn context; preserve prior turns
-            if !conversationHistory.isEmpty { conversationHistory.removeLast() }
+            // Only remove if we actually appended a turn (legalQuery/followUp path)
+            if appendedToHistory, !conversationHistory.isEmpty { conversationHistory.removeLast() }
             isAwaitingClarification = false
             followUpRound = 0
             // 保存已有内容（如有部分回复已展示，保留历史）；否则删除提前写入的空 session
@@ -362,7 +365,9 @@ final class LegalChatViewModel: ObservableObject {
         }
 
         if lastFailedQuestion == nil && sessionId == currentSessionId {
-            let assistantText = messages.last(where: { $0.role == .assistant })?.text ?? ""
+            // Use the reply captured at replyIdx rather than searching messages.last,
+            // to avoid cross-session contamination when user switches sessions mid-flight.
+            let assistantText = replyIdx < messages.count ? messages[replyIdx].text : ""
             conversationHistory.append((user: q, assistant: assistantText))
             autoSave(historyStore: historyStore)
         }
@@ -546,11 +551,14 @@ final class LegalChatViewModel: ObservableObject {
         let existingKeys = Set(existing.map { "\($0.lawId)||\($0.articleNumber)" })
         var result: [RAGCitation] = []
         var seenKeys = Set<String>()
-        let ns = text as NSString
-        let matches = re.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        let range = text.startIndex..<text.endIndex
+        let nsRange = NSRange(range, in: text)
+        let matches = re.matches(in: text, range: nsRange)
         for m in matches {
-            let title  = ns.substring(with: m.range(at: 1))
-            let artNum = ns.substring(with: m.range(at: 2))
+            guard let titleRange = Range(m.range(at: 1), in: text),
+                  let artRange   = Range(m.range(at: 2), in: text) else { continue }
+            let title  = String(text[titleRange])
+            let artNum = String(text[artRange])
             guard let article = DatabaseManager.shared.articleByRef(
                 lawTitleFragment: title, articleNumber: artNum) else { continue }
             let key = "\(article.lawId)||\(article.articleNumber)"

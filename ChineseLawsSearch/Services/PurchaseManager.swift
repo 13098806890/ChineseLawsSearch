@@ -140,7 +140,8 @@ final class PurchaseManager: ObservableObject {
                 lastConsumedPath = .free
                 return true
             }
-            // StoreKit 未就绪且无免费次数：暂时放行，后续刷新后 hasPRO 会更新
+            // StoreKit 未就绪且无免费次数：暂时放行，记为 free 路径以便 refundIfNeeded 有效
+            lastConsumedPath = .free
             return true
         }
         #if DEBUG
