@@ -93,6 +93,8 @@ final class PurchaseManager: ObservableObject {
     private var cachedPeriodStart: Date? = nil
 
     private var updateListenerTask: Task<Void, Never>?
+    /// True once the first refreshPurchaseStatus() completes. Avoids false paywall on cold launch.
+    @Published private(set) var isReady: Bool = false
 
     init() {
         freeRemaining = remainingFreeUses()
@@ -126,6 +128,21 @@ final class PurchaseManager: ObservableObject {
     func consumeIfAllowed(isFollowUp: Bool = false) -> Bool {
         lastConsumedPath = .none
         if isFollowUp { return true }
+        // 如果 StoreKit 尚未完成第一次查询，等同于 pro 状态不可知：
+        // 已知有免费次数则直接消耗；否则先放行一次（isReady 为 false），
+        // 实际上此情形在 UI 禁用了按钮，这里作为安全兜底。
+        if !isReady {
+            let free = remainingFreeUses()
+            if free > 0 {
+                let newVal = free - 1
+                ud.set(newVal, forKey: freeCountKey)
+                freeRemaining = newVal
+                lastConsumedPath = .free
+                return true
+            }
+            // StoreKit 未就绪且无免费次数：暂时放行，后续刷新后 hasPRO 会更新
+            return true
+        }
         #if DEBUG
         if Self.debugSimulatePRO {
             guard let ps = cachedPeriodStart else { return false }
@@ -306,6 +323,7 @@ final class PurchaseManager: ObservableObject {
             cachedPeriodStart = nil
             proRemaining = 0
         }
+        isReady = true
     }
 
     private func listenForTransactions() -> Task<Void, Never> {

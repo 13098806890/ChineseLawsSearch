@@ -71,6 +71,21 @@ enum KeychainHelper {
         SecItemDelete(base.merging([kSecAttrSynchronizable: kSecAttrSynchronizableAny]) { _, new in new } as CFDictionary)
     }
 
+    // MARK: - Device-local string storage (not synced to iCloud)
+
+    static func saveLocal(_ value: String, forKey key: String) {
+        saveLocalData(Data(value.utf8), forKey: key)
+    }
+
+    static func loadLocal(forKey key: String) -> String? {
+        guard let data = loadLocalData(forKey: key) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func deleteLocal(forKey key: String) {
+        deleteLocalData(forKey: key)
+    }
+
     // MARK: - Device-local data storage (not synced to iCloud)
 
     static func saveLocalData(_ data: Data, forKey key: String) {

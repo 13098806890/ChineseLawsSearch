@@ -111,7 +111,8 @@ final class LegalChatViewModel: ObservableObject {
         messages = []
         inputText = ""
         // sessionId 切换后 isThinking 计算属性自动变 false，旧 session 的 thinkingSessions 条目保留直到任务完成
-        isAwaitingClarification = false  // kept for legacy session compat        pendingFacts = [:]
+        isAwaitingClarification = false  // kept for legacy session compat
+        pendingFacts = [:]
         conversationHistory = []
         lastSelectedExperts = []
         lastQueryMode = nil
@@ -174,16 +175,6 @@ final class LegalChatViewModel: ObservableObject {
         let currentSessionId = sessionId  // capture before any await
         thinkingSessions.insert(currentSessionId)  // 立即标记，防止并发双触发
 
-        // 准入检查：
-        // - 免费次数 > 0 → 消耗一次，用内置 key
-        // - 免费用完 + 已购买 + 有 key → 直接放行
-        // - 其他 → 拦截（canUseAgent 已 disabled，此处兜底）
-        if !PurchaseManager.shared.consumeIfAllowed(isFollowUp: false) {
-            thinkingSessions.remove(currentSessionId)
-            needsPaywall = true
-            return
-        }
-
         // 时间篡改检测：当前时间不得早于上次发送时间
         let now = Date().timeIntervalSince1970
         let lastSend = kv.double(forKey: lastSendTimeKey)
@@ -212,6 +203,16 @@ final class LegalChatViewModel: ObservableObject {
                 message: q, history: conversationHistory)
             let intent = classified.0
             let preMode = classified.1
+
+            // 追问不消耗次数；其他意图在此消耗
+            let isFollowUp = (intent == .followUp)
+            if !PurchaseManager.shared.consumeIfAllowed(isFollowUp: isFollowUp) {
+                // 还原用户消息
+                if let last = messages.last, last.role == .user { messages.removeLast() }
+                inputText = q
+                needsPaywall = true
+                return
+            }
 
             // ── Route by intent ────────────────────────────────────────────────
             switch intent {
@@ -602,7 +603,11 @@ enum ChatExportPDF {
             }
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("法律咨询记录.pdf")
-        try? data.write(to: url)
+        do {
+            try data.write(to: url)
+        } catch {
+            return nil
+        }
         return url
     }
 }

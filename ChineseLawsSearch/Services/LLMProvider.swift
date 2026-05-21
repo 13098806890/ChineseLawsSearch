@@ -48,7 +48,11 @@ protocol LLMProvider {
 
 extension LLMProvider {
     func apiKey() throws -> String {
-        guard let k = KeychainHelper.load(forKey: keychainKey), !k.isEmpty else {
+        // API keys are stored device-local (not synced to iCloud).
+        // Fall back to the synced store for keys saved by older app versions.
+        let k = KeychainHelper.loadLocal(forKey: keychainKey)
+            ?? KeychainHelper.load(forKey: keychainKey)
+        guard let k, !k.isEmpty else {
             throw LLMError.apiKeyMissing(displayName)
         }
         return k
@@ -203,13 +207,7 @@ struct BuiltinDeepSeekProvider: LLMProvider {
            let p4 = info?["BKP4"] as? String, !p4.isEmpty {
             return [p1, p2, p3, p4].joined()
         }
-        // Fallback: key assembled directly in source (used when xcconfig injection fails).
-        // Split across lines so the full key never appears as a single string literal.
-        let a = "sk-d0" + "12fe"
-        let b = "36d5" + "5f43"
-        let c = "d2b1" + "c37c"
-        let d = "9443" + "f543" + "03"
-        return a + b + c + d
+        return nil
     }()
 
     func apiKey() throws -> String {
@@ -258,7 +256,9 @@ enum LLMProviderRegistry {
         let saved = UserDefaults.standard.string(forKey: "selected_llm_provider") ?? "deepseek"
         // If DeepSeek is selected but no user key is configured, use the built-in key.
         if saved == "deepseek" {
-            let userKey = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+            let userKey = KeychainHelper.loadLocal(forKey: "deepseek_api_key")
+                ?? KeychainHelper.load(forKey: "deepseek_api_key")
+                ?? ""
             if userKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return BuiltinDeepSeekProvider()
             }

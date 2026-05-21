@@ -172,6 +172,7 @@ final class ChatHistoryStore: ObservableObject {
         persistAsync()
     }
 
+    @MainActor
     func delete(id: UUID) {
         sessions.removeAll { $0.id == id }
         persistAsync()

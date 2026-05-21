@@ -23,20 +23,23 @@ struct PersistedBackItem: Codable {
 struct FavoriteArticle: Codable, Identifiable, Equatable {
     let id: UUID
     let lawId: Int
-    let lawTitle: String
-    let articleNum: Int      // 条号（数字）
-    let articleNumber: String // 显示用，如"第一百二十三条"
-    let content: String
+    let articleNum: Int      // 条号（数字），用于从 DB 实时读取内容
     let savedAt: Date
+
+    // Legacy fields — kept for Codable backward compatibility when decoding old saves.
+    // Not used for display; FavoritesView reads live data from DatabaseManager.
+    var lawTitle: String?
+    var articleNumber: String?
+    var content: String?
 
     init(lawId: Int, lawTitle: String, articleNum: Int, articleNumber: String, content: String) {
         self.id            = UUID()
         self.lawId         = lawId
-        self.lawTitle      = lawTitle
         self.articleNum    = articleNum
-        self.articleNumber = articleNumber
-        self.content       = content
         self.savedAt       = Date()
+        self.lawTitle      = nil
+        self.articleNumber = nil
+        self.content       = nil
     }
 }
 
@@ -94,14 +97,17 @@ final class UserStore: ObservableObject {
     // MARK: - API Key 状态（供跨视图响应）
 
     @Published var apiKeyConfigured: Bool = {
-        let k = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
-        // Also considered configured if the built-in key is available (plist injection)
+        let k = KeychainHelper.loadLocal(forKey: "deepseek_api_key")
+            ?? KeychainHelper.load(forKey: "deepseek_api_key")
+            ?? ""
         return !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || BuiltinDeepSeekProvider.hasBuiltinKey
     }()
 
     func refreshAPIKeyState() {
-        let k = KeychainHelper.load(forKey: "deepseek_api_key") ?? ""
+        let k = KeychainHelper.loadLocal(forKey: "deepseek_api_key")
+            ?? KeychainHelper.load(forKey: "deepseek_api_key")
+            ?? ""
         apiKeyConfigured = !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || BuiltinDeepSeekProvider.hasBuiltinKey
     }

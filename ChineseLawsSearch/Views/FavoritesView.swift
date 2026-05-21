@@ -211,26 +211,41 @@ struct FavoritesView: View {
 
 private struct FavoriteRow: View {
     let fav: FavoriteArticle
+    @State private var lawTitle: String = ""
+    @State private var articleNumber: String = ""
+    @State private var content: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text(fav.lawTitle)
+                Text(lawTitle)
                     .font(.caption)
                     .foregroundStyle(AppColors.shared.searchHighlight)
                     .lineLimit(1)
-                Text(fav.articleNumber)
+                Text(articleNumber)
                     .font(.caption.bold())
                     .foregroundStyle(.primary)
                     .lineLimit(1)
             }
-            Text(fav.content)
+            Text(content)
                 .font(.subheadline)
                 .foregroundStyle(.primary)
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
         }
         .padding(.vertical, 4)
+        .task(id: fav.id) {
+            let db = DatabaseManager.shared
+            if let node = db.nodes(lawId: fav.lawId).first(where: { $0.articleNum == fav.articleNum }) {
+                lawTitle      = db.lawMeta(id: fav.lawId)?.title ?? ""
+                articleNumber = node.title
+                content       = node.content
+            } else {
+                lawTitle      = fav.lawTitle ?? ""
+                articleNumber = fav.articleNumber ?? ""
+                content       = fav.content ?? ""
+            }
+        }
     }
 }
 

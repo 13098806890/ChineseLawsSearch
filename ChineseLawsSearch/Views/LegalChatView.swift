@@ -995,6 +995,7 @@ private struct LinkedAnswerText: View {
     let navigate: (Int, Int?) -> Void
     let navigateToGazette: (GazetteDoc) -> Void
 
+    @State private var attributed: NSAttributedString? = nil
     private static let articleRefRE = ArticleRefPattern.regex
     private static let bracketRE = try! NSRegularExpression(pattern: "《([^》]{2,60})》")
     private static let bareArticleRE = try! NSRegularExpression(
@@ -1128,13 +1129,15 @@ private struct LinkedAnswerText: View {
     }
 
     var body: some View {
-        _LinkedTextView(attributedText: buildAttributed(),
+        _LinkedTextView(attributedText: attributed ?? NSAttributedString(string: text),
                         navigate: navigate,
                         navigateToGazette: navigateToGazette)
+        .task(id: text) {
+            let built = buildAttributed()
+            attributed = built
+        }
     }
 }
-
-// Subclass that returns the correct intrinsicContentSize for any given width,
 // so SwiftUI's layout pass gets the right height on the first pass.
 private final class _SelfSizingTextView: UITextView {
     override var intrinsicContentSize: CGSize {

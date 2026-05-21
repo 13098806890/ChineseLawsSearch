@@ -873,16 +873,18 @@ final class LegalExpertService {
             docsC = []
         }
 
-        // 策略 Note：笔记文本关键词匹配
+        // 策略 Note：笔记文本关键词匹配（使用 bigram 避免高频单字误命中）
         var noteMatches: [GazetteDoc] = []
         if !notes.isEmpty {
-            let questionChars = Set(question.filter { $0.isLetter })
-            for (docIdStr, noteText) in notes {
-                guard let docId = Int(docIdStr) else { continue }
-                let noteChars = Set(noteText.filter { $0.isLetter })
-                let overlap = questionChars.intersection(noteChars).count
-                if overlap >= 2, let doc = db.gazetteDoc(id: docId) {
-                    noteMatches.append(doc)
+            let questionBigrams = Self.bigrams(of: question)
+            if !questionBigrams.isEmpty {
+                for (docIdStr, noteText) in notes {
+                    guard let docId = Int(docIdStr) else { continue }
+                    let noteBigrams = Self.bigrams(of: noteText)
+                    let overlap = questionBigrams.intersection(noteBigrams).count
+                    if overlap >= 2, let doc = db.gazetteDoc(id: docId) {
+                        noteMatches.append(doc)
+                    }
                 }
             }
         }
@@ -1901,6 +1903,22 @@ final class LegalExpertService {
               let b = t.range(of: close, options: .backwards)?.upperBound
         else { return t }
         return String(t[a..<b])
+    }
+
+    /// Returns the set of all consecutive 2-character pairs (bigrams) in a string,
+    /// filtering to only letter/CJK characters to avoid punctuation noise.
+    private static func bigrams(of s: String) -> Set<String> {
+        let letters = s.filter { $0.isLetter }
+        guard letters.count >= 2 else { return [] }
+        var result = Set<String>()
+        var prev: Character? = nil
+        for ch in letters {
+            if let p = prev {
+                result.insert(String(p) + String(ch))
+            }
+            prev = ch
+        }
+        return result
     }
 }
 

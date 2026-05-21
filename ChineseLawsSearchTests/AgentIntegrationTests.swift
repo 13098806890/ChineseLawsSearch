@@ -162,8 +162,13 @@ private func runCase(testId: String,
 
 private func injectAPIKeyIfNeeded() {
     let key = "deepseek_api_key"
-    if (KeychainHelper.load(forKey: key) ?? "").isEmpty {
-        KeychainHelper.save("sk-d012fe36d55f43d2b1c37c9443f54303", forKey: key)
+    if (KeychainHelper.loadLocal(forKey: key) ?? KeychainHelper.load(forKey: key) ?? "").isEmpty {
+        // Set DEEPSEEK_API_KEY in the scheme's environment variables before running integration tests.
+        guard let envKey = ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"], !envKey.isEmpty else {
+            XCTFail("DEEPSEEK_API_KEY environment variable not set — cannot run integration tests")
+            return
+        }
+        KeychainHelper.saveLocal(envKey, forKey: key)
     }
 }
 
