@@ -173,7 +173,6 @@ final class LegalChatViewModel: ObservableObject {
         guard !q.isEmpty, q.count >= 2, !isThinking else { return }
 
         let currentSessionId = sessionId  // capture before any await
-        thinkingSessions.insert(currentSessionId)  // 立即标记，防止并发双触发
 
         // 时间篡改检测：当前时间不得早于上次发送时间
         let now = Date().timeIntervalSince1970
@@ -182,6 +181,8 @@ final class LegalChatViewModel: ObservableObject {
             showTimeManipulationAlert = true
             return
         }
+
+        thinkingSessions.insert(currentSessionId)  // 立即标记，防止并发双触发
         kv.set(now, forKey: lastSendTimeKey)
 
         LegalExpertService.shared.gazetteNotes = gazetteNotes
@@ -189,8 +190,6 @@ final class LegalChatViewModel: ObservableObject {
         lastFailedQuestion = nil
         inputText = ""
         messages.append(ChatMessage(role: .user, text: q))
-        // 立即保存用户消息，确保切换对话时不丢失
-        autoSave(historyStore: historyStore)
 
         defer {
             // 无论哪条路径退出，都清除该 session 的 thinking 状态
@@ -213,12 +212,16 @@ final class LegalChatViewModel: ObservableObject {
                 needsPaywall = true
                 return
             }
+            // 保存用户消息（quota 已确认通过后再写入，避免 ghost session）
+            autoSave(historyStore: historyStore)
 
             // ── Route by intent ────────────────────────────────────────────────
             switch intent {
 
             // ── Off-topic: hardcoded reply, zero LLM calls ─────────────────────
             case .offTopic:
+                // No LLM call was made; refund the quota consumed above
+                PurchaseManager.shared.refundIfNeeded()
                 var reply = ChatMessage(role: .assistant, text: """
 我是律疏法律顾问，由多位细分领域专家协作，自动检索相关法条，给出有依据的法律意见。
 
@@ -255,7 +258,7 @@ final class LegalChatViewModel: ObservableObject {
             PurchaseManager.shared.refundIfNeeded()
             // Remove any partial/empty assistant bubble added during streaming (no citations = incomplete)
             if let last = messages.last, last.role == .assistant,
-               last.citations.isEmpty && last.gazetteCitations.isEmpty {
+               last.citations.isEmpty && last.gazetteCitations.isEmpty && last.text.isEmpty {
                 messages.removeLast()
             }
             // Remove the user message and restore to input box for retry
@@ -279,8 +282,8 @@ final class LegalChatViewModel: ObservableObject {
             errorMessage = (error as? LLMError)?.errorDescription
                 ?? (error as? URLError).map { "网络错误：\($0.localizedDescription)" }
                 ?? error.localizedDescription
-            // Reset multi-turn state so next send starts fresh
-            conversationHistory.removeAll()
+            // Remove the last (failed) turn from multi-turn context; preserve prior turns
+            if !conversationHistory.isEmpty { conversationHistory.removeLast() }
             isAwaitingClarification = false
             followUpRound = 0
             // 保存已有内容（如有部分回复已展示，保留历史）；否则删除提前写入的空 session

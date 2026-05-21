@@ -230,8 +230,8 @@ final class PurchaseManager: ObservableObject {
 
     // MARK: - StoreKit: restore
 
-    func restorePurchases() async {
-        try? await AppStore.sync()
+    func restorePurchases() async throws {
+        try await AppStore.sync()
         await refreshPurchaseStatus()
     }
 

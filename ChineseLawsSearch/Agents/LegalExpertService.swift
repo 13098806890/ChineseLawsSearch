@@ -104,7 +104,7 @@ final class LegalExpertService {
               let intentStr = obj["intent"] as? String,
               let intent = MessageIntent(rawValue: intentStr)
         else {
-            return (history.isEmpty ? .legalQuery : .followUp, nil)
+            return (.legalQuery, nil)
         }
 
         if intent == .followUp {
@@ -220,6 +220,7 @@ final class LegalExpertService {
         return try await runCoordinatorStage(
             question: question, searchQuestion: question, subQs: [],
             groupAnswers: expertAnswers, allArticlesFlat: allArticlesFlat,
+            conversationHistory: conversationHistory,
             systemPrompt: coordinatorSystemPromptForMode(mode), onEvent: onEvent)
     }
 
@@ -665,6 +666,7 @@ final class LegalExpertService {
             groupAnswers: groupAnswers, allArticlesFlat: allArticlesFlat,
             expertGazetteCites: expertGazetteCites,
             searchKeywords: searchKeywords,
+            conversationHistory: conversationHistory,
             systemPrompt: coordinatorSystemPrompt, onEvent: onEvent)
     }
 
@@ -679,6 +681,7 @@ final class LegalExpertService {
                                       allArticlesFlat: [DatabaseManager.RAGArticle],
                                       expertGazetteCites: [GazetteCitation] = [],
                                       searchKeywords: [String] = [],
+                                      conversationHistory: [(user: String, assistant: String)] = [],
                                       systemPrompt: String,
                                       onEvent: @escaping @MainActor (RAGEvent) -> Void) async throws -> [RAGCitation] {
 
@@ -702,7 +705,17 @@ final class LegalExpertService {
 
         let context = buildGroupContext(groupAnswers: groupAnswers, articles: allArticlesFlat,
                                         gazetteCites: gazetteCites)
-        var userMsg = "用户问题：\(question)\n\n"
+        var userMsg = ""
+        // Inject up to 2 prior turns so coordinator has multi-turn context
+        let historyPrefix = conversationHistory.suffix(2)
+        if !historyPrefix.isEmpty {
+            userMsg += "历史对话（最近 \(historyPrefix.count) 轮）：\n"
+            for turn in historyPrefix {
+                userMsg += "用户：\(turn.user)\n助手：\(String(turn.assistant.prefix(300)))\n---\n"
+            }
+            userMsg += "\n"
+        }
+        userMsg += "用户问题：\(question)\n\n"
         if !subQs.isEmpty {
             userMsg += "问题已拆分为以下独立子问题，请逐一分标题回答，每个子问题回答前先用一句话复述该子问题：\n"
             userMsg += subQs.enumerated().map { "\($0.offset+1). \($0.element)" }.joined(separator: "\n")

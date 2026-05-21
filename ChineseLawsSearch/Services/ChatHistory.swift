@@ -106,6 +106,25 @@ struct ChatSession: Identifiable, Codable {
         self.totalPromptTokens = totalPromptTokens
         self.totalCompletionTokens = totalCompletionTokens
     }
+
+    // Custom decoder: uses decodeIfPresent so new fields added in future app versions
+    // don't cause a keyNotFound error that wipes the entire history file.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id        = try c.decode(UUID.self,   forKey: .id)
+        title     = try c.decode(String.self, forKey: .title)
+        mode      = (try? c.decodeIfPresent(String.self, forKey: .mode)) ?? "expert"
+        createdAt = try c.decode(Date.self,   forKey: .createdAt)
+        updatedAt = try c.decode(Date.self,   forKey: .updatedAt)
+        messages              = (try? c.decodeIfPresent([PersistedMessage].self,  forKey: .messages))              ?? []
+        selectedExpertNames   = (try? c.decodeIfPresent([String].self,            forKey: .selectedExpertNames))   ?? []
+        pendingFacts          = (try? c.decodeIfPresent([String: String].self,    forKey: .pendingFacts))          ?? [:]
+        isAwaitingClarification = (try? c.decodeIfPresent(Bool.self,              forKey: .isAwaitingClarification)) ?? false
+        followUpRound         = (try? c.decodeIfPresent(Int.self,                 forKey: .followUpRound))         ?? 0
+        lastQueryMode         = try? c.decodeIfPresent(String.self,               forKey: .lastQueryMode)
+        totalPromptTokens     = (try? c.decodeIfPresent(Int.self,                 forKey: .totalPromptTokens))     ?? 0
+        totalCompletionTokens = (try? c.decodeIfPresent(Int.self,                 forKey: .totalCompletionTokens)) ?? 0
+    }
 }
 
 // MARK: - Persist actor (serializes all disk I/O, preventing concurrent-write races)
@@ -200,8 +219,10 @@ final class ChatHistoryStore: ObservableObject {
             }
             let result = decoded
             await MainActor.run {
-                // Only update if content actually changed to avoid unnecessary UI redraws
-                if result.map(\.id) != self.sessions.map(\.id) {
+                // Only update if IDs or updatedAt changed to avoid unnecessary UI redraws
+                let resultKeys  = result.map           { "\($0.id)\($0.updatedAt.timeIntervalSince1970)" }
+                let currentKeys = self.sessions.map    { "\($0.id)\($0.updatedAt.timeIntervalSince1970)" }
+                if resultKeys != currentKeys {
                     self.sessions = result
                 }
                 self.isLoading = false

@@ -95,9 +95,14 @@ struct PaywallView: View {
                     Button {
                         Task {
                             isRestoring = true
-                            await pm.restorePurchases()
+                            do {
+                                try await pm.restorePurchases()
+                                if pm.hasPRO { dismiss() }
+                                else { errorMsg = "未找到有效订阅，如有疑问请联系 Apple 支持。" }
+                            } catch {
+                                errorMsg = "恢复失败：\(error.localizedDescription)"
+                            }
                             isRestoring = false
-                            if pm.hasPRO { dismiss() }
                         }
                     } label: {
                         if isRestoring { ProgressView() }
