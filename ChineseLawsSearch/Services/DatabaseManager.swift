@@ -1549,6 +1549,14 @@ final class DatabaseManager {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+        // 指导案例按案例号升序；其他来源按年份降序
+        let orderClause = (source == "al")
+            ? "ORDER BY CASE WHEN d.case_num_int IS NOT NULL THEN 0 ELSE 1 END, d.case_num_int ASC, d.year DESC, d.issue_num DESC"
+            : "ORDER BY d.year DESC, d.issue_num DESC"
+        let orderClauseNoJoin = (source == "al")
+            ? "ORDER BY CASE WHEN case_num_int IS NOT NULL THEN 0 ELSE 1 END, case_num_int ASC, year DESC, issue_num DESC"
+            : "ORDER BY year DESC, issue_num DESC"
+
         if trimmed.count >= 3 {
             let escaped = "\"" + trimmed.replacingOccurrences(of: "\"", with: "\"\"") + "\""
             let sql: String
@@ -1562,7 +1570,7 @@ final class DatabaseManager {
                     FROM gongbao_docs_fts f
                     JOIN gongbao_docs d ON f.rowid = d.id
                     WHERE gongbao_docs_fts MATCH ? AND d.source = ?
-                    ORDER BY d.year DESC, d.issue_num DESC
+                    \(orderClause)
                     LIMIT \(limit)
                     """
             } else {
@@ -1600,7 +1608,7 @@ final class DatabaseManager {
                            keywords_meta, COALESCE(full_text,''), case_brief
                     FROM gongbao_docs
                     WHERE (title LIKE ? OR keywords LIKE ? OR case_number LIKE ?) AND source = ?
-                    ORDER BY year DESC, issue_num DESC
+                    \(orderClauseNoJoin)
                     LIMIT \(limit)
                     """
             } else {
@@ -1638,7 +1646,7 @@ final class DatabaseManager {
                            keywords_meta, COALESCE(full_text,''), case_brief
                     FROM gongbao_docs
                     WHERE source = ?
-                    ORDER BY year DESC, issue_num DESC
+                    \(orderClauseNoJoin)
                     LIMIT \(limit)
                     """
             } else {
