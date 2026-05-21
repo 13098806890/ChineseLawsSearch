@@ -66,8 +66,8 @@ final class LegalExpertService {
             return (.offTopic, nil)
         }
 
-        let recentHistory = history.suffix(2)
-            .map { "用户：\($0.user)\n助手：\($0.assistant.prefix(100))" }
+        let recentHistory = history
+            .map { "用户：\($0.user)\n助手：\($0.assistant)" }
             .joined(separator: "\n---\n")
         let historySection = recentHistory.isEmpty ? "（无历史对话）" : recentHistory
 
