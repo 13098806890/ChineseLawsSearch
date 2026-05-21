@@ -23,25 +23,9 @@ final class LegalExpertService {
     /// Written once on MainActor before any async work begins, then only read from async task contexts.
     nonisolated(unsafe) var gazetteNotes: [String: String] = [:]
 
-    // MARK: - Quality settings (mirrors UserStore computed properties)
-    // Reads chatQualityMode from UserDefaults (the same key @AppStorage uses)
-    // so LegalExpertService always sees the latest user preference without
-    // coupling to UserStore directly.
-    private var qualityMode: String {
-        UserDefaults.standard.string(forKey: "chatQualityMode") ?? "standard"
-    }
-    private var maxContextArticles: Int {
-        switch qualityMode {
-        case "economy":  return 15
-        default:         return 0   // standard / detailed: unlimited
-        }
-    }
-    private var maxCitationsLimit: Int {
-        switch qualityMode {
-        case "economy":  return 5
-        default:         return 0   // standard / detailed: unlimited
-        }
-    }
+    private let maxContextArticles: Int = 0   // unlimited
+    private let maxCitationsLimit:  Int = 0   // unlimited
+
 
     /// Result of decomposing a multi-question input.
     struct DecomposedQuestion {
