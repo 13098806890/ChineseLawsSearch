@@ -2,6 +2,38 @@
 
 ---
 
+## 1.09（2026-05-21）
+
+### 修复
+
+**对话历史稳定性**
+- 修复 App 升级后对话历史被整体清空的问题（根因：`ChatSession` 使用编译器合成的 Decoder，新增字段时抛 `keyNotFound` 导致整个 history 文件被移入备份；改为自定义 `init(from decoder:)`，所有新字段均有安全默认值）
+- 修复高频快速保存时旧快照覆盖新快照导致最近一条消息丢失的问题（重构 `PersistActor` 写入逻辑，多次快速保存只写入最新快照）
+- 修复 iCloud 同步时仅对比 session ID、忽略更新时间，导致内容变更不触发刷新的问题
+
+**意图分类与上下文**
+- 修复 off-topic 回复被写入 `conversationHistory`，污染后续对话意图分类的问题
+- 修复 LLM 服务故障时追问被错误降级为 `.followUp`（使用过期专家上下文），改为始终回退 `.legalQuery`
+- 修复切换对话时，旧对话的回答结果被追加到新对话 `conversationHistory` 的问题
+- 修复请求报错后 `conversationHistory.removeAll()` 清空所有历史，改为仅移除本轮失败的 turn
+
+**AI 回答质量**
+- Coordinator 现在接收最近 2 轮对话历史作为上下文，多轮咨询时回答更连贯
+- 修复含 emoji 或特殊字符的回答在提取法条引用时崩溃的问题（NSRange 越界）
+
+**quota 计费准确性**
+- 修复 off-topic 回复（无 LLM 调用）仍消耗 quota 的问题
+- 修复请求中途失败后 token 计数虚高的问题（错误路径现在重置当轮 token 统计）
+- 修复 StoreKit 未就绪时的兜底放行路径未设置 `lastConsumedPath`，导致 `refundIfNeeded()` 无效的问题
+
+**新对话隔离**
+- 新建对话始终重置完整上下文（`conversationHistory`、`pendingFacts`、`lastSelectedExperts`、token 计数），与前一个对话完全隔离
+
+**购买恢复**
+- 修复「恢复购买」失败时静默吞掉错误、用户无任何反馈的问题；现在网络错误等情况会弹出具体错误信息
+
+---
+
 ## 1.08（2026-05-21）
 
 ### 修复

@@ -2,7 +2,7 @@
 
 中国法律法规检索与智能咨询 iOS 应用，数据来源于 [laws-data](https://github.com/13098806890/laws-data) 开放数据集。
 
-**当前版本：1.08** — [Release Notes](CHANGELOG.md)
+**当前版本：1.09** — [Release Notes](CHANGELOG.md)
 
 ---
 
