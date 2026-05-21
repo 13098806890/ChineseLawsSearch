@@ -147,6 +147,7 @@ struct TOCView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollDismissesKeyboard(.immediately)
         .navigationTitle(lawsExamMode ? "法考法规" : "法律法规")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchQuery,

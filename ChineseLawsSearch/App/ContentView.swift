@@ -25,6 +25,7 @@ struct LawTarget: Identifiable, Hashable {
 struct ContentView: View {
     @State private var tab: Tab = .browse
     @State private var target: LawTarget?
+    @State private var intraLawScrollArticle: Int? = nil   // same-law in-page scroll signal
     @State private var selectedGazetteDoc: GazetteDoc?
     @State private var selectedGazetteLaw: LawTarget?
     @State private var showSettings = false
@@ -138,7 +139,9 @@ struct ContentView: View {
                 TOCView(target: $target)
                     .environmentObject(userStore)
                     .navigationDestination(item: $target) { t in
-                        LawDetailView(target: t, navigate: navigate,
+                        LawDetailView(target: t,
+                                      intraLawScrollArticle: $intraLawScrollArticle,
+                                      navigate: navigate,
                                       navigateToGazette: navigateToGazette,
                                       canGoBack: !backStack.isEmpty, goBack: goBack,
                                       goToMenu: { tab = .browse; target = nil; backStack.removeAll(); persistBackStack() })
@@ -152,7 +155,9 @@ struct ContentView: View {
             } detail: {
                 if let t = target {
                     NavigationStack {
-                        LawDetailView(target: t, navigate: navigate,
+                        LawDetailView(target: t,
+                                      intraLawScrollArticle: $intraLawScrollArticle,
+                                      navigate: navigate,
                                       navigateToGazette: navigateToGazette,
                                       canGoBack: !backStack.isEmpty, goBack: goBack,
                                       goToMenu: { target = nil; backStack.removeAll(); persistBackStack() })
@@ -287,8 +292,14 @@ struct ContentView: View {
             showSettings = false
             showPaywall = false
             showWelcome = false
+            // Same law already displayed — just scroll in-page, no new push
+            if tab == .browse, let current = target, current.law.id == lawId {
+                intraLawScrollArticle = articleNum
+                return
+            }
             backStack.append(BackItem(tab: tab, target: target))
             if backStack.count > 20 { backStack.removeFirst() }
+            intraLawScrollArticle = nil
             tab = .browse
             target = LawTarget(law: law, scrollToArticle: articleNum)
         }
@@ -377,7 +388,7 @@ private struct SettingsSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Label("已订阅", systemImage: "checkmark.seal.fill")
                                 .foregroundStyle(.green)
-                            Text("本月剩余 \(pm.proRemaining) 次 · 每月 1 日自动重置")
+                            Text("本订阅周期剩余 \(pm.proRemaining) 次 · 续订后自动重置")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     } else {
@@ -405,7 +416,7 @@ private struct SettingsSheet: View {
                     Text("法律顾问")
                 } footer: {
                     if pm.hasPRO {
-                        Text("订阅版：每月 150 次法律顾问，每月 1 日重置，无限访问高院公报全文。")
+                        Text("订阅版：每订阅周期 150 次法律顾问，续订后自动重置，无限访问高院公报全文。")
                     } else {
                         switch pm.access {
                         case .free(let remaining):

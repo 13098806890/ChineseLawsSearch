@@ -89,12 +89,13 @@ final class PurchaseManager: ObservableObject {
 
     private enum ConsumedPath { case free, pro, none }
     private var lastConsumedPath: ConsumedPath = .none
+    /// Cached period start from last refreshPurchaseStatus; used by consumeIfAllowed (sync).
+    private var cachedPeriodStart: Date? = nil
 
     private var updateListenerTask: Task<Void, Never>?
 
     init() {
         freeRemaining = remainingFreeUses()
-        proRemaining  = loadProQuota().count
         updateListenerTask = listenForTransactions()
         Task { await loadProducts(); await refreshPurchaseStatus() }
     }
@@ -127,7 +128,8 @@ final class PurchaseManager: ObservableObject {
         if isFollowUp { return true }
         #if DEBUG
         if Self.debugSimulatePRO {
-            var quota = loadProQuota()
+            guard let ps = cachedPeriodStart else { return false }
+            var quota = loadProQuota(periodStart: ps)
             if quota.count > 0 {
                 quota.count -= 1
                 saveProQuota(quota)
@@ -140,7 +142,8 @@ final class PurchaseManager: ObservableObject {
         #endif
         // 已订阅：优先消耗订阅配额，免费次数保留
         if hasPRO {
-            var quota = loadProQuota()
+            guard let ps = cachedPeriodStart else { return false }
+            var quota = loadProQuota(periodStart: ps)
             if quota.count > 0 {
                 quota.count -= 1
                 saveProQuota(quota)
@@ -170,7 +173,8 @@ final class PurchaseManager: ObservableObject {
             ud.set(restored, forKey: freeCountKey)
             freeRemaining = restored
         case .pro:
-            var quota = loadProQuota()
+            guard let ps = cachedPeriodStart else { break }
+            var quota = loadProQuota(periodStart: ps)
             quota.count = min(quota.count + 1, Self.proMonthlyTotal)
             saveProQuota(quota)
             proRemaining = quota.count
@@ -228,18 +232,40 @@ final class PurchaseManager: ObservableObject {
 
     private struct ProQuota: Codable {
         var count: Int
-        var month: String   // "YYYY-MM"
+        /// ISO8601 date string of the start of the current subscription period.
+        /// Quota resets when the period changes (renewal or new purchase).
+        var periodStart: String
+        // Legacy field — ignored on read but kept for backward decode compatibility
+        var month: String?
     }
 
-    private func loadProQuota() -> ProQuota {
-        let currentMonth = Self.currentMonthString()
+    /// Returns the active subscription's current period start date, or nil if not subscribed.
+    /// Uses Transaction.currentEntitlements so this is always based on real receipt data.
+    private func currentPeriodStart() async -> Date? {
+        #if DEBUG
+        if Self.debugSimulatePRO { return Date() }
+        #endif
+        var latestPurchaseDate: Date? = nil
+        for await result in Transaction.currentEntitlements {
+            guard let t = try? checkVerified(result),
+                  AgentProductID.proIDs.contains(t.productID) else { continue }
+            // purchaseDate is the start of the current billing period for auto-renewing subscriptions
+            if latestPurchaseDate == nil || t.purchaseDate > latestPurchaseDate! {
+                latestPurchaseDate = t.purchaseDate
+            }
+        }
+        return latestPurchaseDate
+    }
+
+    private func loadProQuota(periodStart: Date) -> ProQuota {
+        let periodKey = Self.isoDateString(periodStart)
         if let data = KeychainHelper.loadLocalData(forKey: proQuotaKeychainKey),
            let quota = try? JSONDecoder().decode(ProQuota.self, from: data),
-           quota.month == currentMonth {
+           quota.periodStart == periodKey {
             return quota
         }
-        // New month (or first launch) — reset to full quota
-        let fresh = ProQuota(count: Self.proMonthlyTotal, month: currentMonth)
+        // New billing period — reset to full quota
+        let fresh = ProQuota(count: Self.proMonthlyTotal, periodStart: periodKey)
         saveProQuota(fresh)
         return fresh
     }
@@ -249,27 +275,37 @@ final class PurchaseManager: ObservableObject {
         KeychainHelper.saveLocalData(data, forKey: proQuotaKeychainKey)
     }
 
-    private static func currentMonthString() -> String {
-        let cal = Calendar.current
-        let now = Date()
-        return String(format: "%04d-%02d",
-                      cal.component(.year,  from: now),
-                      cal.component(.month, from: now))
+    private static func isoDateString(_ date: Date) -> String {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withFullDate]
+        return fmt.string(from: date)
     }
 
     func refreshPurchaseStatus() async {
         var pro = false
+        var periodStart: Date? = nil
         #if DEBUG
-        if Self.debugSimulatePRO { pro = true }
+        if Self.debugSimulatePRO { pro = true; periodStart = Date() }
         #else
         for await result in Transaction.currentEntitlements {
             guard let t = try? checkVerified(result) else { continue }
-            if AgentProductID.proIDs.contains(t.productID) { pro = true }
+            if AgentProductID.proIDs.contains(t.productID) {
+                pro = true
+                if periodStart == nil || t.purchaseDate > periodStart! {
+                    periodStart = t.purchaseDate
+                }
+            }
         }
         #endif
         hasPRO        = pro
         freeRemaining = remainingFreeUses()
-        proRemaining  = loadProQuota().count
+        if pro, let ps = periodStart {
+            cachedPeriodStart = ps
+            proRemaining = loadProQuota(periodStart: ps).count
+        } else {
+            cachedPeriodStart = nil
+            proRemaining = 0
+        }
     }
 
     private func listenForTransactions() -> Task<Void, Never> {

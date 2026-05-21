@@ -90,6 +90,7 @@ struct GazetteView: View {
         }
         .navigationTitle("最高人民法院公报")
         .navigationBarTitleDisplayMode(.inline)
+        .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         .onAppear {
             guard !hasLoaded else { return }
             hasLoaded = true
@@ -257,6 +258,7 @@ struct GazetteView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollDismissesKeyboard(.immediately)
         }
     }
 

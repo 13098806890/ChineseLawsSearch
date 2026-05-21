@@ -8,6 +8,8 @@ import UIKit
 
 struct LawDetailView: View {
     let target: LawTarget
+    /// Signal from ContentView to scroll within the current law without pushing a new view.
+    var intraLawScrollArticle: Binding<Int?> = .constant(nil)
     let navigate: (Int, Int?) -> Void
     var navigateToGazette: (GazetteDoc) -> Void = { _ in }
     var canGoBack: Bool = false
@@ -99,6 +101,7 @@ struct LawDetailView: View {
             .scrollTargetLayout()
         }
         .scrollPosition(id: $scrollPosition, anchor: .top)
+        .scrollDismissesKeyboard(.immediately)
         .safeAreaInset(edge: .top, spacing: 0) {
             // 始终渲染，用 frame(height:) 控制占位，避免视图增删导致 ScrollView 重布局卡顿和内容重叠
             VStack(spacing: 0) {
@@ -215,6 +218,20 @@ struct LawDetailView: View {
                     withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
                 }
             }
+        }
+        .onChange(of: intraLawScrollArticle.wrappedValue) { _, artNum in
+            guard let artNum else { return }
+            if let targetNode = nodes.first(where: { $0.articleNum == artNum }) {
+                scrollPosition = targetNode.id
+                withAnimation(.easeIn(duration: 0.2)) { highlightedArticle = artNum }
+                highlightTask?.cancel()
+                highlightTask = Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeOut(duration: 0.6)) { highlightedArticle = nil }
+                }
+            }
+            intraLawScrollArticle.wrappedValue = nil
         }
         .onChange(of: isSearching) { _, searching in
             if searching {
