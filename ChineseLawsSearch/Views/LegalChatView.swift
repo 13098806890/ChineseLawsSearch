@@ -7,13 +7,6 @@ import SwiftUI
 import UIKit
 import Combine
 
-// MARK: - Mode (kept for history compatibility, only expert used)
-
-enum ChatMode: String, Codable {
-    case expert = "专家"
-
-    var icon: String { "person.3" }
-}
 
 // MARK: - View
 
@@ -32,7 +25,6 @@ struct LegalChatView: View {
     @ObservedObject private var tokenCounter = TokenCounter.shared
     @ObservedObject private var pm = PurchaseManager.shared
     @State private var showHistory = false
-    @State private var showNoKeyAlert = false  // reserved: shown when user-configured key missing; currently unused (built-in key always present)
     @State private var showPaywall = false
     @State private var exportItem: ExportItem? = nil
     @FocusState private var inputFocused: Bool
@@ -93,7 +85,6 @@ struct LegalChatView: View {
                 if active && vm.messages.isEmpty && !canUseAgent { showPaywall = true }
             }
             .scrollDismissesKeyboard(.immediately)
-            .onTapGesture { inputFocused = false }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     // Thinking indicator sits above input bar, outside LazyVStack
@@ -128,7 +119,7 @@ struct LegalChatView: View {
                     // Input bar
                     HStack(alignment: .center, spacing: 8) {
                         TextField(canUseAgent
-                                  ? (vm.isAwaitingClarification ? "请回答专家的问题…" : "请输入您的法律问题…")
+                                  ? "请输入您的法律问题…"
                                   : "订阅后即可使用法律顾问…",
                                   text: $vm.inputText, axis: .vertical)
                             .lineLimit(1...5)
@@ -293,12 +284,6 @@ struct LegalChatView: View {
         }
         .sheet(item: $exportItem) { item in
             ShareSheet(activityItems: [item.activityItem], onDismiss: { exportItem = nil })
-        }
-        .alert("需要配置 API Key", isPresented: $showNoKeyAlert) {
-            Button("前往设置") { onOpenSettings?() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("法律顾问功能需要 DeepSeek API Key 才能使用，请在设置中填入您的 Key。")
         }
         .alert("时间异常", isPresented: $vm.showTimeManipulationAlert) {
             Button("确定", role: .cancel) {}
@@ -1081,14 +1066,14 @@ private struct LinkedAnswerText: View {
         // Second pass: bare 第X条 (no preceding 《》) — infer law from nearest preceding law title in text.
         // Build list of (location, lawTitle) from all 《》 spans in the text, sorted by position.
         let allTitleMatches = Self.lawTitleExtractRE.matches(in: text, range: fullRange)
-        var titlePositions: [(Int, String)] = allTitleMatches.compactMap { m in
+        let titlePositions: [(Int, String)] = allTitleMatches.compactMap { m in
             guard m.range(at: 1).location != NSNotFound else { return nil }
             return (m.range.location, raw.substring(with: m.range(at: 1)))
         }
 
         if !titlePositions.isEmpty {
             // Collect ranges already linked from first pass (avoid double-linking)
-            var linkedRanges: [NSRange] = matches.compactMap { m -> NSRange? in
+            let _ = matches.compactMap { m -> NSRange? in
                 guard let _ = result.attribute(.link, at: m.range.location,
                                                effectiveRange: nil) else { return nil }
                 return m.range

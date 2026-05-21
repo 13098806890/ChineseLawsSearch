@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 /// Identifies a navigation destination: which law, and which article to scroll to.
 /// Each call to `init` creates a unique instance (via `id`), so navigation always
@@ -12,10 +13,14 @@ struct LawTarget: Identifiable, Hashable {
     let id: UUID = UUID()
     let law: LawMeta
     let scrollToArticle: Int?
+    /// Non-nil when this was the entry point from another tab (chat/gazette → browse).
+    /// Used by LawDetailView to show the custom "返回" back button instead of system back.
+    let fromTab: ContentView.Tab?
 
-    init(law: LawMeta, scrollToArticle: Int?) {
+    init(law: LawMeta, scrollToArticle: Int?, fromTab: ContentView.Tab? = nil) {
         self.law = law
         self.scrollToArticle = scrollToArticle
+        self.fromTab = fromTab
     }
 
     static func == (lhs: LawTarget, rhs: LawTarget) -> Bool { lhs.id == rhs.id }
@@ -24,7 +29,8 @@ struct LawTarget: Identifiable, Hashable {
 
 struct ContentView: View {
     @State private var tab: Tab = .browse
-    @State private var target: LawTarget?
+    /// Browse navigation path — supports multi-level cross-law navigation with native swipe-back.
+    @State private var browseNavPath: [LawTarget] = []
     @State private var intraLawScrollArticle: Int? = nil   // same-law in-page scroll signal
     @State private var selectedGazetteDoc: GazetteDoc?
     @State private var selectedGazetteLaw: LawTarget?
@@ -32,6 +38,18 @@ struct ContentView: View {
     @State private var showWelcome = false
     @State private var showPaywall = false
     @State private var backStack: [BackItem] = []
+
+    private var currentTarget: LawTarget? { browseNavPath.last }
+
+    /// The tab we should return to when swiping back — covers both browse cross-tab and gazette cross-tab.
+    private var effectiveFromTab: Tab? {
+        if let ft = currentTarget?.fromTab { return ft }
+        if gazetteNavigatedFromChat      { return .chat }
+        if gazetteNavigatedFromBrowse    { return .browse }
+        if gazetteNavigatedFromFavorites { return .favorites }
+        return nil
+    }
+    private var canSwipeBack: Bool { effectiveFromTab != nil }
 
     @StateObject private var userStore    = UserStore()
     @StateObject private var chatVM       = LegalChatViewModel()
@@ -52,22 +70,18 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             // 所有 tab 同时存在于 View 树中，避免切换时销毁 ScrollView 状态
-            ZStack {
-                browseView
-                    .opacity(tab == .browse ? 1 : 0)
-                    .allowsHitTesting(tab == .browse)
-                gazetteView
-                    .opacity(tab == .gongbao ? 1 : 0)
-                    .allowsHitTesting(tab == .gongbao)
-                chatView
-                    .opacity(tab == .chat ? 1 : 0)
-                    .allowsHitTesting(tab == .chat)
-                favoritesView
-                    .opacity(tab == .favorites ? 1 : 0)
-                    .allowsHitTesting(tab == .favorites)
-            }
+            // TabSwipeContainer 拥有 swipeBackOffset，手势回调不会导致 ContentView 重绘
+            TabSwipeContainer(
+                currentTab: tab,
+                canSwipeBack: canSwipeBack,
+                fromTab: effectiveFromTab,
+                browseView: { browseView },
+                gazetteView: { gazetteView },
+                chatView: { chatView },
+                favoritesView: { favoritesView },
+                onGoBack: goBack
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .dismissKeyboardOnTap()
 
             Divider()
             HStack(spacing: 0) {
@@ -123,46 +137,70 @@ struct ContentView: View {
             }
             restoreLastRead()
         }
-        .onChange(of: target) {
-            if let t = target {
+        .onChange(of: currentTarget) {
+            if let t = currentTarget {
                 userStore.recordRead(lawId: t.law.id, articleNum: t.scrollToArticle)
                 persistBackStack()
             }
         }
     }
 
-    // MARK: Browse
-
     @ViewBuilder
     private var browseView: some View {
         if isCompact {
-            NavigationStack {
-                TOCView(target: $target)
+            NavigationStack(path: $browseNavPath) {
+                TOCView(target: Binding(
+                    get: { currentTarget },
+                    set: { if let t = $0 { browseNavPath.append(t) } else { browseNavPath.removeAll() } }
+                ))
                     .environmentObject(userStore)
-                    .navigationDestination(item: $target) { t in
+                    .navigationDestination(for: LawTarget.self) { t in
                         LawDetailView(target: t,
                                       intraLawScrollArticle: $intraLawScrollArticle,
                                       navigate: navigate,
                                       navigateToGazette: navigateToGazette,
-                                      canGoBack: !backStack.isEmpty, goBack: goBack,
-                                      goToMenu: { tab = .browse; target = nil; backStack.removeAll(); persistBackStack() })
+                                      canGoBack: t.fromTab != nil,
+                                      showMenuButton: true,
+                                      goBack: goBack,
+                                      goToMenu: { tab = .browse; browseNavPath.removeAll(); backStack.removeAll(); persistBackStack() })
                             .environmentObject(userStore)
                     }
             }
         } else {
             NavigationSplitView {
-                TOCView(target: $target)
+                TOCView(target: Binding(
+                    get: { currentTarget },
+                    set: { if let t = $0 { browseNavPath = [t] } else { browseNavPath.removeAll() } }
+                ))
                     .environmentObject(userStore)
             } detail: {
-                if let t = target {
-                    NavigationStack {
+                if let t = currentTarget {
+                    NavigationStack(path: Binding(
+                        get: { browseNavPath.count > 1 ? Array(browseNavPath.dropFirst()) : [] },
+                        set: { sub in
+                            if sub.isEmpty { browseNavPath = browseNavPath.isEmpty ? [] : [browseNavPath[0]] }
+                            else { browseNavPath = [browseNavPath[0]] + sub }
+                        }
+                    )) {
                         LawDetailView(target: t,
                                       intraLawScrollArticle: $intraLawScrollArticle,
                                       navigate: navigate,
                                       navigateToGazette: navigateToGazette,
-                                      canGoBack: !backStack.isEmpty, goBack: goBack,
-                                      goToMenu: { target = nil; backStack.removeAll(); persistBackStack() })
+                                      canGoBack: t.fromTab != nil,
+                                      goBack: goBack,
+                                      goToMenu: { browseNavPath.removeAll(); backStack.removeAll(); persistBackStack() })
                             .environmentObject(userStore)
+                            .navigationDestination(for: LawTarget.self) { inner in
+                                LawDetailView(target: inner,
+                                              intraLawScrollArticle: $intraLawScrollArticle,
+                                              navigate: navigate,
+                                              navigateToGazette: navigateToGazette,
+                                              canGoBack: false,
+                                              showMenuButton: true,
+                                              goBack: {},
+                                              goToMenu: { browseNavPath.removeAll(); backStack.removeAll(); persistBackStack() })
+                                    .environmentObject(userStore)
+                            }
                     }
                     .id(t)
                 } else {
@@ -223,10 +261,11 @@ struct ContentView: View {
                         .navigationDestination(item: $selectedGazetteDoc) { doc in
                             GazetteDetailView(
                                 doc: doc,
-                                navigateBack: gazetteNavigatedFromBrowse ? { tab = .browse; gazetteNavigatedFromBrowse = false }
-                                            : gazetteNavigatedFromChat   ? { tab = .chat;   gazetteNavigatedFromChat   = false }
+                                navigateBack: gazetteNavigatedFromBrowse    ? { tab = .browse;    gazetteNavigatedFromBrowse    = false }
+                                            : gazetteNavigatedFromChat      ? { tab = .chat;      gazetteNavigatedFromChat      = false }
+                                            : gazetteNavigatedFromFavorites ? { tab = .favorites; gazetteNavigatedFromFavorites = false }
                                             : nil,
-                                backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条",
+                                backLabel: gazetteNavigatedFromChat ? "返回对话" : gazetteNavigatedFromFavorites ? "返回收藏" : "返回法条",
                                 goToMenu: { selectedGazetteDoc = nil }
                             )
                             .environmentObject(userStore)
@@ -251,10 +290,11 @@ struct ContentView: View {
                     } else if let doc = selectedGazetteDoc {
                         GazetteDetailView(
                             doc: doc,
-                            navigateBack: gazetteNavigatedFromBrowse ? { tab = .browse; gazetteNavigatedFromBrowse = false }
-                                        : gazetteNavigatedFromChat   ? { tab = .chat;   gazetteNavigatedFromChat   = false }
+                            navigateBack: gazetteNavigatedFromBrowse    ? { tab = .browse;    gazetteNavigatedFromBrowse    = false }
+                                        : gazetteNavigatedFromChat      ? { tab = .chat;      gazetteNavigatedFromChat      = false }
+                                        : gazetteNavigatedFromFavorites ? { tab = .favorites; gazetteNavigatedFromFavorites = false }
                                         : nil,
-                            backLabel: gazetteNavigatedFromChat ? "返回对话" : "返回法条",
+                            backLabel: gazetteNavigatedFromChat ? "返回对话" : gazetteNavigatedFromFavorites ? "返回收藏" : "返回法条",
                             goToMenu: { selectedGazetteDoc = nil }
                         )
                         .environmentObject(userStore)
@@ -273,8 +313,9 @@ struct ContentView: View {
             tab = t
             // Clear gazette navigation flags when manually switching to/from gazette tab
             if t == .gongbao {
-                gazetteNavigatedFromBrowse = false
-                gazetteNavigatedFromChat   = false
+                gazetteNavigatedFromBrowse    = false
+                gazetteNavigatedFromChat      = false
+                gazetteNavigatedFromFavorites = false
             }
         } label: {
             VStack(spacing: 3) {
@@ -293,26 +334,33 @@ struct ContentView: View {
             showSettings = false
             showPaywall = false
             showWelcome = false
-            // Same law already displayed — just scroll in-page, no new push
-            if tab == .browse, let current = target, current.law.id == lawId {
-                intraLawScrollArticle = articleNum
-                return
+            let fromTab: Tab? = tab != .browse ? tab : nil
+            if tab != .browse {
+                backStack.append(BackItem(tab: tab, target: currentTarget))
+                if backStack.count > 20 { backStack.removeFirst() }
             }
-            backStack.append(BackItem(tab: tab, target: target))
-            if backStack.count > 20 { backStack.removeFirst() }
             intraLawScrollArticle = nil
             tab = .browse
-            target = LawTarget(law: law, scrollToArticle: articleNum)
+            let newTarget = LawTarget(law: law, scrollToArticle: articleNum, fromTab: fromTab)
+            if fromTab != nil {
+                // Cross-tab: replace entire path so the cross-tab back button shows
+                browseNavPath = [newTarget]
+            } else {
+                // Within browse (same or different law): push for native swipe-back
+                browseNavPath.append(newTarget)
+            }
         }
     }
 
-    @State private var gazetteNavigatedFromBrowse = false
-    @State private var gazetteNavigatedFromChat   = false
+    @State private var gazetteNavigatedFromBrowse    = false
+    @State private var gazetteNavigatedFromChat      = false
+    @State private var gazetteNavigatedFromFavorites = false
 
     func navigateToGazette(_ doc: GazetteDoc) {
         guard pm.canViewGazetteDetail else { showPaywall = true; return }
-        gazetteNavigatedFromBrowse = (tab == .browse)
-        gazetteNavigatedFromChat   = (tab == .chat)
+        gazetteNavigatedFromBrowse    = (tab == .browse)
+        gazetteNavigatedFromChat      = (tab == .chat)
+        gazetteNavigatedFromFavorites = (tab == .favorites)
         tab = .gongbao
         selectedGazetteLaw = nil
         selectedGazetteDoc = doc
@@ -325,7 +373,7 @@ struct ContentView: View {
         selectedGazetteDoc = doc
     }
 
-    /// 持久化当前 backStack + target 到 UserDefaults
+    /// 持久化当前 backStack 到 UserDefaults（browseNavPath 的 top 由 lastRead 记录）
     private func persistBackStack() {
         let items = backStack.map { item in
             PersistedBackItem(
@@ -334,8 +382,6 @@ struct ContentView: View {
                 articleNum: item.target?.scrollToArticle
             )
         }
-        // 末尾追加当前 target 作为「当前层」标记，tab 固定 browse
-        // （target 本身已由 lastReadLawId/lastReadArticleNum 记录，这里只存 stack）
         userStore.saveBackStack(items)
     }
 
@@ -354,20 +400,108 @@ struct ContentView: View {
             }
         }
 
-        target = LawTarget(law: law, scrollToArticle: last.articleNum)
+        browseNavPath = [LawTarget(law: law, scrollToArticle: last.articleNum)]
     }
 
+
     func goBack() {
-        guard let prev = backStack.popLast() else { return }
-        tab = prev.tab
-        target = prev.target
-        // Only restore latest session if chat is blank and no unsent text — don't clobber active conversation
-        if prev.tab == .chat, chatVM.messages.isEmpty,
+        guard let fromTab = effectiveFromTab else { return }
+        // Gazette cross-tab
+        if gazetteNavigatedFromBrowse || gazetteNavigatedFromChat || gazetteNavigatedFromFavorites {
+            gazetteNavigatedFromBrowse    = false
+            gazetteNavigatedFromChat      = false
+            gazetteNavigatedFromFavorites = false
+            tab = fromTab
+            return
+        }
+        // Browse cross-tab
+        tab = fromTab
+        browseNavPath.removeAll()
+        if fromTab == .chat, chatVM.messages.isEmpty,
            chatVM.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let latest = historyStore.sessions.first {
             chatVM.loadSession(latest)
         }
+        _ = backStack.popLast()
         persistBackStack()
+    }
+}
+
+// MARK: - TabSwipeContainer
+
+/// Extracted struct so @State swipeBackOffset changes only re-render this small
+/// container, not ContentView.body. SwiftUI .offset() is a render transform —
+/// it does NOT trigger layout on child views, so no tab re-lays-out at 60fps.
+private struct TabSwipeContainer<Browse: View, Gazette: View, Chat: View, Fav: View>: View {
+    let currentTab: ContentView.Tab
+    let canSwipeBack: Bool
+    let fromTab: ContentView.Tab?
+    @ViewBuilder let browseView: () -> Browse
+    @ViewBuilder let gazetteView: () -> Gazette
+    @ViewBuilder let chatView: () -> Chat
+    @ViewBuilder let favoritesView: () -> Fav
+    let onGoBack: () -> Void
+
+    @State private var swipeBackOffset: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geo in
+            let W = geo.size.width
+            ZStack {
+                browseView()
+                    .offset(x: offset(for: .browse, W: W))
+                    .allowsHitTesting(currentTab == .browse && swipeBackOffset == 0)
+                    .zIndex(currentTab == .browse ? 1 : 0)
+                gazetteView()
+                    .offset(x: offset(for: .gongbao, W: W))
+                    .allowsHitTesting(currentTab == .gongbao && swipeBackOffset == 0)
+                    .zIndex(currentTab == .gongbao ? 1 : 0)
+                chatView()
+                    .offset(x: offset(for: .chat, W: W))
+                    .allowsHitTesting(currentTab == .chat && swipeBackOffset == 0)
+                    .zIndex(currentTab == .chat ? 1 : 0)
+                favoritesView()
+                    .offset(x: offset(for: .favorites, W: W))
+                    .allowsHitTesting(currentTab == .favorites && swipeBackOffset == 0)
+                    .zIndex(currentTab == .favorites ? 1 : 0)
+            }
+            .overlay(alignment: .leading) {
+                if canSwipeBack {
+                    EdgePanGestureView(
+                        onChanged: { tx in swipeBackOffset = tx },
+                        onEnded: { tx, vx in
+                            let threshold = W * 0.4
+                            if tx > threshold || vx > 800 {
+                                withAnimation(.easeOut(duration: 0.25)) { swipeBackOffset = W }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                    onGoBack()
+                                    swipeBackOffset = 0
+                                }
+                            } else {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                    swipeBackOffset = 0
+                                }
+                            }
+                        }
+                    )
+                    .frame(width: 20)
+                }
+            }
+            .onChange(of: canSwipeBack) { _, nowActive in
+                if nowActive {
+                    // Animate source tab sliding in from parallax start position
+                    // (it starts at W, needs to land at -W*0.3)
+                    withAnimation(.easeOut(duration: 0.25)) { _ = swipeBackOffset }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func offset(for t: ContentView.Tab, W: CGFloat) -> CGFloat {
+        if t == currentTab { return canSwipeBack ? swipeBackOffset : 0 }
+        if canSwipeBack, t == fromTab { return -W * 0.3 + swipeBackOffset * 0.3 }
+        return W
     }
 }
 

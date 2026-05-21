@@ -101,27 +101,9 @@ struct GazetteDocLink: Identifiable {
     let sfjsArticleNum: Int?  // sfjs 中的具体条文序号（可为 nil）
 }
 
-struct GazetteSfjsArticle: Identifiable {
-    let id: Int
-    let sfjsId: Int
-    let articleNum: Int
-    let articleNumber: String
-    let content: String
-    let globalOrder: Int
-}
-
-struct GazetteSfjs: Identifiable, Hashable {
-    let id: Int
-    let title: String
-    let docNumber: String
-    let pubDate: String
-    let effectiveDate: String
-    let url: String
-    let fullText: String
-}
 
 final class DatabaseManager {
-    nonisolated(unsafe) static let shared = DatabaseManager()
+    static let shared = DatabaseManager()
 
     nonisolated(unsafe) private var db: OpaquePointer?
     nonisolated(unsafe) private var enhDb: OpaquePointer?
@@ -272,8 +254,8 @@ final class DatabaseManager {
 
     // MARK: 某部法律的全部节点
 
-    func nodes(lawId: Int) -> [LawNode] {
-        queue.sync { _nodes(lawId: lawId) }
+    nonisolated func nodes(lawId: Int) -> [LawNode] {
+        queue.sync { self._nodes(lawId: lawId) }
     }
 
     private func _nodes(lawId: Int) -> [LawNode] {
@@ -350,7 +332,7 @@ final class DatabaseManager {
     // MARK: 某部法律的全部出向引用（按条文分组用）
 
     nonisolated func outgoingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [OutgoingRef] {
-        queue.sync { _outgoingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
+        queue.sync { self._outgoingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
     }
 
     private func _outgoingRefsForLaw(lawId: Int, lawsExamOnly: Bool) -> [OutgoingRef] {
@@ -384,7 +366,7 @@ final class DatabaseManager {
     // MARK: 某部法律的全部入向引用（按条文分组用）
 
     nonisolated func incomingRefsForLaw(lawId: Int, lawsExamOnly: Bool = false) -> [IncomingRef] {
-        queue.sync { _incomingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
+        queue.sync { self._incomingRefsForLaw(lawId: lawId, lawsExamOnly: lawsExamOnly) }
     }
 
     /// 查询某部法律中被公报案例引用的条文，按 article_num 分组返回引用数量
@@ -666,7 +648,7 @@ final class DatabaseManager {
         return "第\(intToChinese(n))条"
     }
 
-    private static func intToChinese(_ n: Int) -> String {
+    private nonisolated static func intToChinese(_ n: Int) -> String {
         let digits = ["零","一","二","三","四","五","六","七","八","九"]
         if n < 10  { return digits[n] }
         if n < 20  { return "十" + (n % 10 == 0 ? "" : digits[n % 10]) }
@@ -1733,120 +1715,4 @@ final class DatabaseManager {
         return cleaned.trimmingCharacters(in: .whitespaces)
     }
 
-    // MARK: - 公报司法解释（现已迁移至 laws 表 source='gongbao'）
-
-    func gazetteSfjsDocs(query: String, limit: Int = 500) -> [GazetteSfjs] {
-        queue.sync { _gazetteSfjsDocs(query: query, limit: limit) }
-    }
-
-    func gazetteSfjsCount(query: String) -> Int {
-        queue.sync {
-            guard let db = db else { return 0 }
-            let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            var stmt: OpaquePointer?
-            let count: Int
-            if query.isEmpty {
-                guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1", -1, &stmt, nil) == SQLITE_OK else { return 0 }
-            } else {
-                guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM laws WHERE source='gongbao' AND is_current=1 AND title LIKE ?", -1, &stmt, nil) == SQLITE_OK else { return 0 }
-                sqlite3_bind_text(stmt, 1, "%\(query)%", -1, t)
-            }
-            defer { sqlite3_finalize(stmt) }
-            count = sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
-            return count
-        }
-    }
-
-    func gazetteSfjsArticles(sfjsId: Int) -> [GazetteSfjsArticle] {
-        queue.sync {
-            guard let db = db else { return [] }
-            let sql = """
-                SELECT id, law_id, article_num, article_number, content, global_order
-                FROM nodes
-                WHERE law_id = ? AND type = 'article'
-                ORDER BY global_order
-                """
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-            defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_int(stmt, 1, Int32(sfjsId))
-            var results: [GazetteSfjsArticle] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                let artNumCol = sqlite3_column_type(stmt, 2)
-                let artNum = artNumCol == SQLITE_NULL ? 0 : Int(sqlite3_column_int(stmt, 2))
-                results.append(GazetteSfjsArticle(
-                    id: Int(sqlite3_column_int(stmt, 0)),
-                    sfjsId: Int(sqlite3_column_int(stmt, 1)),
-                    articleNum: artNum,
-                    articleNumber: sqlite3_column_type(stmt, 3) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 3)) : "",
-                    content: sqlite3_column_type(stmt, 4) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 4)) : "",
-                    globalOrder: Int(sqlite3_column_int(stmt, 5))
-                ))
-            }
-            return results
-        }
-    }
-
-    func gazetteSfjsDoc(id: Int) -> GazetteSfjs? {
-        queue.sync {
-            guard let db = db else { return nil }
-            let sql = """
-                SELECT id, title, doc_number, pub_date, effective_date, '' as url, full_text
-                FROM laws WHERE id = ? AND source = 'gongbao'
-                """
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-            defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_int(stmt, 1, Int32(id))
-            let result: GazetteSfjs? = sqlite3_step(stmt) == SQLITE_ROW ? self._rowToGazetteSfjs(stmt) : nil
-            return result
-        }
-    }
-
-    func searchGazetteSfjs(query: String, limit: Int = 10) -> [GazetteSfjs] {
-        queue.sync { _gazetteSfjsDocs(query: query, limit: limit) }
-    }
-
-    private nonisolated func _gazetteSfjsDocs(query: String, limit: Int) -> [GazetteSfjs] {
-        guard let db = db else { return [] }
-        let t = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        var stmt: OpaquePointer?
-        let sql: String
-        if query.isEmpty {
-            sql = """
-                SELECT id, title, doc_number, pub_date, effective_date, '' as url, full_text
-                FROM laws WHERE source='gongbao' AND is_current=1
-                ORDER BY pub_date DESC LIMIT ?
-                """
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-            sqlite3_bind_int(stmt, 1, Int32(limit))
-        } else {
-            sql = """
-                SELECT id, title, doc_number, pub_date, effective_date, '' as url, full_text
-                FROM laws WHERE source='gongbao' AND is_current=1 AND title LIKE ?
-                ORDER BY pub_date DESC LIMIT ?
-                """
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-            sqlite3_bind_text(stmt, 1, "%\(query)%", -1, t)
-            sqlite3_bind_int(stmt, 2, Int32(limit))
-        }
-        defer { sqlite3_finalize(stmt) }
-        var results: [GazetteSfjs] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(_rowToGazetteSfjs(stmt))
-        }
-        return results
-    }
-
-    private nonisolated func _rowToGazetteSfjs(_ stmt: OpaquePointer?) -> GazetteSfjs {
-        GazetteSfjs(
-            id:            Int(sqlite3_column_int(stmt, 0)),
-            title:         str(stmt, 1),
-            docNumber:     str(stmt, 2),
-            pubDate:       str(stmt, 3),
-            effectiveDate: str(stmt, 4),
-            url:           str(stmt, 5),
-            fullText:      str(stmt, 6)
-        )
-    }
 }

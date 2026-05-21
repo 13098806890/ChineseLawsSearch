@@ -313,7 +313,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.09;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = Personal.ChineseLawsSearch;
 				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.doxie.chineseLawsAgent;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -356,7 +356,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.09;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = Personal.ChineseLawsSearch;
 				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.doxie.chineseLawsAgent;
 				PRODUCT_NAME = "$(TARGET_NAME)";

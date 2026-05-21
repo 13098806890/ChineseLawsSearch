@@ -78,6 +78,8 @@ struct TOCView: View {
         let variant = DatabaseManager.numberVariant(of: q)
         let db = DatabaseManager.shared
         searchTask = Task.detached(priority: .userInitiated) {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
             var titles = db.searchByTitle(query: q, categories: cats, lawsExamOnly: flk)
             if let v = variant {
                 let extra = db.searchByTitle(query: v, categories: cats, lawsExamOnly: flk)
@@ -121,6 +123,9 @@ private struct TOCListContent: View {
 
     @Environment(\.dismissSearch) private var dismissSearch
     @Environment(\.isSearching)   private var isSearching
+
+    @State private var pendingTarget: LawTarget? = nil
+    @State private var keyboardVisible: Bool = false
 
     private var selectedLawId: Int? { target?.law.id }
     private var lawArticleResults:  [SearchResult] { articleResults.filter { $0.lawCategory != "司法解释" } }
@@ -236,6 +241,16 @@ private struct TOCListContent: View {
         .simultaneousGesture(TapGesture().onEnded {
             if isSearching { dismissSearch() }
         })
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardVisible = false
+            if let t = pendingTarget {
+                pendingTarget = nil
+                target = t
+            }
+        }
     }
 
     @ViewBuilder
@@ -284,9 +299,14 @@ private struct TOCListContent: View {
     func lawRow(_ menuLaw: DatabaseManager.MenuLaw) -> some View {
         let isSelected = selectedLawId == menuLaw.id
         Button {
-            dismissSearch()
             if let law = DatabaseManager.shared.lawMeta(id: menuLaw.id) {
-                target = LawTarget(law: law, scrollToArticle: nil)
+                let t = LawTarget(law: law, scrollToArticle: nil)
+                if keyboardVisible {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    pendingTarget = t
+                } else {
+                    target = t
+                }
             }
         } label: {
             Text(menuLaw.title)
@@ -308,8 +328,13 @@ private struct TOCListContent: View {
     private func articleResultRow(_ result: SearchResult) -> some View {
         Button {
             if let law = DatabaseManager.shared.lawMeta(id: result.lawId) {
-                dismissSearch()
-                target = LawTarget(law: law, scrollToArticle: result.nodeArticleNum)
+                let t = LawTarget(law: law, scrollToArticle: result.nodeArticleNum)
+                if keyboardVisible {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    pendingTarget = t
+                } else {
+                    target = t
+                }
             }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
