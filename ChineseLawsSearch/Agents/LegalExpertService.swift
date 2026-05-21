@@ -33,15 +33,13 @@ final class LegalExpertService {
     private var maxContextArticles: Int {
         switch qualityMode {
         case "economy":  return 15
-        case "detailed": return 0
-        default:         return 40
+        default:         return 0   // standard / detailed: unlimited
         }
     }
     private var maxCitationsLimit: Int {
         switch qualityMode {
         case "economy":  return 5
-        case "detailed": return 0
-        default:         return 80
+        default:         return 0   // standard / detailed: unlimited
         }
     }
 
@@ -187,24 +185,35 @@ final class LegalExpertService {
 
         // Mod 3: concurrent expert retrieval + analysis
         let isStatute = (mode == .conceptAndStatute)
-        try await withThrowingTaskGroup(of: (String, [DatabaseManager.RAGArticle], String).self) { group in
+        var expertGazetteCites: [GazetteCitation] = []
+        try await withThrowingTaskGroup(of: (String, [DatabaseManager.RAGArticle], String, [String]).self) { group in
             for expert in effectiveExperts {
                 group.addTask { [self] in
                     var articles: [DatabaseManager.RAGArticle]
                     if isStatute {
-                        // Mod 3: each expert has its own seenIds (no shared state)
                         articles = try await self.lookupArticlesWithExpert(expert: expert, question: question, db: db)
                     } else {
                         articles = await self.pullArticlesForExpert(expert: expert, question: question, facts: [:])
                         articles = self.expandReferences(articles: articles)
                     }
-                    let answer = try await self.analyzeWithExpertMode(expert: expert, question: question, articles: articles, mode: mode)
-                    return (expert.name, articles, answer)
+                    let raw = try await self.analyzeWithExpertMode(expert: expert, question: question, articles: articles, mode: mode)
+                    let (body, caseTitles) = self.parseExpertCitations(raw)
+                    return (expert.name, articles, body, caseTitles)
                 }
             }
-            for try await (name, arts, ans) in group {
+            for try await (name, arts, ans, titles) in group {
                 expertArticles[name] = arts
                 expertAnswers[name] = ans
+                var seenTitles = Set<String>()
+                let uniqueTitles = titles.filter { seenTitles.insert($0).inserted }
+                let newCites: [GazetteCitation] = uniqueTitles.compactMap { title in
+                    guard let doc = db.gazetteDocByTitle(title) else { return nil }
+                    let label = doc.source == "al" ? "指导案例" : "裁判文书"
+                    return GazetteCitation(docId: doc.id, source: doc.source,
+                                           title: doc.title, rulingGist: doc.rulingGist,
+                                           strategy: "expert-cited", relevanceReason: "专家在分析中直接引用（\(label)）")
+                }
+                expertGazetteCites.append(contentsOf: newCites)
             }
         }
 
@@ -220,6 +229,7 @@ final class LegalExpertService {
         return try await runCoordinatorStage(
             question: question, searchQuestion: question, subQs: [],
             groupAnswers: expertAnswers, allArticlesFlat: allArticlesFlat,
+            expertGazetteCites: expertGazetteCites,
             conversationHistory: conversationHistory,
             systemPrompt: coordinatorSystemPromptForMode(mode), onEvent: onEvent)
     }
@@ -1246,8 +1256,8 @@ final class LegalExpertService {
 
     /// Compile a regex from a compile-time-constant pattern.
     /// `try!` is intentional: failure indicates a programming error in the pattern literal.
-    private static func regex(_ pattern: String) -> NSRegularExpression {
-        return try! NSRegularExpression(pattern: pattern)
+    private static func regex(_ pattern: String, options: NSRegularExpression.Options = []) -> NSRegularExpression {
+        return try! NSRegularExpression(pattern: pattern, options: options)
     }
 
     private nonisolated static let crossLawPattern = LegalExpertService.regex(
@@ -1429,10 +1439,8 @@ final class LegalExpertService {
         if articles.isEmpty {
             return "（\(expert.name)：未检索到相关条文，无法分析。）"
         }
-        let cap      = maxContextArticles
-        let ctxMax   = cap > 0 ? cap : 40
-        let lawArts    = Array(articles.filter { $0.category != "司法解释" }.prefix(ctxMax * 2 / 3 + 1))
-        let interpArts = Array(articles.filter { $0.category == "司法解释" }.prefix(ctxMax / 3 + 1))
+        let lawArts    = articles.filter { $0.category != "司法解释" }
+        let interpArts = articles.filter { $0.category == "司法解释" }
 
         var parts: [String] = []
         if !lawArts.isEmpty {
@@ -1659,13 +1667,15 @@ final class LegalExpertService {
         var seenIds = Set<Int>()
 
         // Pass 1: 严格匹配 【参考案例】《标题》：说明 格式
-        let pattern = "【参考案例】《([^》]+)》[：:](.*?)(?=\n【参考案例】|\n\n|$)"
-        if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) {
-            let ns = answerText as NSString
-            let matches = regex.matches(in: answerText, range: NSRange(location: 0, length: ns.length))
+        let regex = Self.coordinatorGazettePattern
+        let nsRange = NSRange(answerText.startIndex..<answerText.endIndex, in: answerText)
+        let matches = regex.matches(in: answerText, range: nsRange)
+        if !matches.isEmpty {
             for m in matches {
-                let title = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
-                let reason = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                guard let titleRange  = Range(m.range(at: 1), in: answerText),
+                      let reasonRange = Range(m.range(at: 2), in: answerText) else { continue }
+                let title  = String(answerText[titleRange]).trimmingCharacters(in: .whitespaces)
+                let reason = String(answerText[reasonRange]).trimmingCharacters(in: .whitespaces)
                 // Exact match in candidates
                 if let cand = candidateMap[title], seenIds.insert(cand.docId).inserted {
                     result.append(GazetteCitation(
@@ -1732,6 +1742,9 @@ final class LegalExpertService {
     // Static regex properties for citationsFromAnswer (compiled once at class load time)
     private static let citationNamedPattern = LegalExpertService.regex(
         #"《([^》]{2,30})》第([一二三四五六七八九十百千零\d]+)条"#)
+    private static let coordinatorGazettePattern = LegalExpertService.regex(
+        "【参考案例】《([^》]+)》[：:](.*?)(?=\n【参考案例】|\n\n|$)",
+        options: [.dotMatchesLineSeparators])
     private static let citationBarePattern  = LegalExpertService.regex(
         #"第([一二三四五六七八九十百千零\d]+)条"#)
 
@@ -1747,8 +1760,7 @@ final class LegalExpertService {
         // Pattern 2: bare 第X条
         let barePattern  = Self.citationBarePattern
 
-        let ns = answerText as NSString
-        let range = NSRange(location: 0, length: ns.length)
+        let nsRange = NSRange(answerText.startIndex..<answerText.endIndex, in: answerText)
 
         // Build a fast lookup from candidates by articleNum
         var candidateByNum: [Int: DatabaseManager.RAGArticle] = [:]
@@ -1768,9 +1780,11 @@ final class LegalExpertService {
         // Named citations — only match against candidates actually shown to the LLM.
         // Do NOT fall back to DB lookup: if a named article isn't in candidates, the LLM
         // is drawing on training memory and the citation may be hallucinated or mismatched.
-        for m in namedPattern.matches(in: answerText, range: range) {
-            let lawFrag = ns.substring(with: m.range(at: 1))
-            let numStr  = ns.substring(with: m.range(at: 2))
+        for m in namedPattern.matches(in: answerText, range: nsRange) {
+            guard let lawRange = Range(m.range(at: 1), in: answerText),
+                  let numRange = Range(m.range(at: 2), in: answerText) else { continue }
+            let lawFrag = String(answerText[lawRange])
+            let numStr  = String(answerText[numRange])
             guard let num = chineseOrArabicToInt(numStr) else { continue }
             if let a = candidateByNum[num], a.lawTitle.contains(lawFrag) {
                 add(a)
@@ -1778,8 +1792,9 @@ final class LegalExpertService {
         }
 
         // Bare citations — candidates first, then restrict to same law_ids (no cross-law guessing)
-        for m in barePattern.matches(in: answerText, range: range) {
-            let numStr = ns.substring(with: m.range(at: 1))
+        for m in barePattern.matches(in: answerText, range: nsRange) {
+            guard let numRange = Range(m.range(at: 1), in: answerText) else { continue }
+            let numStr = String(answerText[numRange])
             guard let num = chineseOrArabicToInt(numStr) else { continue }
             if let a = candidateByNum[num] {
                 add(a)
