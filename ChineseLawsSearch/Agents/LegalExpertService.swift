@@ -229,7 +229,7 @@ final class LegalExpertService {
                                        articles: [DatabaseManager.RAGArticle],
                                        mode: QueryMode) async throws -> String {
         let artText = articles.prefix(maxContextArticles > 0 ? maxContextArticles : articles.count)
-            .map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(400)))" }
+            .map { "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)" }
             .joined(separator: "\n")
 
         let modeInstruction: String
@@ -433,7 +433,7 @@ final class LegalExpertService {
         onEvent(.thinkStep(name: "细分专家", content: "复用：" + mergedExperts.map { $0.name }.joined(separator: "、")))
 
         // Build a focused context from conversation history for the coordinator
-        let historyContext = conversationHistory.suffix(3)
+        let historyContext = conversationHistory
             .map { "用户：\($0.user)\n助手：\($0.assistant)" }
             .joined(separator: "\n---\n")
 
@@ -707,11 +707,10 @@ final class LegalExpertService {
                                         gazetteCites: gazetteCites)
         var userMsg = ""
         // Inject up to 2 prior turns so coordinator has multi-turn context
-        let historyPrefix = conversationHistory.suffix(2)
-        if !historyPrefix.isEmpty {
-            userMsg += "历史对话（最近 \(historyPrefix.count) 轮）：\n"
-            for turn in historyPrefix {
-                userMsg += "用户：\(turn.user)\n助手：\(String(turn.assistant.prefix(300)))\n---\n"
+        if !conversationHistory.isEmpty {
+            userMsg += "历史对话（\(conversationHistory.count) 轮）：\n"
+            for turn in conversationHistory {
+                userMsg += "用户：\(turn.user)\n助手：\(turn.assistant)\n---\n"
             }
             userMsg += "\n"
         }
@@ -784,7 +783,7 @@ final class LegalExpertService {
             caseContext = "未找到直接相关的公报文书。"
         } else {
             caseContext = gazetteCites.map { cite in
-                "【\(cite.title)】\n裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : String(cite.rulingGist.prefix(200)))"
+                "【\(cite.title)】\n裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : cite.rulingGist)"
             }.joined(separator: "\n\n")
         }
 
@@ -929,7 +928,6 @@ final class LegalExpertService {
                             strategy: item.strategy, relevanceReason: "")
         }
 
-        _ = result.map { "• \($0.title)" }.joined(separator: "\n")
         onEvent(.thinkStepWithGazette(name: "候选公报案例",
                                       content: "检索到 \(result.count) 条候选",
                                       gazetteCitations: result))
@@ -955,7 +953,9 @@ final class LegalExpertService {
                 guard s.unicodeScalars.allSatisfy({ $0.value >= 0x4E00 && $0.value <= 0x9FFF }) else { return false }
                 return !stopWords.contains(s)
             }
-        return Array(Set(tokens)).prefix(8).map { $0 }
+        var seen = Set<String>()
+        let deduped = tokens.filter { seen.insert($0).inserted }
+        return Array(deduped.prefix(8))
     }
 
     // MARK: - 法律定性 + 递进路由
@@ -1040,8 +1040,8 @@ final class LegalExpertService {
             ctx += "\n已知事实：" + knownFacts.map { "\($0.key)=\($0.value)" }.joined(separator: "；")
         }
         if !conversationHistory.isEmpty {
-            let hist = conversationHistory.suffix(2)
-                .map { "用户：\($0.user.prefix(100))\n助手：\($0.assistant.prefix(80))" }
+            let hist = conversationHistory
+                .map { "用户：\($0.user)\n助手：\($0.assistant)" }
                 .joined(separator: "\n---\n")
             ctx += "\n\n对话历史（供参考）：\n\(hist)"
         }
@@ -1355,11 +1355,11 @@ final class LegalExpertService {
         facts: [String: String]
     ) async -> RefinementOutput {
         let artText = articles
-            .map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(300)))" }
+            .map { "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)" }
             .joined(separator: "\n")
         let caseText = gazetteDocs.isEmpty ? "（无）" : gazetteDocs.map { doc -> String in
             let src = doc.source == "al" ? "指导案例" : "裁判文书"
-            return "id:\(doc.id) [\(src)]《\(doc.title)》\(doc.rulingGist.prefix(100))"
+            return "id:\(doc.id) [\(src)]《\(doc.title)》\(doc.rulingGist)"
         }.joined(separator: "\n")
         let factsText = facts.isEmpty ? "" : "\n已知情况：" + facts.map { "\($0.key)：\($0.value)" }.joined(separator: "；")
         let userMsg = "用户问题：\(question)\(factsText)\n\n已有法条：\n\(artText)\n\n已有公报案例：\n\(caseText)"
@@ -1437,11 +1437,11 @@ final class LegalExpertService {
         var parts: [String] = []
         if !lawArts.isEmpty {
             parts.append("【法律原文】")
-            parts += lawArts.map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(400)))" }
+            parts += lawArts.map { "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)" }
         }
         if !interpArts.isEmpty {
             parts.append("\n【司法解释】")
-            parts += interpArts.map { "《\($0.lawTitle)》\($0.articleNumber)：\(String($0.content.prefix(400)))" }
+            parts += interpArts.map { "《\($0.lawTitle)》\($0.articleNumber)：\($0.content)" }
         }
         var factsText = ""
         if !facts.isEmpty {
@@ -1491,11 +1491,11 @@ final class LegalExpertService {
         let addedInterp = refinement.toAddArticles.filter { $0.category == "司法解释" }
         if !addedLaw.isEmpty {
             if parts.first != "【法律原文】" { parts.insert("【法律原文】", at: 0) }
-            parts += addedLaw.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
+            parts += addedLaw.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\($0.content)" }
         }
         if !addedInterp.isEmpty {
             if !parts.contains("\n【司法解释】") { parts.append("\n【司法解释】") }
-            parts += addedInterp.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\(String($0.content.prefix(400)))" }
+            parts += addedInterp.map { "《\($0.lawTitle)》\($0.articleNumber)（引用补充）：\($0.content)" }
         }
         // Apply article removals (filter out irrelevant articles from parts)
         if !refinement.toRemoveArticleIds.isEmpty {
@@ -1628,13 +1628,13 @@ final class LegalExpertService {
         var citeLines = articles.compactMap { a -> String? in
             let key = "\(a.lawTitle)_\(a.articleNumber)"
             guard !a.articleNumber.isEmpty, seenCites.insert(key).inserted else { return nil }
-            return "• 《\(a.lawTitle)》\(a.articleNumber) — \(String(a.content.prefix(150)))..."
+            return "• 《\(a.lawTitle)》\(a.articleNumber) — \(a.content)"
         }
         if citeCap > 0 { citeLines = Array(citeLines.prefix(citeCap)) }
         var result = "各专家组分析：\n\(groupText)\n\n检索到的法条（供引用）：\n\(citeLines.joined(separator: "\n"))"
         if !gazetteCites.isEmpty {
             let caseSummary = gazetteCites.map { cite in
-                "• 《\(cite.title)》\n  裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : String(cite.rulingGist.prefix(150)))"
+                "• 《\(cite.title)》\n  裁判要点：\(cite.rulingGist.isEmpty ? "（无摘要）" : cite.rulingGist)"
             }.joined(separator: "\n")
             result += "\n\n人民法院公报候选案例（从中选取真正相关的，在回答末尾以【参考案例】格式引用，无相关案例则不写）：\n\(caseSummary)"
         }

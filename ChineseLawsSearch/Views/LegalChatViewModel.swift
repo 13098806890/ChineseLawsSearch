@@ -249,19 +249,21 @@ final class LegalChatViewModel: ObservableObject {
 
             // ── Legal query / Follow-up: run pipeline ──────────────────────────
             case .legalQuery, .followUp:
-                appendedToHistory = true
                 try await handleLLMIntent(intent, question: q, preMode: preMode,
                                           historyStore: historyStore,
-                                          currentSessionId: currentSessionId)
+                                          currentSessionId: currentSessionId,
+                                          appendedToHistory: &appendedToHistory)
                 return
             }
 
         } catch {
             // Refund the quota consumed at the top of send() — the request never completed
             PurchaseManager.shared.refundIfNeeded()
-            // Remove any partial/empty assistant bubble added during streaming (no citations = incomplete)
+            // Remove any partial assistant bubble if it has no citations and no gazette citations.
+            // A bubble with streamed text but no citations means the answer was cut off mid-stream;
+            // remove it so the user isn't left with a truncated reply when the error banner says "failed".
             if let last = messages.last, last.role == .assistant,
-               last.citations.isEmpty && last.gazetteCitations.isEmpty && last.text.isEmpty {
+               last.citations.isEmpty && last.gazetteCitations.isEmpty {
                 messages.removeLast()
             }
             // Remove the user message and restore to input box for retry
@@ -306,7 +308,8 @@ final class LegalChatViewModel: ObservableObject {
     private func handleLLMIntent(_ intent: MessageIntent, question q: String,
                                   preMode: QueryMode?,
                                   historyStore: ChatHistoryStore,
-                                  currentSessionId: UUID) async throws {
+                                  currentSessionId: UUID,
+                                  appendedToHistory: inout Bool) async throws {
         var replyMsg = ChatMessage(role: .assistant)
         replyMsg.intent = intent
         messages.append(replyMsg)
@@ -368,10 +371,9 @@ final class LegalChatViewModel: ObservableObject {
         }
 
         if lastFailedQuestion == nil && sessionId == currentSessionId {
-            // Use the reply captured at replyIdx rather than searching messages.last,
-            // to avoid cross-session contamination when user switches sessions mid-flight.
             let assistantText = replyIdx < messages.count ? messages[replyIdx].text : ""
             conversationHistory.append((user: q, assistant: assistantText))
+            appendedToHistory = true
             autoSave(historyStore: historyStore)
         }
     }
