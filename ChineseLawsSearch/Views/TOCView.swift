@@ -7,7 +7,6 @@ import SwiftUI
 
 struct TOCView: View {
     @Binding var target: LawTarget?
-    @Environment(\.dismissSearch) private var dismissSearch
 
     private var selectedLawId: Int? { target?.law.id }
 
@@ -30,13 +29,106 @@ struct TOCView: View {
     @State private var isRunning = false
     @State private var searchTask: Task<Void, Never>? = nil
 
-    private var lawArticleResults: [SearchResult]   { articleResults.filter { $0.lawCategory != "司法解释" } }
+    var body: some View {
+        TOCListContent(
+            target: $target,
+            menu: menu,
+            expandedGroups: $expandedGroups,
+            expandedSubgroups: $expandedSubgroups,
+            searchQuery: $searchQuery,
+            titleResults: titleResults,
+            articleResults: articleResults,
+            titleSectionExpanded: $titleSectionExpanded,
+            lawArticleSectionExpanded: $lawArticleSectionExpanded,
+            interpSectionExpanded: $interpSectionExpanded,
+            isRunning: isRunning
+        )
+        .navigationTitle(lawsExamMode ? "法考法规" : "法律法规")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchQuery,
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "搜索法律名称或条文内容")
+        .onChange(of: searchQuery)   { _, q in runSearch(q) }
+        .onChange(of: excludeArtNum) { _, _ in runSearch(searchQuery) }
+        .onChange(of: resultLimit)   { _, _ in runSearch(searchQuery) }
+        .onChange(of: lawsExamMode)  { _, _ in
+            menu = lawsExamMode ? DatabaseManager.shared.loadLawsExamMenu() : DatabaseManager.shared.loadMenu()
+            expandedGroups.removeAll()
+            expandedSubgroups.removeAll()
+            runSearch(searchQuery)
+        }
+        .task {
+            menu = lawsExamMode ? DatabaseManager.shared.loadLawsExamMenu() : DatabaseManager.shared.loadMenu()
+        }
+        .onDisappear { searchTask?.cancel() }
+    }
+
+    // MARK: - Search logic
+
+    private func runSearch(_ q: String) {
+        searchTask?.cancel()
+        guard !q.isEmpty else {
+            titleResults = []; articleResults = []; return
+        }
+        isRunning = true
+        let excl  = excludeArtNum
+        let limit = resultLimit
+        let cats: [String] = []
+        let flk   = lawsExamMode
+        let variant = DatabaseManager.numberVariant(of: q)
+        let db = DatabaseManager.shared
+        searchTask = Task.detached(priority: .userInitiated) {
+            var titles = db.searchByTitle(query: q, categories: cats, lawsExamOnly: flk)
+            if let v = variant {
+                let extra = db.searchByTitle(query: v, categories: cats, lawsExamOnly: flk)
+                let seen  = Set(titles.map(\.id))
+                titles += extra.filter { !seen.contains($0.id) }
+            }
+            var articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
+            if let v = variant {
+                let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
+                let seen  = Set(articles.map(\.id))
+                articles += extra.filter { !seen.contains($0.id) }
+            }
+            guard !Task.isCancelled else { return }
+            let t = titles; let a = articles
+            await MainActor.run {
+                titleResults   = t
+                articleResults = a
+                titleSectionExpanded      = true
+                lawArticleSectionExpanded = true
+                interpSectionExpanded     = true
+                isRunning = false
+            }
+        }
+    }
+}
+
+// MARK: - Inner list content (子视图，能正确读到 searchable 注入的 environment)
+
+private struct TOCListContent: View {
+    @Binding var target: LawTarget?
+    let menu: DatabaseManager.LawMenu?
+    @Binding var expandedGroups:    Set<String>
+    @Binding var expandedSubgroups: Set<String>
+    @Binding var searchQuery: String
+    let titleResults:   [LawMeta]
+    let articleResults: [SearchResult]
+    @Binding var titleSectionExpanded:      Bool
+    @Binding var lawArticleSectionExpanded: Bool
+    @Binding var interpSectionExpanded:     Bool
+    let isRunning: Bool
+
+    @Environment(\.dismissSearch) private var dismissSearch
+    @Environment(\.isSearching)   private var isSearching
+
+    private var selectedLawId: Int? { target?.law.id }
+    private var lawArticleResults:  [SearchResult] { articleResults.filter { $0.lawCategory != "司法解释" } }
     private var interpArticleResults: [SearchResult] { articleResults.filter { $0.lawCategory == "司法解释" } }
 
     var body: some View {
         List {
             if searchQuery.isEmpty {
-                // 目录浏览
                 if let menu {
                     ForEach(menu.groups, id: \.label) { group in
                         let totalCount = group.subgroups.reduce(0) { $0 + $1.laws.count }
@@ -50,6 +142,7 @@ struct TOCView: View {
                             }
                         } header: {
                             Button {
+                                if isSearching { dismissSearch() }
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     if isExpanded { expandedGroups.remove(group.label) }
                                     else          { expandedGroups.insert(group.label) }
@@ -76,11 +169,9 @@ struct TOCView: View {
                     }
                 }
             } else if isRunning {
-                // 搜索中
                 HStack { Spacer(); ProgressView(); Spacer() }
                     .listRowBackground(Color.clear)
             } else if titleResults.isEmpty && articleResults.isEmpty {
-                // 无结果
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 28, weight: .light))
@@ -96,7 +187,6 @@ struct TOCView: View {
                 .padding(.vertical, 40)
                 .listRowBackground(Color.clear)
             } else {
-                // 搜索结果
                 if !titleResults.isEmpty {
                     Section {
                         if titleSectionExpanded {
@@ -105,8 +195,7 @@ struct TOCView: View {
                                     dismissSearch()
                                     target = LawTarget(law: law, scrollToArticle: nil)
                                 } label: {
-                                    highlightedText(law.title, query: searchQuery,
-                                                baseFont: .subheadline)
+                                    highlightedText(law.title, query: searchQuery, baseFont: .subheadline)
                                         .foregroundStyle(.primary)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .contentShape(Rectangle())
@@ -123,9 +212,7 @@ struct TOCView: View {
                 if !lawArticleResults.isEmpty {
                     Section {
                         if lawArticleSectionExpanded {
-                            ForEach(lawArticleResults) { result in
-                                articleResultRow(result)
-                            }
+                            ForEach(lawArticleResults) { result in articleResultRow(result) }
                         }
                     } header: {
                         collapsibleHeader(title: "法律法规条文", count: lawArticleResults.count,
@@ -135,9 +222,7 @@ struct TOCView: View {
                 if !interpArticleResults.isEmpty {
                     Section {
                         if interpSectionExpanded {
-                            ForEach(interpArticleResults) { result in
-                                articleResultRow(result)
-                            }
+                            ForEach(interpArticleResults) { result in articleResultRow(result) }
                         }
                     } header: {
                         collapsibleHeader(title: "司法解释条文", count: interpArticleResults.count,
@@ -148,69 +233,10 @@ struct TOCView: View {
         }
         .listStyle(.sidebar)
         .scrollDismissesKeyboard(.immediately)
-        .navigationTitle(lawsExamMode ? "法考法规" : "法律法规")
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchQuery,
-                    placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: "搜索法律名称或条文内容")
-        .onChange(of: searchQuery)    { _, q in runSearch(q) }
-        .onChange(of: excludeArtNum)  { _, _ in runSearch(searchQuery) }
-        .onChange(of: resultLimit)    { _, _ in runSearch(searchQuery) }
-        .onChange(of: lawsExamMode)        { _, _ in
-            menu = lawsExamMode ? DatabaseManager.shared.loadLawsExamMenu() : DatabaseManager.shared.loadMenu()
-            expandedGroups.removeAll()
-            expandedSubgroups.removeAll()
-            runSearch(searchQuery)
-        }
-        .task {
-            menu = lawsExamMode ? DatabaseManager.shared.loadLawsExamMenu() : DatabaseManager.shared.loadMenu()
-        }
-        .onDisappear { searchTask?.cancel() }
+        .simultaneousGesture(TapGesture().onEnded {
+            if isSearching { dismissSearch() }
+        })
     }
-
-    // MARK: - Search logic
-
-    private func runSearch(_ q: String) {
-        searchTask?.cancel()
-        guard !q.isEmpty else {
-            titleResults = []; articleResults = []; return
-        }
-        isRunning = true
-        let excl      = excludeArtNum
-        let limit     = resultLimit
-        let cats: [String] = []  // 空数组 = 覆盖全部类型
-        let flk       = lawsExamMode
-        let variant   = DatabaseManager.numberVariant(of: q)
-        let db = DatabaseManager.shared
-        searchTask = Task.detached(priority: .userInitiated) {
-            var titles = db.searchByTitle(query: q, categories: cats, lawsExamOnly: flk)
-            if let v = variant {
-                let extra = db.searchByTitle(query: v, categories: cats, lawsExamOnly: flk)
-                let seen  = Set(titles.map(\.id))
-                titles += extra.filter { !seen.contains($0.id) }
-            }
-            var articles: [SearchResult] = []
-            articles = db.searchContent(query: q, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
-            if let v = variant {
-                let extra = db.searchContent(query: v, limit: limit, excludeArticleNumber: excl, categories: cats, lawsExamOnly: flk)
-                let seen  = Set(articles.map(\.id))
-                articles += extra.filter { !seen.contains($0.id) }
-            }
-            guard !Task.isCancelled else { return }
-            let finalTitles   = titles
-            let finalArticles = articles
-            await MainActor.run {
-                titleResults   = finalTitles
-                articleResults = finalArticles
-                titleSectionExpanded      = true
-                lawArticleSectionExpanded = true
-                interpSectionExpanded     = true
-                isRunning      = false
-            }
-        }
-    }
-
-    // MARK: - Browse subviews
 
     @ViewBuilder
     func subgroupRows(groupLabel: String, sub: DatabaseManager.MenuSubgroup) -> some View {
@@ -220,6 +246,7 @@ struct TOCView: View {
         let displayLabel = isAdminSub ? String(sub.label.dropFirst("行政法规/".count)) : sub.label
 
         Button {
+            if isSearching { dismissSearch() }
             withAnimation(.easeInOut(duration: 0.2)) {
                 if isExpanded { expandedSubgroups.remove(subKey) }
                 else          { expandedSubgroups.insert(subKey) }
@@ -257,6 +284,7 @@ struct TOCView: View {
     func lawRow(_ menuLaw: DatabaseManager.MenuLaw) -> some View {
         let isSelected = selectedLawId == menuLaw.id
         Button {
+            dismissSearch()
             if let law = DatabaseManager.shared.lawMeta(id: menuLaw.id) {
                 target = LawTarget(law: law, scrollToArticle: nil)
             }

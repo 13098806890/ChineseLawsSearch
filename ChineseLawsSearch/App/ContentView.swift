@@ -67,6 +67,7 @@ struct ContentView: View {
                     .allowsHitTesting(tab == .favorites)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .dismissKeyboardOnTap()
 
             Divider()
             HStack(spacing: 0) {

@@ -102,6 +102,11 @@ struct LawDetailView: View {
         }
         .scrollPosition(id: $scrollPosition, anchor: .top)
         .scrollDismissesKeyboard(.immediately)
+        .simultaneousGesture(TapGesture().onEnded {
+            searchFocused = false
+            isSearching = false
+            searchQuery = ""
+        })
         .safeAreaInset(edge: .top, spacing: 0) {
             // 始终渲染，用 frame(height:) 控制占位，避免视图增删导致 ScrollView 重布局卡顿和内容重叠
             VStack(spacing: 0) {

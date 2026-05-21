@@ -7,6 +7,20 @@
 
 import SwiftUI
 import RegexBuilder
+import UIKit
+
+// MARK: - Global keyboard dismiss
+
+func hideKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+}
+
+extension View {
+    /// 点击视图任意位置自动收起键盘，不干扰子视图的正常点击事件
+    func dismissKeyboardOnTap() -> some View {
+        self.simultaneousGesture(TapGesture().onEnded { hideKeyboard() })
+    }
+}
 
 // MARK: - Gazette source display name
 
